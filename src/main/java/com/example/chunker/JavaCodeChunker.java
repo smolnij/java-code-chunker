@@ -1,0 +1,327 @@
+package com.example.chunker;
+
+import com.example.chunker.callgraph.CallGraphExtractor;
+import com.example.chunker.filter.BoilerplateDetector;
+import com.example.chunker.model.CodeChunk;
+import com.example.chunker.tokenizer.TokenCounter;
+
+import com.github.javaparser.JavaParser;
+import com.github.javaparser.ParseResult;
+import com.github.javaparser.ParserConfiguration;
+import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.ImportDeclaration;
+import com.github.javaparser.ast.PackageDeclaration;
+import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
+import com.github.javaparser.ast.body.FieldDeclaration;
+import com.github.javaparser.ast.body.MethodDeclaration;
+import com.github.javaparser.ast.expr.AnnotationExpr;
+import com.github.javaparser.symbolsolver.JavaSymbolSolver;
+import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
+import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
+import com.github.javaparser.symbolsolver.resolution.typesolvers.ReflectionTypeSolver;
+
+import java.io.IOException;
+import java.nio.file.*;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.*;
+import java.util.stream.Collectors;
+
+/**
+ * Main orchestrator: parses a Java repository, produces method-level chunks
+ * with class context, call graph edges, and token-aware splitting.
+ *
+ * <h3>Pipeline phases:</h3>
+ * <ol>
+ * <li><b>Phase 1:</b> Collect all .java files from source roots</li>
+ * <li><b>Phase 2:</b> Parse each file → extract method chunks + call graph edges</li>
+ * <li><b>Phase 3:</b> Back-patch "calledBy" reverse edges from the call graph</li>
+ * <li><b>Phase 4:</b> Filter out boilerplate (getters/setters/DTOs)</li>
+ * </ol>
+ */
+public class JavaCodeChunker {
+
+    private final Path repoRoot;
+    private final List<Path> sourceRoots;
+    private final JavaParser parser;
+    private final CallGraphExtractor callGraph;
+    private final BoilerplateDetector boilerplateDetector;
+    private final TokenCounter tokenCounter;
+
+    // All chunks, keyed by method FQN for calledBy back-patching
+    private final Map<String, CodeChunk> chunkIndex = new LinkedHashMap<>();
+    private final List<CodeChunk> allChunks = new ArrayList<>();
+
+    /**
+     * @param repoRoot root of the repository
+     * @param sourceRoots list of source directories relative to repoRoot
+     * (e.g., ["src/main/java", "src/test/java"])
+     * @param maxTokensPerChunk max tokens per chunk before splitting (e.g., 512)
+     */
+    public JavaCodeChunker(Path repoRoot, List<Path> sourceRoots, int maxTokensPerChunk) {
+        this.repoRoot = repoRoot.toAbsolutePath().normalize();
+        this.sourceRoots = sourceRoots;
+        this.callGraph = new CallGraphExtractor();
+        this.boilerplateDetector = new BoilerplateDetector();
+        this.tokenCounter = new TokenCounter(maxTokensPerChunk);
+
+        // ── Configure JavaParser with Symbol Solver ──
+        CombinedTypeSolver typeSolver = new CombinedTypeSolver();
+        typeSolver.add(new ReflectionTypeSolver()); // JDK types
+
+        for (Path srcRoot : sourceRoots) {
+            Path resolvedSrcRoot = this.repoRoot.resolve(srcRoot);
+            if (Files.isDirectory(resolvedSrcRoot)) {
+                typeSolver.add(new JavaParserTypeSolver(resolvedSrcRoot));
+            }
+        }
+
+        // Fallback: add repoRoot itself as a type solver source if it contains .java files
+        if (sourceRoots.stream().noneMatch(sr -> Files.isDirectory(this.repoRoot.resolve(sr)))) {
+            typeSolver.add(new JavaParserTypeSolver(this.repoRoot));
+        }
+
+        JavaSymbolSolver symbolSolver = new JavaSymbolSolver(typeSolver);
+        ParserConfiguration config = new ParserConfiguration()
+                .setSymbolResolver(symbolSolver)
+                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_17);
+
+        this.parser = new JavaParser(config);
+    }
+
+    /**
+     * Run the full chunking pipeline and return the list of non-boilerplate chunks.
+     */
+    public List<CodeChunk> process() throws IOException {
+
+        // ── Phase 1: Collect all Java files ──
+        List<Path> javaFiles = new ArrayList<>();
+        for (Path srcRoot : sourceRoots) {
+            Path resolvedSrcRoot = repoRoot.resolve(srcRoot).toAbsolutePath().normalize();
+            if (!Files.isDirectory(resolvedSrcRoot)) {
+                System.err.println("WARN: Source root not found: " + resolvedSrcRoot);
+                continue;
+            }
+
+            Files.walkFileTree(resolvedSrcRoot, new SimpleFileVisitor<>() {
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                    if (file.toString().endsWith(".java")) {
+                        javaFiles.add(file);
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+        }
+
+        // Fallback: if no files found from specified source roots, scan repoRoot directly
+        if (javaFiles.isEmpty()) {
+            System.out.println("No files found in specified source roots; scanning repoRoot: " + repoRoot.toAbsolutePath());
+            Files.walkFileTree(repoRoot.toAbsolutePath().normalize(), new SimpleFileVisitor<>() {
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                    if (file.toString().endsWith(".java")) {
+                        javaFiles.add(file);
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+        }
+
+        System.out.println("Found " + javaFiles.size() + " Java files to process.");
+
+        // ── Phase 2: Parse & extract method chunks + call graph ──
+        int successCount = 0;
+        int failCount = 0;
+        for (Path javaFile : javaFiles) {
+            try {
+                processFile(javaFile);
+                successCount++;
+            } catch (Exception e) {
+                failCount++;
+                System.err.println("ERROR processing " + javaFile + ": " + e.getMessage());
+            }
+        }
+        System.out.println("Parsed " + successCount + " files successfully, " + failCount + " failures.");
+
+        // ── Phase 3: Back-patch "calledBy" edges from the call graph ──
+        for (CodeChunk chunk : allChunks) {
+            Set<String> callers = callGraph.getCallersOf(chunk.getChunkId());
+            if (!callers.isEmpty()) {
+                chunk.setCalledBy(new ArrayList<>(callers));
+            }
+        }
+
+        // ── Phase 4: Filter out boilerplate ──
+        List<CodeChunk> result = allChunks.stream()
+                .filter(c -> !c.isBoilerplate())
+                .collect(Collectors.toList());
+
+        System.out.println("Total chunks: " + allChunks.size()
+                + " | Non-boilerplate: " + result.size()
+                + " | Filtered: " + (allChunks.size() - result.size()));
+
+        return result;
+    }
+
+    /**
+     * Parse a single Java file and extract method-level chunks.
+     */
+    private void processFile(Path javaFile) throws IOException {
+        ParseResult<CompilationUnit> result = parser.parse(javaFile);
+        if (!result.isSuccessful() || result.getResult().isEmpty()) {
+            System.err.println("WARN: Failed to parse " + javaFile
+                    + " — problems: " + result.getProblems());
+            return;
+        }
+
+        CompilationUnit cu = result.getResult().get();
+        String relativePath = repoRoot.relativize(javaFile).toString().replace('\\', '/');
+
+        // Package & imports
+        String packageName = cu.getPackageDeclaration()
+                .map(PackageDeclaration::getNameAsString)
+                .orElse("");
+
+        List<String> imports = cu.getImports().stream()
+                .map(ImportDeclaration::toString)
+                .map(String::trim)
+                .collect(Collectors.toList());
+
+        // Process each class/interface in the file
+        cu.findAll(ClassOrInterfaceDeclaration.class).forEach(classDecl ->
+                processClass(classDecl, relativePath, packageName, imports)
+        );
+    }
+
+    /**
+     * Process a single class declaration: extract all methods as individual chunks.
+     */
+    private void processClass(ClassOrInterfaceDeclaration classDecl,
+                              String relativePath,
+                              String packageName,
+                              List<String> imports) {
+
+        String className = classDecl.getNameAsString();
+        String fqClassName = packageName.isEmpty() ? className : packageName + "." + className;
+
+        // Check if the entire class is a DTO
+        boolean isDto = boilerplateDetector.isDtoClass(classDecl);
+
+        // Build class signature: "public class Foo extends Bar implements Baz"
+        String classSignature = buildClassSignature(classDecl);
+
+        // Class annotations
+        List<String> classAnnotations = classDecl.getAnnotations().stream()
+                .map(AnnotationExpr::toString)
+                .collect(Collectors.toList());
+
+        // Field declarations (included as context in each method chunk)
+        List<String> fields = classDecl.getFields().stream()
+                .map(FieldDeclaration::toString)
+                .map(String::trim)
+                .collect(Collectors.toList());
+
+        // ── Process each method ──
+        for (MethodDeclaration method : classDecl.getMethods()) {
+
+            boolean isBoilerplate = isDto || boilerplateDetector.isBoilerplateMethod(method);
+
+            String methodName = method.getNameAsString();
+            String methodSig = method.getDeclarationAsString(true, true, true);
+
+            // Build fully qualified method identifier
+            String methodFqn = fqClassName + "#" + methodName + "("
+                    + method.getParameters().stream()
+                    .map(p -> p.getTypeAsString())
+                    .collect(Collectors.joining(", "))
+                    + ")";
+
+            // Method annotations
+            List<String> methodAnnotations = method.getAnnotations().stream()
+                    .map(AnnotationExpr::toString)
+                    .collect(Collectors.toList());
+
+            // Source code
+            String code = method.toString();
+            int startLine = method.getBegin().map(p -> p.line).orElse(0);
+            int endLine = method.getEnd().map(p -> p.line).orElse(0);
+
+            // ── Extract call graph edges ──
+            callGraph.extractCalls(method, methodFqn);
+            List<String> calls = new ArrayList<>(callGraph.getCallsFrom(methodFqn));
+
+            // ── Token-aware splitting ──
+            List<String> codeParts = tokenCounter.splitIfNeeded(code);
+
+            for (int i = 0; i < codeParts.size(); i++) {
+                CodeChunk chunk = new CodeChunk();
+
+                String chunkId = methodFqn;
+                if (codeParts.size() > 1) {
+                    chunkId += "#part" + (i + 1);
+                }
+
+                chunk.setChunkId(chunkId);
+                chunk.setFilePath(relativePath);
+                chunk.setPackageName(packageName);
+                chunk.setImports(imports);
+
+                chunk.setClassName(className);
+                chunk.setFullyQualifiedClassName(fqClassName);
+                chunk.setClassSignature(classSignature);
+                chunk.setClassAnnotations(classAnnotations);
+                chunk.setFieldDeclarations(fields);
+
+                chunk.setMethodName(methodName);
+                chunk.setMethodSignature(methodSig);
+                chunk.setMethodAnnotations(methodAnnotations);
+                chunk.setStartLine(startLine);
+                chunk.setEndLine(endLine);
+
+                chunk.setCode(codeParts.get(i));
+                chunk.setTokenCount(tokenCounter.countTokens(codeParts.get(i)));
+
+                chunk.setCalls(calls);
+                // calledBy will be back-patched in Phase 3
+
+                chunk.setPartIndex(i + 1);
+                chunk.setTotalParts(codeParts.size());
+                chunk.setBoilerplate(isBoilerplate);
+
+                chunk.setParentClass(fqClassName);
+                chunk.setParentPackage(packageName);
+
+                chunkIndex.put(chunkId, chunk);
+                allChunks.add(chunk);
+            }
+        }
+    }
+
+    /**
+     * Build a human-readable class signature string.
+     * Example: "public class SbdiMainPhase2Service extends Object implements Serializable"
+     */
+    private String buildClassSignature(ClassOrInterfaceDeclaration classDecl) {
+        StringBuilder sb = new StringBuilder();
+        classDecl.getModifiers().forEach(m -> sb.append(m.getKeyword().asString()).append(" "));
+        sb.append(classDecl.isInterface() ? "interface " : "class ");
+        sb.append(classDecl.getNameAsString());
+
+        if (!classDecl.getExtendedTypes().isEmpty()) {
+            sb.append(" extends ").append(
+                    classDecl.getExtendedTypes().stream()
+                            .map(Object::toString)
+                            .collect(Collectors.joining(", "))
+            );
+        }
+        if (!classDecl.getImplementedTypes().isEmpty()) {
+            sb.append(" implements ").append(
+                    classDecl.getImplementedTypes().stream()
+                            .map(Object::toString)
+                            .collect(Collectors.joining(", "))
+            );
+        }
+
+        return sb.toString().trim();
+    }
+}
