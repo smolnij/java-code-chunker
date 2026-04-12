@@ -47,13 +47,16 @@ public class ChunkerMain {
 
     // ── Default tunable parameters ──
     private static final int DEFAULT_MAX_TOKENS_PER_CHUNK = 512;
+    public static final String NEO4J_DEFAULT_URL = "bolt://localhost:7687";
+    public static final String NEO4J_DEFAULT_USER = "neo4j";
+    public static final String NEO4J_DEFAULT_PASSWORD = "12345678";
 
     public static void main(String[] args) throws IOException {
 
         // ── Parse CLI arguments ──
         Path repoRoot = Path.of(args.length > 0
             ? args[0]
-            : "/home/smola/dev/src/AI_tools/java_code_chunker");
+            : "/home/smola/dev/src/AI_tools/java-code-chunker");
 
         Path outputDir = Path.of(args.length > 1
             ? args[1]
@@ -164,9 +167,9 @@ public class ChunkerMain {
         // ═══════════════════════════════════════════════════════════════
         // ── Neo4j Persistence (optional) ──
         // ═══════════════════════════════════════════════════════════════
-        String neo4jUri = getConfigValue("NEO4J_URI", "neo4j.uri", null);
-        String neo4jUser = getConfigValue("NEO4J_USER", "neo4j.user", "neo4j");
-        String neo4jPassword = getConfigValue("NEO4J_PASSWORD", "neo4j.password", null);
+        String neo4jUri = getConfigValue("NEO4J_URI", "neo4j.uri", NEO4J_DEFAULT_URL);
+        String neo4jUser = getConfigValue("NEO4J_USER", "neo4j.user", NEO4J_DEFAULT_USER);
+        String neo4jPassword = getConfigValue("NEO4J_PASSWORD", "neo4j.password", NEO4J_DEFAULT_PASSWORD);
         boolean neo4jClean = "true".equalsIgnoreCase(getConfigValue("NEO4J_CLEAN", "neo4j.clean", "false"));
 
         if (neo4jUri != null && neo4jPassword != null) {
