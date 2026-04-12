@@ -33,7 +33,7 @@
             <configuration>
               <transformers>
                 <transformer>
-                  <mainClass>com.example.chunker.ChunkerMain</mainClass>
+                  <mainClass>com.smolnij.chunker.ChunkerMain</mainClass>
                 </transformer>
               </transformers>
               <filters>

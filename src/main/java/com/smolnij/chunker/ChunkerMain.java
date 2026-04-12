@@ -2,6 +2,11 @@ package com.smolnij.chunker;
 
 import com.smolnij.chunker.index.GraphIndex;
 import com.smolnij.chunker.model.CodeChunk;
+import com.smolnij.chunker.model.graph.GraphModel;
+import com.smolnij.chunker.retrieval.EmbeddingService;
+import com.smolnij.chunker.retrieval.LmStudioEmbeddingService;
+import com.smolnij.chunker.retrieval.RetrievalConfig;
+import com.smolnij.chunker.store.Neo4jGraphStore;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 
@@ -20,6 +25,8 @@ import java.util.List;
  *   <li><b>chunks_readable.txt</b> — human/LLM-readable prompt-formatted chunks (for direct ingestion)</li>
  * </ul>
  *
+ * <p>Optionally persists the full code graph to Neo4j when connection parameters are provided.
+ *
  * <h3>Usage:</h3>
  * <pre>
  *   java -jar java-code-chunker.jar [repoRoot] [outputDir] [maxTokens]
@@ -28,6 +35,12 @@ import java.util.List;
  *     repoRoot   — path to the Java repository root (default: current directory)
  *     outputDir  — path to write output files (default: ./chunker-output)
  *     maxTokens  — max tokens per chunk before splitting (default: 512)
+ *
+ *   Neo4j options (via environment variables or system properties):
+ *     NEO4J_URI      / -Dneo4j.uri      — bolt URI   (e.g. bolt://localhost:7687)
+ *     NEO4J_USER     / -Dneo4j.user     — username   (default: neo4j)
+ *     NEO4J_PASSWORD / -Dneo4j.password — password
+ *     NEO4J_CLEAN    / -Dneo4j.clean    — if "true", wipe the database before import
  * </pre>
  */
 public class ChunkerMain {
@@ -40,7 +53,7 @@ public class ChunkerMain {
         // ── Parse CLI arguments ──
         Path repoRoot = Path.of(args.length > 0
             ? args[0]
-            : "/home/smola/dev/src/parkingsys/parking-system-main/");
+            : "C:/dev/src/BAP0010429_US_Payment_CommercialCreditOffline");
 
         Path outputDir = Path.of(args.length > 1
             ? args[1]
@@ -53,7 +66,10 @@ public class ChunkerMain {
         // Source roots for your multi-module Maven project
         // Add or remove entries to match your repository layout
         List<Path> sourceRoots = List.of(
-            Path.of("/src/main/java")
+            Path.of("src/main/java"),
+            Path.of("src/main/java"),
+            Path.of("src/test/java"),
+            Path.of("src/test/java")
         );
 
         // ── Banner ──
@@ -76,7 +92,10 @@ public class ChunkerMain {
         System.out.println("Extracted " + chunks.size() + " non-boilerplate method chunks.");
         System.out.println();
 
-        // ── Build the graph index ──
+        // ── Get the graph model ──
+        GraphModel graphModel = chunker.getGraphModel();
+
+        // ── Build the graph index (for legacy JSON export) ──
         GraphIndex index = new GraphIndex();
         index.buildIndex(chunks);
 
@@ -141,8 +160,74 @@ public class ChunkerMain {
         System.out.println("Total: " + index.getPackages().size() + " packages, "
             + totalClasses + " classes, "
             + totalMethods + " methods");
+
+        // ═══════════════════════════════════════════════════════════════
+        // ── Neo4j Persistence (optional) ──
+        // ═══════════════════════════════════════════════════════════════
+        String neo4jUri = getConfigValue("NEO4J_URI", "neo4j.uri", null);
+        String neo4jUser = getConfigValue("NEO4J_USER", "neo4j.user", "neo4j");
+        String neo4jPassword = getConfigValue("NEO4J_PASSWORD", "neo4j.password", null);
+        boolean neo4jClean = "true".equalsIgnoreCase(getConfigValue("NEO4J_CLEAN", "neo4j.clean", "false"));
+
+        if (neo4jUri != null && neo4jPassword != null) {
+            System.out.println();
+            System.out.println("── Neo4j Export ─────────────────────────────────────────");
+            System.out.println("URI:   " + neo4jUri);
+            System.out.println("User:  " + neo4jUser);
+            System.out.println("Clean: " + neo4jClean);
+            System.out.println();
+
+            try (Neo4jGraphStore store = new Neo4jGraphStore(neo4jUri, neo4jUser, neo4jPassword)) {
+                store.initSchema();
+                if (neo4jClean) {
+                    store.cleanAll();
+                }
+                store.store(graphModel);
+
+                // ── Vector index & embeddings (optional) ──
+                String embeddingUrl = getConfigValue("EMBEDDING_URL", "embedding.url", null);
+                if (embeddingUrl != null) {
+                    RetrievalConfig retrievalConfig = RetrievalConfig.fromEnvironment();
+                    System.out.println();
+                    System.out.println("── Embedding & Vector Index ─────────────────────────────");
+                    System.out.println("Embedding URL: " + retrievalConfig.getEmbeddingUrl());
+                    System.out.println("Model:         " + retrievalConfig.getEmbeddingModel());
+                    System.out.println("Dimensions:    " + retrievalConfig.getEmbeddingDimensions());
+                    System.out.println();
+
+                    store.initVectorIndex(
+                        retrievalConfig.getVectorIndexName(),
+                        retrievalConfig.getEmbeddingDimensions()
+                    );
+
+                    EmbeddingService embeddingService = new LmStudioEmbeddingService(retrievalConfig);
+                    store.storeEmbeddings(graphModel, embeddingService);
+                } else {
+                    System.out.println("ℹ Embedding storage skipped (set EMBEDDING_URL to enable).");
+                }
+            } catch (Exception e) {
+                System.err.println("ERROR: Failed to persist to Neo4j: " + e.getMessage());
+                e.printStackTrace();
+            }
+        } else {
+            System.out.println();
+            System.out.println("ℹ Neo4j export skipped (set NEO4J_URI and NEO4J_PASSWORD to enable).");
+        }
+
         System.out.println();
         System.out.println("Done! Feed chunks_readable.txt to LM-Studio, or embed chunks.json for RAG.");
     }
-}
 
+    /**
+     * Read a configuration value from system property, then environment variable, then default.
+     */
+    private static String getConfigValue(String envKey, String sysPropKey, String defaultValue) {
+        String value = System.getProperty(sysPropKey);
+        if (value != null && !value.isEmpty()) return value;
+
+        value = System.getenv(envKey);
+        if (value != null && !value.isEmpty()) return value;
+
+        return defaultValue;
+    }
+}

@@ -68,275 +68,275 @@
 <polygon fill="#e6f4ea" stroke="#34a853" stroke-width="1.5" points="4087,-23 4087,-102.26 5580,-102.26 5580,-23 4087,-23"/>
 <text xml:space="preserve" text-anchor="middle" x="4833.5" y="-86.86" font-family="Arial" font-size="12.00" fill="#1b5e20">📄 GraphVisualizer</text>
 </g>
-<!-- com.example.chunker.ChunkerMain#main(String[])#part1 -->
+<!-- com.smolnij.chunker.ChunkerMain#main(String[])#part1 -->
 <g id="node1" class="node">
 <title>com.example.chunker.ChunkerMain#main(String[])#part1</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="99" cy="-51.51" rx="74.95" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="99" y="-53.46" font-family="Arial" font-size="9.00">main</text>
 <text xml:space="preserve" text-anchor="middle" x="99" y="-42.96" font-family="Arial" font-size="9.00">(510 tokens, L38&#45;149)</text>
 </g>
-<!-- com.example.chunker.index.GraphIndex#exportGraph() -->
+<!-- index.com.smolnij.chunker.GraphIndex#exportGraph() -->
 <g id="node2" class="node">
 <title>com.example.chunker.index.GraphIndex#exportGraph()</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="296" cy="-51.51" rx="78.67" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="296" y="-53.46" font-family="Arial" font-size="9.00">exportGraph</text>
 <text xml:space="preserve" text-anchor="middle" x="296" y="-42.96" font-family="Arial" font-size="9.00">(383 tokens, L184&#45;208)</text>
 </g>
-<!-- com.example.chunker.ChunkerMain#main(String[])#part1&#45;&gt;com.example.chunker.index.GraphIndex#exportGraph() -->
+<!-- com.smolnij.chunker.ChunkerMain#main(String[])#part1&#45;&gt;index.com.smolnij.chunker.GraphIndex#exportGraph() -->
 <g id="edge1" class="edge">
 <title>com.example.chunker.ChunkerMain#main(String[])#part1&#45;&gt;com.example.chunker.index.GraphIndex#exportGraph()</title>
 <path fill="none" stroke="red" stroke-width="1.2" stroke-dasharray="5,2" d="M170.68,-58C170.68,-58 208.91,-58 208.91,-58"/>
 <polygon fill="red" stroke="red" stroke-width="1.2" points="208.91,-61.5 218.91,-58 208.91,-54.5 208.91,-61.5"/>
 </g>
-<!-- com.example.chunker.ChunkerMain#main(String[])#part1&#45;&gt;com.example.chunker.index.GraphIndex#exportGraph() -->
+<!-- com.smolnij.chunker.ChunkerMain#main(String[])#part1&#45;&gt;index.com.smolnij.chunker.GraphIndex#exportGraph() -->
 <g id="edge7" class="edge">
 <title>com.example.chunker.ChunkerMain#main(String[])#part1&#45;&gt;com.example.chunker.index.GraphIndex#exportGraph()</title>
 <path fill="none" stroke="red" stroke-width="1.2" stroke-dasharray="5,2" d="M170.68,-45C170.68,-45 208.91,-45 208.91,-45"/>
 <polygon fill="red" stroke="red" stroke-width="1.2" points="208.91,-48.5 218.91,-45 208.91,-41.5 208.91,-48.5"/>
 </g>
-<!-- com.example.chunker.model.CodeChunk#toPromptFormat() -->
+<!-- model.com.smolnij.chunker.CodeChunk#toPromptFormat() -->
 <g id="node3" class="node">
 <title>com.example.chunker.model.CodeChunk#toPromptFormat()</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="496" cy="-51.51" rx="78.67" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="496" y="-53.46" font-family="Arial" font-size="9.00">toPromptFormat</text>
 <text xml:space="preserve" text-anchor="middle" x="496" y="-42.96" font-family="Arial" font-size="9.00">(457 tokens, L261&#45;301)</text>
 </g>
-<!-- com.example.chunker.ChunkerMain#main(String[])#part1&#45;&gt;com.example.chunker.model.CodeChunk#toPromptFormat() -->
+<!-- com.smolnij.chunker.ChunkerMain#main(String[])#part1&#45;&gt;model.com.smolnij.chunker.CodeChunk#toPromptFormat() -->
 <g id="edge2" class="edge">
 <title>com.example.chunker.ChunkerMain#main(String[])#part1&#45;&gt;com.example.chunker.model.CodeChunk#toPromptFormat()</title>
 <path fill="none" stroke="red" stroke-width="1.2" stroke-dasharray="5,2" d="M74.02,-71.15C74.02,-83.07 74.02,-96 74.02,-96 74.02,-96 522.22,-96 522.22,-96 522.22,-96 522.22,-82.97 522.22,-82.97"/>
 <polygon fill="red" stroke="red" stroke-width="1.2" points="525.72,-82.97 522.22,-72.97 518.72,-82.97 525.72,-82.97"/>
 </g>
-<!-- com.example.chunker.ChunkerMain#main(String[])#part1&#45;&gt;com.example.chunker.model.CodeChunk#toPromptFormat() -->
+<!-- com.smolnij.chunker.ChunkerMain#main(String[])#part1&#45;&gt;model.com.smolnij.chunker.CodeChunk#toPromptFormat() -->
 <g id="edge8" class="edge">
 <title>com.example.chunker.ChunkerMain#main(String[])#part1&#45;&gt;com.example.chunker.model.CodeChunk#toPromptFormat()</title>
 <path fill="none" stroke="red" stroke-width="1.2" stroke-dasharray="5,2" d="M123.98,-71.16C123.98,-78 123.98,-84 123.98,-84 123.98,-84 469.78,-84 469.78,-84 469.78,-84 469.78,-82.72 469.78,-82.72"/>
 <polygon fill="red" stroke="red" stroke-width="1.2" points="473.28,-82.97 469.78,-72.97 466.28,-82.97 473.28,-82.97"/>
 </g>
-<!-- com.example.chunker.ChunkerMain#main(String[])#part2 -->
+<!-- com.smolnij.chunker.ChunkerMain#main(String[])#part2 -->
 <g id="node4" class="node">
 <title>com.example.chunker.ChunkerMain#main(String[])#part2</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="693" cy="-51.51" rx="74.95" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="693" y="-53.46" font-family="Arial" font-size="9.00">main</text>
 <text xml:space="preserve" text-anchor="middle" x="693" y="-42.96" font-family="Arial" font-size="9.00">(495 tokens, L38&#45;149)</text>
 </g>
-<!-- com.example.chunker.ChunkerMain#main(String[])#part2&#45;&gt;com.example.chunker.index.GraphIndex#exportGraph() -->
+<!-- com.smolnij.chunker.ChunkerMain#main(String[])#part2&#45;&gt;index.com.smolnij.chunker.GraphIndex#exportGraph() -->
 <g id="edge3" class="edge">
 <title>com.example.chunker.ChunkerMain#main(String[])#part2&#45;&gt;com.example.chunker.index.GraphIndex#exportGraph()</title>
 <path fill="none" stroke="red" stroke-width="1.2" stroke-dasharray="5,2" d="M717.98,-32.01C717.98,-26.03 717.98,-21 717.98,-21 717.98,-21 311.73,-21 311.73,-21 311.73,-21 311.73,-22 311.73,-22"/>
 <polygon fill="red" stroke="red" stroke-width="1.2" points="308.23,-19.17 311.73,-29.17 315.23,-19.17 308.23,-19.17"/>
 </g>
-<!-- com.example.chunker.ChunkerMain#main(String[])#part2&#45;&gt;com.example.chunker.index.GraphIndex#exportGraph() -->
+<!-- com.smolnij.chunker.ChunkerMain#main(String[])#part2&#45;&gt;index.com.smolnij.chunker.GraphIndex#exportGraph() -->
 <g id="edge9" class="edge">
 <title>com.example.chunker.ChunkerMain#main(String[])#part2&#45;&gt;com.example.chunker.index.GraphIndex#exportGraph()</title>
 <path fill="none" stroke="red" stroke-width="1.2" stroke-dasharray="5,2" d="M668.02,-31.92C668.02,-28.49 668.02,-26 668.02,-26 668.02,-26 343.2,-26 343.2,-26 343.2,-26 343.2,-26.89 343.2,-26.89"/>
 <polygon fill="red" stroke="red" stroke-width="1.2" points="339.7,-23.1 343.2,-33.1 346.7,-23.1 339.7,-23.1"/>
 </g>
-<!-- com.example.chunker.ChunkerMain#main(String[])#part2&#45;&gt;com.example.chunker.model.CodeChunk#toPromptFormat() -->
+<!-- com.smolnij.chunker.ChunkerMain#main(String[])#part2&#45;&gt;model.com.smolnij.chunker.CodeChunk#toPromptFormat() -->
 <g id="edge4" class="edge">
 <title>com.example.chunker.ChunkerMain#main(String[])#part2&#45;&gt;com.example.chunker.model.CodeChunk#toPromptFormat()</title>
 <path fill="none" stroke="red" stroke-width="1.2" stroke-dasharray="5,2" d="M621.32,-45C621.32,-45 583.09,-45 583.09,-45"/>
 <polygon fill="red" stroke="red" stroke-width="1.2" points="583.09,-41.5 573.09,-45 583.09,-48.5 583.09,-41.5"/>
 </g>
-<!-- com.example.chunker.ChunkerMain#main(String[])#part2&#45;&gt;com.example.chunker.model.CodeChunk#toPromptFormat() -->
+<!-- com.smolnij.chunker.ChunkerMain#main(String[])#part2&#45;&gt;model.com.smolnij.chunker.CodeChunk#toPromptFormat() -->
 <g id="edge10" class="edge">
 <title>com.example.chunker.ChunkerMain#main(String[])#part2&#45;&gt;com.example.chunker.model.CodeChunk#toPromptFormat()</title>
 <path fill="none" stroke="red" stroke-width="1.2" stroke-dasharray="5,2" d="M621.32,-58C621.32,-58 583.09,-58 583.09,-58"/>
 <polygon fill="red" stroke="red" stroke-width="1.2" points="583.09,-54.5 573.09,-58 583.09,-61.5 583.09,-54.5"/>
 </g>
-<!-- com.example.chunker.ChunkerMain#main(String[])#part3 -->
+<!-- com.smolnij.chunker.ChunkerMain#main(String[])#part3 -->
 <g id="node5" class="node">
 <title>com.example.chunker.ChunkerMain#main(String[])#part3</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="886" cy="-51.51" rx="74.95" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="886" y="-53.46" font-family="Arial" font-size="9.00">main</text>
 <text xml:space="preserve" text-anchor="middle" x="886" y="-42.96" font-family="Arial" font-size="9.00">(129 tokens, L38&#45;149)</text>
 </g>
-<!-- com.example.chunker.ChunkerMain#main(String[])#part3&#45;&gt;com.example.chunker.index.GraphIndex#exportGraph() -->
+<!-- com.smolnij.chunker.ChunkerMain#main(String[])#part3&#45;&gt;index.com.smolnij.chunker.GraphIndex#exportGraph() -->
 <g id="edge5" class="edge">
 <title>com.example.chunker.ChunkerMain#main(String[])#part3&#45;&gt;com.example.chunker.index.GraphIndex#exportGraph()</title>
 <path fill="none" stroke="red" stroke-width="1.2" stroke-dasharray="5,2" d="M930.97,-34.64C930.97,-19.62 930.97,0 930.97,0 930.97,0 248.8,0 248.8,0 248.8,0 248.8,-23.11 248.8,-23.11"/>
 <polygon fill="red" stroke="red" stroke-width="1.2" points="245.3,-23.11 248.8,-33.11 252.3,-23.11 245.3,-23.11"/>
 </g>
-<!-- com.example.chunker.ChunkerMain#main(String[])#part3&#45;&gt;com.example.chunker.index.GraphIndex#exportGraph() -->
+<!-- com.smolnij.chunker.ChunkerMain#main(String[])#part3&#45;&gt;index.com.smolnij.chunker.GraphIndex#exportGraph() -->
 <g id="edge11" class="edge">
 <title>com.example.chunker.ChunkerMain#main(String[])#part3&#45;&gt;com.example.chunker.index.GraphIndex#exportGraph()</title>
 <path fill="none" stroke="red" stroke-width="1.2" stroke-dasharray="5,2" d="M900.99,-30.97C900.99,-18.51 900.99,-5 900.99,-5 900.99,-5 280.27,-5 280.27,-5 280.27,-5 280.27,-19.16 280.27,-19.16"/>
 <polygon fill="red" stroke="red" stroke-width="1.2" points="276.77,-19.16 280.27,-29.16 283.77,-19.16 276.77,-19.16"/>
 </g>
-<!-- com.example.chunker.ChunkerMain#main(String[])#part3&#45;&gt;com.example.chunker.model.CodeChunk#toPromptFormat() -->
+<!-- com.smolnij.chunker.ChunkerMain#main(String[])#part3&#45;&gt;model.com.smolnij.chunker.CodeChunk#toPromptFormat() -->
 <g id="edge6" class="edge">
 <title>com.example.chunker.ChunkerMain#main(String[])#part3&#45;&gt;com.example.chunker.model.CodeChunk#toPromptFormat()</title>
 <path fill="none" stroke="red" stroke-width="1.2" stroke-dasharray="5,2" d="M871.01,-31.24C871.01,-20.7 871.01,-10 871.01,-10 871.01,-10 469.78,-10 469.78,-10 469.78,-10 469.78,-19.91 469.78,-19.91"/>
 <polygon fill="red" stroke="red" stroke-width="1.2" points="466.28,-19.91 469.78,-29.91 473.28,-19.91 466.28,-19.91"/>
 </g>
-<!-- com.example.chunker.ChunkerMain#main(String[])#part3&#45;&gt;com.example.chunker.model.CodeChunk#toPromptFormat() -->
+<!-- com.smolnij.chunker.ChunkerMain#main(String[])#part3&#45;&gt;model.com.smolnij.chunker.CodeChunk#toPromptFormat() -->
 <g id="edge12" class="edge">
 <title>com.example.chunker.ChunkerMain#main(String[])#part3&#45;&gt;com.example.chunker.model.CodeChunk#toPromptFormat()</title>
 <path fill="none" stroke="red" stroke-width="1.2" stroke-dasharray="5,2" d="M841.03,-35C841.03,-25.73 841.03,-16 841.03,-16 841.03,-16 522.22,-16 522.22,-16 522.22,-16 522.22,-20.27 522.22,-20.27"/>
 <polygon fill="red" stroke="red" stroke-width="1.2" points="518.72,-20.27 522.22,-30.27 525.72,-20.27 518.72,-20.27"/>
 </g>
-<!-- com.example.chunker.callgraph.CallGraphExtractor#extractCalls(MethodDeclaration, String) -->
+<!-- callgraph.com.smolnij.chunker.CallGraphExtractor#extractCalls(MethodDeclaration, String) -->
 <g id="node6" class="node">
 <title>com.example.chunker.callgraph.CallGraphExtractor#extractCalls(MethodDeclaration, String)</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="2260" cy="-51.51" rx="71.24" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="2260" y="-53.46" font-family="Arial" font-size="9.00">extractCalls</text>
 <text xml:space="preserve" text-anchor="middle" x="2260" y="-42.96" font-family="Arial" font-size="9.00">(171 tokens, L38&#45;51)</text>
 </g>
-<!-- com.example.chunker.callgraph.CallGraphExtractor#resolveCall(MethodCallExpr) -->
+<!-- callgraph.com.smolnij.chunker.CallGraphExtractor#resolveCall(MethodCallExpr) -->
 <g id="node7" class="node">
 <title>com.example.chunker.callgraph.CallGraphExtractor#resolveCall(MethodCallExpr)</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="2445" cy="-51.51" rx="71.24" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="2445" y="-53.46" font-family="Arial" font-size="9.00">resolveCall</text>
 <text xml:space="preserve" text-anchor="middle" x="2445" y="-42.96" font-family="Arial" font-size="9.00">(238 tokens, L60&#45;84)</text>
 </g>
-<!-- com.example.chunker.callgraph.CallGraphExtractor#buildUnresolvedSignature(MethodCallExpr) -->
+<!-- callgraph.com.smolnij.chunker.CallGraphExtractor#buildUnresolvedSignature(MethodCallExpr) -->
 <g id="node8" class="node">
 <title>com.example.chunker.callgraph.CallGraphExtractor#buildUnresolvedSignature(MethodCallExpr)</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="2646" cy="-51.51" rx="87.15" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="2646" y="-53.46" font-family="Arial" font-size="9.00">buildUnresolvedSignature</text>
 <text xml:space="preserve" text-anchor="middle" x="2646" y="-42.96" font-family="Arial" font-size="9.00">(133 tokens, L90&#45;104)</text>
 </g>
-<!-- com.example.chunker.JavaCodeChunker#process()#part1 -->
+<!-- com.smolnij.chunker.JavaCodeChunker#process()#part1 -->
 <g id="node9" class="node">
 <title>com.example.chunker.JavaCodeChunker#process()#part1</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="1079" cy="-51.51" rx="74.95" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="1079" y="-53.46" font-family="Arial" font-size="9.00">process</text>
 <text xml:space="preserve" text-anchor="middle" x="1079" y="-42.96" font-family="Arial" font-size="9.00">(504 tokens, L94&#45;164)</text>
 </g>
-<!-- com.example.chunker.JavaCodeChunker#process()#part2 -->
+<!-- com.smolnij.chunker.JavaCodeChunker#process()#part2 -->
 <g id="node10" class="node">
 <title>com.example.chunker.JavaCodeChunker#process()#part2</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="1271" cy="-51.51" rx="74.42" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="1271" y="-53.46" font-family="Arial" font-size="9.00">process</text>
 <text xml:space="preserve" text-anchor="middle" x="1271" y="-42.96" font-family="Arial" font-size="9.00">(115 tokens, L94&#45;164)</text>
 </g>
-<!-- com.example.chunker.JavaCodeChunker#processFile(Path) -->
+<!-- com.smolnij.chunker.JavaCodeChunker#processFile(Path) -->
 <g id="node11" class="node">
 <title>com.example.chunker.JavaCodeChunker#processFile(Path)</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="1467" cy="-51.51" rx="78.67" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="1467" y="-53.46" font-family="Arial" font-size="9.00">processFile</text>
 <text xml:space="preserve" text-anchor="middle" x="1467" y="-42.96" font-family="Arial" font-size="9.00">(203 tokens, L169&#45;194)</text>
 </g>
-<!-- com.example.chunker.JavaCodeChunker#processClass(ClassOrInterfaceDeclaration, String, String, List&lt;String&gt;)#part1 -->
+<!-- com.smolnij.chunker.JavaCodeChunker#processClass(ClassOrInterfaceDeclaration, String, String, List&lt;String&gt;)#part1 -->
 <g id="node12" class="node">
 <title>com.example.chunker.JavaCodeChunker#processClass(ClassOrInterfaceDeclaration, String, String, List&lt;String&gt;)#part1</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="1667" cy="-51.51" rx="78.67" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="1667" y="-53.46" font-family="Arial" font-size="9.00">processClass</text>
 <text xml:space="preserve" text-anchor="middle" x="1667" y="-42.96" font-family="Arial" font-size="9.00">(510 tokens, L199&#45;298)</text>
 </g>
-<!-- com.example.chunker.JavaCodeChunker#processClass(ClassOrInterfaceDeclaration, String, String, List&lt;String&gt;)#part2 -->
+<!-- com.smolnij.chunker.JavaCodeChunker#processClass(ClassOrInterfaceDeclaration, String, String, List&lt;String&gt;)#part2 -->
 <g id="node13" class="node">
 <title>com.example.chunker.JavaCodeChunker#processClass(ClassOrInterfaceDeclaration, String, String, List&lt;String&gt;)#part2</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="1867" cy="-51.51" rx="78.67" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="1867" y="-53.46" font-family="Arial" font-size="9.00">processClass</text>
 <text xml:space="preserve" text-anchor="middle" x="1867" y="-42.96" font-family="Arial" font-size="9.00">(216 tokens, L199&#45;298)</text>
 </g>
-<!-- com.example.chunker.JavaCodeChunker#buildClassSignature(ClassOrInterfaceDeclaration) -->
+<!-- com.smolnij.chunker.JavaCodeChunker#buildClassSignature(ClassOrInterfaceDeclaration) -->
 <g id="node14" class="node">
 <title>com.example.chunker.JavaCodeChunker#buildClassSignature(ClassOrInterfaceDeclaration)</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="2067" cy="-51.51" rx="78.67" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="2067" y="-53.46" font-family="Arial" font-size="9.00">buildClassSignature</text>
 <text xml:space="preserve" text-anchor="middle" x="2067" y="-42.96" font-family="Arial" font-size="9.00">(184 tokens, L304&#45;326)</text>
 </g>
-<!-- com.example.chunker.filter.BoilerplateDetector#isBoilerplateMethod(MethodDeclaration) -->
+<!-- filter.com.smolnij.chunker.BoilerplateDetector#isBoilerplateMethod(MethodDeclaration) -->
 <g id="node15" class="node">
 <title>com.example.chunker.filter.BoilerplateDetector#isBoilerplateMethod(MethodDeclaration)</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="2847" cy="-51.51" rx="71.24" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="2847" y="-53.46" font-family="Arial" font-size="9.00">isBoilerplateMethod</text>
 <text xml:space="preserve" text-anchor="middle" x="2847" y="-42.96" font-family="Arial" font-size="9.00">(214 tokens, L40&#45;64)</text>
 </g>
-<!-- com.example.chunker.filter.BoilerplateDetector#isDtoClass(ClassOrInterfaceDeclaration) -->
+<!-- filter.com.smolnij.chunker.BoilerplateDetector#isDtoClass(ClassOrInterfaceDeclaration) -->
 <g id="node16" class="node">
 <title>com.example.chunker.filter.BoilerplateDetector#isDtoClass(ClassOrInterfaceDeclaration)</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="3032" cy="-51.51" rx="71.24" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="3032" y="-53.46" font-family="Arial" font-size="9.00">isDtoClass</text>
 <text xml:space="preserve" text-anchor="middle" x="3032" y="-42.96" font-family="Arial" font-size="9.00">(328 tokens, L77&#45;97)</text>
 </g>
-<!-- com.example.chunker.index.GraphIndex#buildIndex(List&lt;CodeChunk&gt;) -->
+<!-- index.com.smolnij.chunker.GraphIndex#buildIndex(List&lt;CodeChunk&gt;) -->
 <g id="node17" class="node">
 <title>com.example.chunker.index.GraphIndex#buildIndex(List&lt;CodeChunk&gt;)</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="3217" cy="-51.51" rx="71.24" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="3217" y="-53.46" font-family="Arial" font-size="9.00">buildIndex</text>
 <text xml:space="preserve" text-anchor="middle" x="3217" y="-42.96" font-family="Arial" font-size="9.00">(197 tokens, L37&#45;59)</text>
 </g>
-<!-- com.example.chunker.index.GraphIndex#getContextExpanded(String, int) -->
+<!-- index.com.smolnij.chunker.GraphIndex#getContextExpanded(String, int) -->
 <g id="node18" class="node">
 <title>com.example.chunker.index.GraphIndex#getContextExpanded(String, int)</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="3410" cy="-51.51" rx="78.67" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="3410" y="-53.46" font-family="Arial" font-size="9.00">getContextExpanded</text>
 <text xml:space="preserve" text-anchor="middle" x="3410" y="-42.96" font-family="Arial" font-size="9.00">(462 tokens, L105&#45;144)</text>
 </g>
-<!-- com.example.chunker.index.GraphIndex#search(String) -->
+<!-- index.com.smolnij.chunker.GraphIndex#search(String) -->
 <g id="node19" class="node">
 <title>com.example.chunker.index.GraphIndex#search(String)</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="3610" cy="-51.51" rx="78.67" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="3610" y="-53.46" font-family="Arial" font-size="9.00">search</text>
 <text xml:space="preserve" text-anchor="middle" x="3610" y="-42.96" font-family="Arial" font-size="9.00">(163 tokens, L153&#45;163)</text>
 </g>
-<!-- com.example.chunker.tokenizer.TokenCounter#countTokens(String) -->
+<!-- tokenizer.com.smolnij.chunker.TokenCounter#countTokens(String) -->
 <g id="node20" class="node">
 <title>com.example.chunker.tokenizer.TokenCounter#countTokens(String)</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="3799" cy="-51.51" rx="67.53" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="3799" y="-53.46" font-family="Arial" font-size="9.00">countTokens</text>
 <text xml:space="preserve" text-anchor="middle" x="3799" y="-42.96" font-family="Arial" font-size="9.00">(47 tokens, L36&#45;41)</text>
 </g>
-<!-- com.example.chunker.tokenizer.TokenCounter#splitIfNeeded(String) -->
+<!-- tokenizer.com.smolnij.chunker.TokenCounter#splitIfNeeded(String) -->
 <g id="node21" class="node">
 <title>com.example.chunker.tokenizer.TokenCounter#splitIfNeeded(String)</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="3981" cy="-51.51" rx="71.24" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="3981" y="-53.46" font-family="Arial" font-size="9.00">splitIfNeeded</text>
 <text xml:space="preserve" text-anchor="middle" x="3981" y="-42.96" font-family="Arial" font-size="9.00">(298 tokens, L50&#45;86)</text>
 </g>
-<!-- com.example.chunker.visualize.GraphVisualizer#renderToPng(File) -->
+<!-- visualize.com.smolnij.chunker.GraphVisualizer#renderToPng(File) -->
 <g id="node22" class="node">
 <title>com.example.chunker.visualize.GraphVisualizer#renderToPng(File)</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="4163" cy="-51.51" rx="67.53" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="4163" y="-53.46" font-family="Arial" font-size="9.00">renderToPng</text>
 <text xml:space="preserve" text-anchor="middle" x="4163" y="-42.96" font-family="Arial" font-size="9.00">(60 tokens, L53&#45;55)</text>
 </g>
-<!-- com.example.chunker.visualize.GraphVisualizer#renderToSvg(File) -->
+<!-- visualize.com.smolnij.chunker.GraphVisualizer#renderToSvg(File) -->
 <g id="node23" class="node">
 <title>com.example.chunker.visualize.GraphVisualizer#renderToSvg(File)</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="4341" cy="-51.51" rx="67.53" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="4341" y="-53.46" font-family="Arial" font-size="9.00">renderToSvg</text>
 <text xml:space="preserve" text-anchor="middle" x="4341" y="-42.96" font-family="Arial" font-size="9.00">(60 tokens, L63&#45;65)</text>
 </g>
-<!-- com.example.chunker.visualize.GraphVisualizer#renderToFile(File, Format) -->
+<!-- visualize.com.smolnij.chunker.GraphVisualizer#renderToFile(File, Format) -->
 <g id="node24" class="node">
 <title>com.example.chunker.visualize.GraphVisualizer#renderToFile(File, Format)</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="4519" cy="-51.51" rx="67.53" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="4519" y="-53.46" font-family="Arial" font-size="9.00">renderToFile</text>
 <text xml:space="preserve" text-anchor="middle" x="4519" y="-42.96" font-family="Arial" font-size="9.00">(56 tokens, L70&#45;76)</text>
 </g>
-<!-- com.example.chunker.visualize.GraphVisualizer#buildGraph()#part1 -->
+<!-- visualize.com.smolnij.chunker.GraphVisualizer#buildGraph()#part1 -->
 <g id="node25" class="node">
 <title>com.example.chunker.visualize.GraphVisualizer#buildGraph()#part1</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="4704" cy="-51.51" rx="74.42" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="4704" y="-53.46" font-family="Arial" font-size="9.00">buildGraph</text>
 <text xml:space="preserve" text-anchor="middle" x="4704" y="-42.96" font-family="Arial" font-size="9.00">(511 tokens, L81&#45;185)</text>
 </g>
-<!-- com.example.chunker.visualize.GraphVisualizer#buildGraph()#part2 -->
+<!-- visualize.com.smolnij.chunker.GraphVisualizer#buildGraph()#part2 -->
 <g id="node26" class="node">
 <title>com.example.chunker.visualize.GraphVisualizer#buildGraph()#part2</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="4896" cy="-51.51" rx="74.95" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="4896" y="-53.46" font-family="Arial" font-size="9.00">buildGraph</text>
 <text xml:space="preserve" text-anchor="middle" x="4896" y="-42.96" font-family="Arial" font-size="9.00">(316 tokens, L81&#45;185)</text>
 </g>
-<!-- com.example.chunker.visualize.GraphVisualizer#main(String[])#part1 -->
+<!-- visualize.com.smolnij.chunker.GraphVisualizer#main(String[])#part1 -->
 <g id="node27" class="node">
 <title>com.example.chunker.visualize.GraphVisualizer#main(String[])#part1</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="5093" cy="-51.51" rx="78.67" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="5093" y="-53.46" font-family="Arial" font-size="9.00">main</text>
 <text xml:space="preserve" text-anchor="middle" x="5093" y="-42.96" font-family="Arial" font-size="9.00">(495 tokens, L201&#45;264)</text>
 </g>
-<!-- com.example.chunker.visualize.GraphVisualizer#main(String[])#part2 -->
+<!-- visualize.com.smolnij.chunker.GraphVisualizer#main(String[])#part2 -->
 <g id="node28" class="node">
 <title>com.example.chunker.visualize.GraphVisualizer#main(String[])#part2</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="5293" cy="-51.51" rx="78.67" ry="20.51"/>
 <text xml:space="preserve" text-anchor="middle" x="5293" y="-53.46" font-family="Arial" font-size="9.00">main</text>
 <text xml:space="preserve" text-anchor="middle" x="5293" y="-42.96" font-family="Arial" font-size="9.00">(348 tokens, L201&#45;264)</text>
 </g>
-<!-- com.example.chunker.visualize.GraphVisualizer#detectSourceRoots(Path) -->
+<!-- visualize.com.smolnij.chunker.GraphVisualizer#detectSourceRoots(Path) -->
 <g id="node29" class="node">
 <title>com.example.chunker.visualize.GraphVisualizer#detectSourceRoots(Path)</title>
 <ellipse fill="#fff3e0" stroke="#fb8c00" cx="5493" cy="-51.51" rx="78.67" ry="20.51"/>

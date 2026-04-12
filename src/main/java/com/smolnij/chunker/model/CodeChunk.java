@@ -50,7 +50,7 @@ public class CodeChunk {
     // ── Chunking metadata ──
     private int partIndex = 0;                       // 0 = whole method; 1..N = sub-chunks
     private int totalParts = 1;
-    private transient boolean isBoilerplate = false;           // true → skip indexing
+    private boolean isBoilerplate = false;           // true → skip indexing
 
     // ── Graph edges for retrieval ──
     private String parentClass;                      // edge → class node

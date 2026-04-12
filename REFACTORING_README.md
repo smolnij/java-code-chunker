@@ -159,7 +159,7 @@ $env:EMBEDDING_URL = "http://localhost:1234/v1/embeddings"
 java -jar target\java-code-chunker-1.0-SNAPSHOT.jar "C:\path\to\your\java\repo" "chunker-output" 512
 ```
 
-**Entry point:** `com.example.chunker.ChunkerMain`
+**Entry point:** `com.smolnij.chunker.ChunkerMain`
 
 This does:
 1. Parses all Java files using JavaParser with Symbol Solver
@@ -174,7 +174,7 @@ This does:
 
 ### Mode 1: Retrieval Only
 
-**Class:** `com.example.chunker.retrieval.RetrievalMain`
+**Class:** `retrieval.com.smolnij.chunker.RetrievalMain`
 
 Runs hybrid Graph-RAG retrieval and outputs LLM-ready context. No refactoring.
 
@@ -184,7 +184,7 @@ $env:NEO4J_PASSWORD = "your-password"
 $env:EMBEDDING_URL = "http://localhost:1234/v1/embeddings"
 
 java -cp target\java-code-chunker-1.0-SNAPSHOT.jar `
-  com.example.chunker.retrieval.RetrievalMain `
+  retrieval.com.smolnij.chunker.RetrievalMain `
   "Find all methods related to user creation" `
   --output context.txt --debug
 ```
@@ -198,7 +198,7 @@ java -cp target\java-code-chunker-1.0-SNAPSHOT.jar `
 
 ### Mode 2: Pipeline Refactoring
 
-**Class:** `com.example.chunker.refactor.RefactorMain`
+**Class:** `refactor.com.smolnij.chunker.RefactorMain`
 
 Fixed pipeline: Retrieve → Analyze → Refactor → Safety check. The LLM does
 not call tools; context is pre-fetched.
@@ -208,7 +208,7 @@ $env:NEO4J_URI = "bolt://localhost:7687"
 $env:NEO4J_PASSWORD = "your-password"
 
 java -cp target\java-code-chunker-1.0-SNAPSHOT.jar `
-  com.example.chunker.refactor.RefactorMain `
+  refactor.com.smolnij.chunker.RefactorMain `
   "Refactor createUser to use async" `
   --output result.txt
 ```
@@ -224,7 +224,7 @@ java -cp target\java-code-chunker-1.0-SNAPSHOT.jar `
 
 ### Mode 3: Agentic Refactoring
 
-**Class:** `com.example.chunker.refactor.AgentRefactorMain`
+**Class:** `refactor.com.smolnij.chunker.AgentRefactorMain`
 
 The LLM autonomously decides when to call retrieval tools using LangChain4j
 function calling. It reasons about what context it needs.
@@ -234,7 +234,7 @@ $env:NEO4J_URI = "bolt://localhost:7687"
 $env:NEO4J_PASSWORD = "your-password"
 
 java -cp target\java-code-chunker-1.0-SNAPSHOT.jar `
-  com.example.chunker.refactor.AgentRefactorMain `
+  refactor.com.smolnij.chunker.AgentRefactorMain `
   "Refactor createUser to use CompletableFuture" `
   --output result.txt --debug
 ```
@@ -251,7 +251,7 @@ java -cp target\java-code-chunker-1.0-SNAPSHOT.jar `
 
 ### Mode 4: Worker/Judge Loop
 
-**Class:** `com.example.chunker.ralph.RalphMain`
+**Class:** `ralph.com.smolnij.chunker.RalphMain`
 
 A "Ralph Wiggum" loop: a naive worker attempts refactoring, a strict judge
 evaluates it, and the worker retries with judge feedback until approved.
@@ -261,7 +261,7 @@ $env:NEO4J_URI = "bolt://localhost:7687"
 $env:NEO4J_PASSWORD = "your-password"
 
 java -cp target\java-code-chunker-1.0-SNAPSHOT.jar `
-  com.example.chunker.ralph.RalphMain `
+  ralph.com.smolnij.chunker.RalphMain `
   "Refactor createUser to async" `
   --output result.txt
 ```
@@ -280,7 +280,7 @@ java -cp target\java-code-chunker-1.0-SNAPSHOT.jar `
 
 ### Mode 5: Safe Refactoring Loop — Single Machine
 
-**Class:** `com.example.chunker.safeloop.SafeLoopMain`
+**Class:** `safeloop.com.smolnij.chunker.SafeLoopMain`
 
 The full self-improving safe refactoring loop. Combines agentic tool-calling
 with a confidence-gated safety analyzer. Both LLMs run on the same machine.
@@ -322,7 +322,7 @@ $env:SAFELOOP_REFACTOR_MODEL = "qwen2.5-coder-32b"
 $env:SAFELOOP_ANALYZER_MODEL = "qwen2.5-coder-32b"
 
 java -cp target\java-code-chunker-1.0-SNAPSHOT.jar `
-  com.example.chunker.safeloop.SafeLoopMain `
+  safeloop.com.smolnij.chunker.SafeLoopMain `
   "Refactor createUser to async" `
   --threshold 0.85 --max-iterations 5 --output result.txt
 ```
@@ -360,7 +360,7 @@ java -cp target\java-code-chunker-1.0-SNAPSHOT.jar `
 
 ### Mode 6: Distributed Safe Refactoring — Multi-Machine
 
-**Class:** `com.example.chunker.safeloop.distributed.DistributedSafeLoopMain`
+**Class:** `distributed.safeloop.com.smolnij.chunker.DistributedSafeLoopMain`
 
 Planner-driven distributed refactoring across **two separate LLM machines**.
 The Planner–Analyzer has full authority and drives everything autonomously
@@ -406,7 +406,7 @@ $env:REFACTOR_MACHINE_MODEL = "qwen2.5-coder-32b"
 $env:ANALYZER_MACHINE_MODEL = "qwen2.5-coder-32b"
 
 java -cp target\java-code-chunker-1.0-SNAPSHOT.jar `
-  com.example.chunker.safeloop.distributed.DistributedSafeLoopMain `
+  distributed.safeloop.com.smolnij.chunker.DistributedSafeLoopMain `
   "Refactor createUser to async" `
   --threshold 0.9 --output result.txt --debug
 ```
@@ -459,7 +459,7 @@ java -jar target\java-code-chunker-1.0-SNAPSHOT.jar "C:\your\repo" "chunker-outp
 
 # 5. Run the safe refactoring loop
 java -cp target\java-code-chunker-1.0-SNAPSHOT.jar `
-  com.example.chunker.safeloop.SafeLoopMain `
+  safeloop.com.smolnij.chunker.SafeLoopMain `
   "Refactor createUser to use CompletableFuture" `
   --threshold 0.85
 ```
@@ -542,7 +542,7 @@ $env:DIST_MAX_PLANNER_STEPS = "8"
 
 # --- Run ---
 java -cp target\java-code-chunker-1.0-SNAPSHOT.jar `
-  com.example.chunker.safeloop.distributed.DistributedSafeLoopMain `
+  distributed.safeloop.com.smolnij.chunker.DistributedSafeLoopMain `
   "Refactor createUser to async" `
   --threshold 0.9 --output result.txt --debug
 ```
