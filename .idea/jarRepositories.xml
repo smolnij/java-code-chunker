@@ -2,9 +2,24 @@
 <project version="4">
   <component name="RemoteRepositoriesConfiguration">
     <remote-repository>
+      <option name="id" value="df-releases-maven-hosted" />
+      <option name="name" value="df-releases-maven-hosted" />
+      <option name="url" value="https://nrm.us.equifax.com/repository/df-releases-maven-hosted/" />
+    </remote-repository>
+    <remote-repository>
+      <option name="id" value="asa-drw-releases-maven-hosted" />
+      <option name="name" value="asa-drw-releases-maven-hosted" />
+      <option name="url" value="https://nrm.us.equifax.com/repository/asa-drw-releases-maven-hosted/" />
+    </remote-repository>
+    <remote-repository>
+      <option name="id" value="eo-dataprotection-releases" />
+      <option name="name" value="eo-dataprotection-releases" />
+      <option name="url" value="https://nrm.us.equifax.com/repository/eo-dataprotection-releases-maven-hosted/" />
+    </remote-repository>
+    <remote-repository>
       <option name="id" value="central" />
-      <option name="name" value="Central Repository" />
-      <option name="url" value="https://repo.maven.apache.org/maven2" />
+      <option name="name" value="central" />
+      <option name="url" value="https://nrm.us.equifax.com/repository/cs-cp-maven-group/" />
     </remote-repository>
     <remote-repository>
       <option name="id" value="central" />
@@ -12,9 +27,24 @@
       <option name="url" value="https://repo1.maven.org/maven2" />
     </remote-repository>
     <remote-repository>
+      <option name="id" value="nexus-efx" />
+      <option name="name" value="nexus-efx" />
+      <option name="url" value="https://nrm.us.equifax.com/repository/cs-cp-maven-group/" />
+    </remote-repository>
+    <remote-repository>
+      <option name="id" value="df-bigfoot-release-maven-hosted" />
+      <option name="name" value="df-bigfoot-release-maven-hosted" />
+      <option name="url" value="https://nrm.us.equifax.com/repository/df-bigfoot-release-maven-hosted/" />
+    </remote-repository>
+    <remote-repository>
       <option name="id" value="jboss.community" />
       <option name="name" value="JBoss Community repository" />
       <option name="url" value="https://repository.jboss.org/nexus/content/repositories/public/" />
+    </remote-repository>
+    <remote-repository>
+      <option name="id" value="nexus-usis-acis-modernization" />
+      <option name="name" value="nexus-usis-acis-modernization" />
+      <option name="url" value="https://nrm.us.equifax.com/repository/usis-acis-modernization-maven-hosted/" />
     </remote-repository>
   </component>
 </project>

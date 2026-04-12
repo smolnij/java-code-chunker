@@ -41,32 +41,32 @@ java-code-chunker/
 Each chunk is formatted as:
 
 ```
-Class: MainPhase
-Fully Qualified: com.xxx.xx.MainPhase
-File: plugins/src/main/java/.../MainPhase.java
-Class Signature: public class MainPhase
+Class: MainPhaseService
+Fully Qualified: com.eee.MainPhaseService
+File: plugins/src/main/java/.../MainPhaseService.java
+Class Signature: public class MainPhaseService
 Class Annotations: @RequiredArgsConstructor
 Fields:
   - private final ContractService contractService;
   - private final SegmentationService segmentationService;
 
 Method:
-  - public EnrichedRecord process(CreditRecord creditRecord)
+  - public PaymentRecord process(CommercialCreditPaymentLegalPurposedRecord PaymentRecord)
   Lines: 19-40
   Tokens: 187
 
 Calls:
-  - com.xxx...ContractService#computeMaxContracts(CreditRecord)
-  - com.xxx...ContractService#computeContractsToUse(CreditRecord)
-  - com.xxx...SService#computeSRecord(...)
+  - com.eee...ContractService#computeMaxContractsCountPerAssetType(CommercialCreditPaymentLegalPurposedRecord)
+  - com.eee...ContractService#computeContractsToUse(CommercialCreditPaymentLegalPurposedRecord)
+  - com.eee...SegmentationService#computeSegmentationRecord(...)
   - this.isToFilter(...)
   - this.buildStep2Output(...)
 
 Called By:
-  - com.xxx...MainPhase#execute(...)
+  - com.eee...MainPhase#execute(...)
 
 Code:
-public EnrichedRecord process(...) {
+public PaymentRecord process(...) {
     ...
 }
 ```
@@ -86,7 +86,7 @@ public EnrichedRecord process(...) {
 cd C:\dev\src\java-code-chunker
 mvn clean package -q
 
-# Run 
+# Run (defaults to your Payment repo)
 java -jar target\java-code-chunker-1.0-SNAPSHOT.jar
 
 # Run with custom arguments
@@ -95,11 +95,11 @@ java -jar target\java-code-chunker-1.0-SNAPSHOT.jar "C:\path\to\repo" "output-di
 
 ### Arguments
 
-| Arg | Default               | Description |
-|---|-----------------------|---|
-| `repoRoot` | `C:/dev/src/reporoot` | Path to Java repository |
-| `outputDir` | `chunker-output`      | Where to write output files |
-| `maxTokens` | `512`                 | Max tokens per chunk before splitting |
+| Arg | Default | Description |
+|---|---|---|
+| `repoRoot` | `C:/dev/src/BAP0010429_US_Payment_CommercialCreditOffline` | Path to Java repository |
+| `outputDir` | `chunker-output` | Where to write output files |
+| `maxTokens` | `512` | Max tokens per chunk before splitting |
 
 ## Using with LM-Studio
 

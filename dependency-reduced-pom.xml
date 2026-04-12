@@ -10,6 +10,10 @@
   <build>
     <plugins>
       <plugin>
+        <artifactId>maven-resources-plugin</artifactId>
+        <version>3.0.2</version>
+      </plugin>
+      <plugin>
         <artifactId>maven-compiler-plugin</artifactId>
         <version>3.13.0</version>
         <configuration>
@@ -49,11 +53,13 @@
     </plugins>
   </build>
   <properties>
-    <javaparser.version>3.26.4</javaparser.version>
-    <maven.compiler.source>17</maven.compiler.source>
     <maven.compiler.target>17</maven.compiler.target>
+    <javaparser.version>3.26.4</javaparser.version>
     <gson.version>2.12.1</gson.version>
+    <maven.compiler.source>17</maven.compiler.source>
     <jtokkit.version>1.1.0</jtokkit.version>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <neo4j.driver.version>5.27.0</neo4j.driver.version>
+    <langchain4j.version>1.0.0-beta1</langchain4j.version>
   </properties>
 </project>

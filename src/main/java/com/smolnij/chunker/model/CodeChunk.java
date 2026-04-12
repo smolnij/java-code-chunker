@@ -1,4 +1,4 @@
-package com.example.chunker.model;
+package com.smolnij.chunker.model;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -50,7 +50,7 @@ public class CodeChunk {
     // ── Chunking metadata ──
     private int partIndex = 0;                       // 0 = whole method; 1..N = sub-chunks
     private int totalParts = 1;
-    private boolean isBoilerplate = false;           // true → skip indexing
+    private transient boolean isBoilerplate = false;           // true → skip indexing
 
     // ── Graph edges for retrieval ──
     private String parentClass;                      // edge → class node
