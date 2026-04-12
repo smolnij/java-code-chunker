@@ -53,7 +53,7 @@ public class ChunkerMain {
         // ── Parse CLI arguments ──
         Path repoRoot = Path.of(args.length > 0
             ? args[0]
-            : "C:/dev/src/BAP0010429_US_Payment_CommercialCreditOffline");
+            : "/home/smola/dev/src/AI_tools/java_code_chunker");
 
         Path outputDir = Path.of(args.length > 1
             ? args[1]
