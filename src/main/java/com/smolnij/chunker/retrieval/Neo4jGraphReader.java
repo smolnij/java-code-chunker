@@ -32,6 +32,50 @@ public class Neo4jGraphReader implements AutoCloseable {
     }
 
     // ═══════════════════════════════════════════════════════════════
+    // Vector index management
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Ensure the Neo4j vector index exists, creating it if necessary.
+     * This must be called before any {@link #vectorSearch} invocation.
+     *
+     * <p>Requires Neo4j 5.11+ with vector index support.
+     * The index is created with {@code IF NOT EXISTS} so it is safe to call repeatedly.
+     */
+    public void ensureVectorIndex() {
+        String indexName = config.getVectorIndexName();
+        int dimensions = config.getEmbeddingDimensions();
+
+        try (Session session = driver.session()) {
+            // Check if the index already exists
+            boolean exists = session.executeRead(tx -> {
+                Result r = tx.run("SHOW INDEXES YIELD name WHERE name = $name RETURN name",
+                        Map.of("name", indexName));
+                return r.hasNext();
+            });
+
+            if (exists) {
+                System.out.println("✓ Vector index '" + indexName + "' already exists.");
+                return;
+            }
+
+            // Create the vector index
+            session.executeWrite(tx -> {
+                tx.run(
+                    "CREATE VECTOR INDEX " + indexName + " IF NOT EXISTS " +
+                    "FOR (m:Method) ON (m.embedding) " +
+                    "OPTIONS {indexConfig: {" +
+                    " `vector.dimensions`: " + dimensions + "," +
+                    " `vector.similarity_function`: 'cosine'" +
+                    "}}"
+                );
+                return null;
+            });
+            System.out.println("✓ Created vector index '" + indexName + "' (dims=" + dimensions + ").");
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
     // Step 1 — Resolve entry point
     // ═══════════════════════════════════════════════════════════════
 

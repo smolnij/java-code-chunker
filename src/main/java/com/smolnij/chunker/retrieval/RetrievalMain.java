@@ -87,6 +87,10 @@ public class RetrievalMain {
         // ── Run retrieval ──
         try (Neo4jGraphReader reader = new Neo4jGraphReader(neo4jUri, neo4jUser, neo4jPassword, config);
              EmbeddingService embeddings = new LmStudioEmbeddingService(config)) {
+
+            // Ensure the vector index exists before any vector search
+            reader.ensureVectorIndex();
+
             HybridRetriever retriever = new HybridRetriever(reader, embeddings, config);
 
             HybridRetriever.RetrievalResponse response = retriever.retrieve(query);

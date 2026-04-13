@@ -215,6 +215,10 @@ public class DistributedSafeLoopMain {
         // ── Build components ──
         try (Neo4jGraphReader reader = new Neo4jGraphReader(neo4jUri, neo4jUser, neo4jPassword, retrievalConfig);
              EmbeddingService embeddings = new LmStudioEmbeddingService(retrievalConfig)) {
+
+            // Ensure the vector index exists before any vector search
+            reader.ensureVectorIndex();
+
             HybridRetriever retriever = new HybridRetriever(reader, embeddings, retrievalConfig);
 
             // 🟦 Generator chat service (REFACTOR_MACHINE, no tool calling)

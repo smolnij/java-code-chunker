@@ -167,6 +167,10 @@ public class SafeLoopMain {
         // ── Build components ──
         try (Neo4jGraphReader reader = new Neo4jGraphReader(neo4jUri, neo4jUser, neo4jPassword, retrievalConfig);
              EmbeddingService embeddings = new LmStudioEmbeddingService(retrievalConfig)) {
+
+            // Ensure the vector index exists before any vector search
+            reader.ensureVectorIndex();
+
             HybridRetriever retriever = new HybridRetriever(reader, embeddings, retrievalConfig);
 
             // Build the RefactorConfig for the agent (maps SafeLoopConfig fields)
