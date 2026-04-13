@@ -203,8 +203,9 @@ public class ChunkerMain {
                         retrievalConfig.getEmbeddingDimensions()
                     );
 
-                    EmbeddingService embeddingService = new LmStudioEmbeddingService(retrievalConfig);
-                    store.storeEmbeddings(graphModel, embeddingService);
+                    try (EmbeddingService embeddingService = new LmStudioEmbeddingService(retrievalConfig)) {
+                        store.storeEmbeddings(graphModel, embeddingService);
+                    }
                 } else {
                     System.out.println("ℹ Embedding storage skipped (set EMBEDDING_URL to enable).");
                 }

@@ -106,10 +106,10 @@ public class RalphMain {
         System.out.println();
 
         // ── Run ──
-        try (Neo4jGraphReader reader = new Neo4jGraphReader(neo4jUri, neo4jUser, neo4jPassword, retrievalConfig)) {
+        try (Neo4jGraphReader reader = new Neo4jGraphReader(neo4jUri, neo4jUser, neo4jPassword, retrievalConfig);
+             EmbeddingService embeddings = new LmStudioEmbeddingService(retrievalConfig)) {
             // ── Step 1: Hybrid retrieval ──
             System.out.println("━━━ Step 1: Hybrid Retrieval ━━━━━━━━━━━━━━━━━━━━━━━━━");
-            EmbeddingService embeddings = new LmStudioEmbeddingService(retrievalConfig);
             HybridRetriever retriever = new HybridRetriever(reader, embeddings, retrievalConfig);
             HybridRetriever.RetrievalResponse retrievalResponse = retriever.retrieve(query);
             System.out.println("Retrieved " + retrievalResponse.getResults().size() + " chunks");
@@ -120,61 +120,53 @@ public class RalphMain {
 
             // ── Step 3: Build chat services ──
             // Worker and judge can use different models/temperatures
-            ChatService workerChat = new LmStudioChatService(
-                ralphConfig.getChatUrl(),
-                ralphConfig.getWorkerModel(),
-                ralphConfig.getWorkerTemperature(),
-                ralphConfig.getTopP(),
-                ralphConfig.getMaxTokens()
-            );
-
-            ChatService judgeChat;
-            if (!ralphConfig.getJudgeModel().isEmpty() &&
-                !ralphConfig.getJudgeModel().equals(ralphConfig.getWorkerModel())) {
-                // Different model for judge
-                judgeChat = new LmStudioChatService(
-                    ralphConfig.getChatUrl(),
-                    ralphConfig.getJudgeModel(),
-                    ralphConfig.getJudgeTemperature(),
-                    ralphConfig.getTopP(),
-                    ralphConfig.getMaxTokens()
-                );
-            } else {
-                // Same endpoint, but with judge temperature
-                judgeChat = new LmStudioChatService(
+            try (ChatService workerChat = new LmStudioChatService(
                     ralphConfig.getChatUrl(),
                     ralphConfig.getWorkerModel(),
-                    ralphConfig.getJudgeTemperature(),
+                    ralphConfig.getWorkerTemperature(),
                     ralphConfig.getTopP(),
-                    ralphConfig.getMaxTokens()
-                );
-            }
+                    ralphConfig.getMaxTokens());
+                 ChatService judgeChat = ralphConfig.getJudgeModel().isEmpty() ||
+                     ralphConfig.getJudgeModel().equals(ralphConfig.getWorkerModel())
+                     ? new LmStudioChatService(
+                         ralphConfig.getChatUrl(),
+                         ralphConfig.getWorkerModel(),
+                         ralphConfig.getJudgeTemperature(),
+                         ralphConfig.getTopP(),
+                         ralphConfig.getMaxTokens())
+                     : new LmStudioChatService(
+                         ralphConfig.getChatUrl(),
+                         ralphConfig.getJudgeModel(),
+                         ralphConfig.getJudgeTemperature(),
+                         ralphConfig.getTopP(),
+                         ralphConfig.getMaxTokens())) {
 
-            // ── Step 4: Run the Ralph Loop ──
-            RalphLoop loop = new RalphLoop(workerChat, judgeChat, ralphConfig);
-            RalphResult result = loop.run(task);
+                // ── Step 4: Run the Ralph Loop ──
+                RalphLoop loop = new RalphLoop(workerChat, judgeChat, ralphConfig);
+                RalphResult result = loop.run(task);
 
-            // ── Output ──
-            String output = result.toDisplayString();
+                // ── Output ──
+                String output = result.toDisplayString();
 
-            if (outputFile != null) {
-                Files.writeString(Path.of(outputFile), output);
-                System.out.println("✓ Result written to " + outputFile);
-            } else {
-                System.out.println();
-                System.out.println(output);
-            }
-
-            if (debug) {
-                System.out.println();
-                System.out.println("── Debug: Full Verdict History ─────────────────────────");
-                for (int i = 0; i < result.getVerdictHistory().size(); i++) {
-                    JudgeVerdict v = result.getVerdictHistory().get(i);
-                    System.out.println("  Round " + (i + 1) + ":");
-                    System.out.println("    " + v);
-                    System.out.println("    Raw: " + v.getRawResponse().substring(0,
-                        Math.min(200, v.getRawResponse().length())) + "...");
+                if (outputFile != null) {
+                    Files.writeString(Path.of(outputFile), output);
+                    System.out.println("✓ Result written to " + outputFile);
+                } else {
                     System.out.println();
+                    System.out.println(output);
+                }
+
+                if (debug) {
+                    System.out.println();
+                    System.out.println("── Debug: Full Verdict History ─────────────────────────");
+                    for (int i = 0; i < result.getVerdictHistory().size(); i++) {
+                        JudgeVerdict v = result.getVerdictHistory().get(i);
+                        System.out.println("  Round " + (i + 1) + ":");
+                        System.out.println("    " + v);
+                        System.out.println("    Raw: " + v.getRawResponse().substring(0,
+                            Math.min(200, v.getRawResponse().length())) + "...");
+                        System.out.println();
+                    }
                 }
             }
 

@@ -70,6 +70,13 @@
             <version>${langchain4j.version}</version>
         </dependency>
 
+        <!-- Apache HttpClient 5 for HTTP communication with LLM endpoints -->
+        <dependency>
+            <groupId>org.apache.httpcomponents.client5</groupId>
+            <artifactId>httpclient5</artifactId>
+            <version>5.4.3</version>
+        </dependency>
+
         <!-- Graph visualization (renders DOT to PNG without external Graphviz install) -->
         <dependency>
             <groupId>guru.nidi</groupId>
@@ -82,13 +89,6 @@
             <artifactId>graphviz-java-all-j2v8</artifactId>
             <version>0.18.1</version>
         </dependency>
-
-        <dependency>
-            <groupId>org.apache.httpcomponents.client5</groupId>
-            <artifactId>httpclient5</artifactId>
-            <version>5.4.1</version>
-        </dependency>
-
     </dependencies>
 
     <build>

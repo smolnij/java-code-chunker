@@ -85,8 +85,8 @@ public class RetrievalMain {
         System.out.println();
 
         // ── Run retrieval ──
-        try (Neo4jGraphReader reader = new Neo4jGraphReader(neo4jUri, neo4jUser, neo4jPassword, config)) {
-            EmbeddingService embeddings = new LmStudioEmbeddingService(config);
+        try (Neo4jGraphReader reader = new Neo4jGraphReader(neo4jUri, neo4jUser, neo4jPassword, config);
+             EmbeddingService embeddings = new LmStudioEmbeddingService(config)) {
             HybridRetriever retriever = new HybridRetriever(reader, embeddings, config);
 
             HybridRetriever.RetrievalResponse response = retriever.retrieve(query);

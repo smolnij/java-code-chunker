@@ -165,8 +165,8 @@ public class SafeLoopMain {
         System.out.println();
 
         // ── Build components ──
-        try (Neo4jGraphReader reader = new Neo4jGraphReader(neo4jUri, neo4jUser, neo4jPassword, retrievalConfig)) {
-            EmbeddingService embeddings = new LmStudioEmbeddingService(retrievalConfig);
+        try (Neo4jGraphReader reader = new Neo4jGraphReader(neo4jUri, neo4jUser, neo4jPassword, retrievalConfig);
+             EmbeddingService embeddings = new LmStudioEmbeddingService(retrievalConfig)) {
             HybridRetriever retriever = new HybridRetriever(reader, embeddings, retrievalConfig);
 
             // Build the RefactorConfig for the agent (maps SafeLoopConfig fields)
@@ -188,61 +188,61 @@ public class SafeLoopMain {
             RefactorAgent agent = new RefactorAgent(refactorConfig, agentTools);
 
             // Analyzer chat service (separate, no tool calling — just evaluation)
-            ChatService analyzerChat = new LmStudioChatService(
-                safeConfig.getChatUrl(),
-                safeConfig.getAnalyzerModel(),
-                safeConfig.getAnalyzerTemperature(),
-                safeConfig.getTopP(),
-                safeConfig.getMaxTokens()
-            );
+            try (ChatService analyzerChat = new LmStudioChatService(
+                    safeConfig.getChatUrl(),
+                    safeConfig.getAnalyzerModel(),
+                    safeConfig.getAnalyzerTemperature(),
+                    safeConfig.getTopP(),
+                    safeConfig.getMaxTokens())) {
 
-            // SafeLoop tools (programmatic graph management)
-            SafeLoopTools loopTools = new SafeLoopTools(retriever, reader, safeConfig);
+                // SafeLoop tools (programmatic graph management)
+                SafeLoopTools loopTools = new SafeLoopTools(retriever, reader, safeConfig);
 
-            // ── Build and run the loop ──
-            SafeRefactorLoop loop = new SafeRefactorLoop(agent, analyzerChat, loopTools, agentTools, safeConfig);
+                // ── Build and run the loop ──
+                SafeRefactorLoop loop = new SafeRefactorLoop(agent, analyzerChat, loopTools, agentTools, safeConfig);
 
-            System.out.println("━━━ Starting Safe Refactoring Loop ━━━━━━━━━━━━━━━━━━━");
-            System.out.println();
-
-            SafeLoopResult result = loop.run(query);
-
-            // ── Output ──
-            String output = result.toDisplayString();
-
-            if (outputFile != null) {
-                Files.writeString(Path.of(outputFile), output);
-                System.out.println("✓ Result written to " + outputFile);
-            } else {
+                System.out.println("━━━ Starting Safe Refactoring Loop ━━━━━━━━━━━━━━━━━━━");
                 System.out.println();
-                System.out.println(output);
-            }
 
-            if (debug) {
-                System.out.println();
-                System.out.println("── Debug: Full Verdict History ─────────────────────────");
-                for (int i = 0; i < result.getVerdictHistory().size(); i++) {
-                    SafetyVerdict v = result.getVerdictHistory().get(i);
-                    System.out.println("  Round " + (i + 1) + ":");
-                    System.out.println("    " + v);
-                    System.out.println("    Risks: " + v.getRisks().size());
-                    for (SafetyVerdict.Risk risk : v.getRisks()) {
-                        System.out.println("      " + risk);
-                    }
-                    if (!v.getMissingContext().isEmpty()) {
-                        System.out.println("    Needs: " + v.getMissingContext());
-                    }
-                    System.out.println("    Raw: " + v.getRawResponse().substring(0,
-                        Math.min(300, v.getRawResponse().length())) + "...");
+                SafeLoopResult result = loop.run(query);
+
+                // ── Output ──
+                String output = result.toDisplayString();
+
+                if (outputFile != null) {
+                    Files.writeString(Path.of(outputFile), output);
+                    System.out.println("✓ Result written to " + outputFile);
+                } else {
                     System.out.println();
+                    System.out.println(output);
                 }
 
-                System.out.println("── Debug: Raw Agent Response ───────────────────────────");
-                System.out.println(result.getRawAgentResponse());
-            }
+                if (debug) {
+                    System.out.println();
+                    System.out.println("── Debug: Full Verdict History ─────────────────────────");
+                    for (int i = 0; i < result.getVerdictHistory().size(); i++) {
+                        SafetyVerdict v = result.getVerdictHistory().get(i);
+                        System.out.println("  Round " + (i + 1) + ":");
+                        System.out.println("    " + v);
+                        System.out.println("    Risks: " + v.getRisks().size());
+                        for (SafetyVerdict.Risk risk : v.getRisks()) {
+                            System.out.println("      " + risk);
+                        }
+                        if (!v.getMissingContext().isEmpty()) {
+                            System.out.println("    Needs: " + v.getMissingContext());
+                        }
+                        System.out.println("    Raw: " + v.getRawResponse().substring(0,
+                            Math.min(300, v.getRawResponse().length())) + "...");
+                        System.out.println();
+                    }
 
-            // Exit with appropriate code
-            System.exit(result.isSafe() ? 0 : 1);
+                    System.out.println("── Debug: Raw Agent Response ───────────────────────────");
+                    System.out.println(result.getRawAgentResponse());
+                }
+
+                // Exit with appropriate code
+                System.exit(result.isSafe() ? 0 : 1);
+            }
 
         } catch (Exception e) {
             System.err.println("ERROR: " + e.getMessage());

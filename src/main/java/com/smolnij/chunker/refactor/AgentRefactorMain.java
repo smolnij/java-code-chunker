@@ -117,8 +117,8 @@ public class AgentRefactorMain {
         System.out.println();
 
         // ── Build components ──
-        try (Neo4jGraphReader reader = new Neo4jGraphReader(neo4jUri, neo4jUser, neo4jPassword, retrievalConfig)) {
-            EmbeddingService embeddings = new LmStudioEmbeddingService(retrievalConfig);
+        try (Neo4jGraphReader reader = new Neo4jGraphReader(neo4jUri, neo4jUser, neo4jPassword, retrievalConfig);
+             EmbeddingService embeddings = new LmStudioEmbeddingService(retrievalConfig)) {
             HybridRetriever retriever = new HybridRetriever(reader, embeddings, retrievalConfig);
 
             // Create tools with configured chunk limit

@@ -113,8 +113,8 @@ public class RefactorMain {
         System.out.println();
 
         // ── Run ──
-        try (Neo4jGraphReader reader = new Neo4jGraphReader(neo4jUri, neo4jUser, neo4jPassword, retrievalConfig)) {
-            EmbeddingService embeddings = new LmStudioEmbeddingService(retrievalConfig);
+        try (Neo4jGraphReader reader = new Neo4jGraphReader(neo4jUri, neo4jUser, neo4jPassword, retrievalConfig);
+             EmbeddingService embeddings = new LmStudioEmbeddingService(retrievalConfig)) {
             HybridRetriever retriever = new HybridRetriever(reader, embeddings, retrievalConfig);
 
             String output;
@@ -134,16 +134,17 @@ public class RefactorMain {
                 }
             } else {
                 // ── Legacy pipeline mode ──
-                ChatService chatService = new LmStudioChatService(refactorConfig);
-                RefactorLoop loop = new RefactorLoop(retriever, reader, chatService, refactorConfig);
-                RefactorLoop.RefactorResult result = loop.run(query);
+                try (ChatService chatService = new LmStudioChatService(refactorConfig)) {
+                    RefactorLoop loop = new RefactorLoop(retriever, reader, chatService, refactorConfig);
+                    RefactorLoop.RefactorResult result = loop.run(query);
 
-                output = result.toDisplayString();
+                    output = result.toDisplayString();
 
-                if (debug) {
-                    System.out.println();
-                    System.out.println("── Debug: Raw LLM Response ─────────────────────────────");
-                    System.out.println(result.getRawLlmResponse());
+                    if (debug) {
+                        System.out.println();
+                        System.out.println("── Debug: Raw LLM Response ─────────────────────────────");
+                        System.out.println(result.getRawLlmResponse());
+                    }
                 }
             }
 

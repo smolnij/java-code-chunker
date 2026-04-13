@@ -4,24 +4,31 @@ import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import org.apache.hc.client5.http.classic.methods.HttpPost;
+import org.apache.hc.client5.http.config.ConnectionConfig;
+import org.apache.hc.client5.http.config.RequestConfig;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
+import org.apache.hc.core5.http.ContentType;
+import org.apache.hc.core5.http.io.entity.EntityUtils;
+import org.apache.hc.core5.http.io.entity.StringEntity;
+import org.apache.hc.core5.util.Timeout;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /**
  * {@link ChatService} implementation that calls an OpenAI-compatible
  * {@code /v1/chat/completions} endpoint with SSE streaming support.
  *
- * <p>Designed for LM-Studio but works with any compatible backend
+ * <p>Uses Apache HttpClient 5 — auto-closeable for proper resource management.
+ * Designed for LM-Studio but works with any compatible backend
  * (Ollama, vLLM, OpenAI, etc.).
  *
  * <h3>SSE wire format (LM-Studio):</h3>
@@ -44,19 +51,12 @@ public class LmStudioChatService implements ChatService {
     private final double temperature;
     private final double topP;
     private final int maxTokens;
-    private final HttpClient httpClient;
+    private final CloseableHttpClient httpClient;
     private final Gson gson;
 
     public LmStudioChatService(RefactorConfig config) {
-        this.url = config.getChatUrl();
-        this.model = config.getChatModel();
-        this.temperature = config.getTemperature();
-        this.topP = config.getTopP();
-        this.maxTokens = config.getMaxTokens();
-        this.httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(30))
-            .build();
-        this.gson = new Gson();
+        this(config.getChatUrl(), config.getChatModel(),
+             config.getTemperature(), config.getTopP(), config.getMaxTokens());
     }
 
     public LmStudioChatService(String url, String model, double temperature, double topP, int maxTokens) {
@@ -65,10 +65,23 @@ public class LmStudioChatService implements ChatService {
         this.temperature = temperature;
         this.topP = topP;
         this.maxTokens = maxTokens;
-        this.httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(30))
-            .build();
         this.gson = new Gson();
+
+        var connManager = PoolingHttpClientConnectionManagerBuilder.create()
+            .setDefaultConnectionConfig(ConnectionConfig.custom()
+                .setConnectTimeout(30, TimeUnit.SECONDS)
+                .setSocketTimeout(5, TimeUnit.MINUTES)
+                .build())
+            .build();
+
+        RequestConfig requestConfig = RequestConfig.custom()
+            .setResponseTimeout(Timeout.ofMinutes(5))
+            .build();
+
+        this.httpClient = HttpClients.custom()
+            .setConnectionManager(connManager)
+            .setDefaultRequestConfig(requestConfig)
+            .build();
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -79,31 +92,31 @@ public class LmStudioChatService implements ChatService {
     public String chat(String systemPrompt, String userPrompt) {
         String requestBody = buildRequestBody(systemPrompt, userPrompt, false);
 
-        HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create(url))
-            .header("Content-Type", "application/json")
-            .timeout(Duration.ofMinutes(5))
-            .POST(HttpRequest.BodyPublishers.ofString(requestBody))
-            .build();
+        HttpPost httpPost = new HttpPost(url);
+        httpPost.setHeader("Content-Type", "application/json");
+        httpPost.setEntity(new StringEntity(requestBody, ContentType.APPLICATION_JSON));
 
-        HttpResponse<String> response;
+        String responseBody;
         try {
-            response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-        } catch (IOException | InterruptedException e) {
+            responseBody = httpClient.execute(httpPost, response -> {
+                int code = response.getCode();
+                String entity = EntityUtils.toString(response.getEntity());
+                if (code != 200) {
+                    throw new IOException(
+                        "Chat endpoint returned HTTP " + code + ": " + entity
+                    );
+                }
+                return entity;
+            });
+        } catch (IOException e) {
             throw new RuntimeException("Failed to call chat endpoint at " + url + ": " + e.getMessage(), e);
         }
 
-        if (response.statusCode() != 200) {
-            throw new RuntimeException(
-                "Chat endpoint returned HTTP " + response.statusCode() + ": " + response.body()
-            );
-        }
-
         // Parse non-streaming response
-        JsonObject json = gson.fromJson(response.body(), JsonObject.class);
+        JsonObject json = gson.fromJson(responseBody, JsonObject.class);
         JsonArray choices = json.getAsJsonArray("choices");
         if (choices == null || choices.isEmpty()) {
-            throw new RuntimeException("No choices in chat response: " + response.body());
+            throw new RuntimeException("No choices in chat response: " + responseBody);
         }
 
         JsonObject message = choices.get(0).getAsJsonObject().getAsJsonObject("message");
@@ -118,82 +131,73 @@ public class LmStudioChatService implements ChatService {
     public String chatStream(String systemPrompt, String userPrompt, Consumer<String> onToken) {
         String requestBody = buildRequestBody(systemPrompt, userPrompt, true);
 
-        HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create(url))
-            .header("Content-Type", "application/json")
-            .header("Accept", "text/event-stream")
-            .timeout(Duration.ofMinutes(5))
-            .POST(HttpRequest.BodyPublishers.ofString(requestBody))
-            .build();
+        HttpPost httpPost = new HttpPost(url);
+        httpPost.setHeader("Content-Type", "application/json");
+        httpPost.setHeader("Accept", "text/event-stream");
+        httpPost.setEntity(new StringEntity(requestBody, ContentType.APPLICATION_JSON));
 
-        // Use InputStream handler so we can read SSE lines incrementally
-        HttpResponse<InputStream> response;
         try {
-            response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
-        } catch (IOException | InterruptedException e) {
-            throw new RuntimeException("Failed to call streaming chat endpoint at " + url + ": " + e.getMessage(), e);
-        }
+            return httpClient.execute(httpPost, response -> {
+                int code = response.getCode();
 
-        if (response.statusCode() != 200) {
-            // Read error body
-            try (InputStream is = response.body()) {
-                String errorBody = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-                throw new RuntimeException(
-                    "Chat endpoint returned HTTP " + response.statusCode() + ": " + errorBody
-                );
-            } catch (IOException e) {
-                throw new RuntimeException("Chat endpoint returned HTTP " + response.statusCode(), e);
-            }
-        }
-
-        // Read SSE stream line by line
-        StringBuilder fullResponse = new StringBuilder();
-
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
-
-            String line;
-            while ((line = reader.readLine()) != null) {
-                // SSE lines are prefixed with "data: "
-                if (!line.startsWith("data: ")) {
-                    continue; // skip empty lines, comments, event: lines
+                if (code != 200) {
+                    String errorBody = EntityUtils.toString(response.getEntity());
+                    throw new IOException(
+                        "Chat endpoint returned HTTP " + code + ": " + errorBody
+                    );
                 }
 
-                String data = line.substring(6).trim();
+                // Read SSE stream line by line
+                StringBuilder fullResponse = new StringBuilder();
 
-                // Terminal signal
-                if ("[DONE]".equals(data)) {
-                    break;
-                }
+                try (InputStream is = response.getEntity().getContent();
+                     BufferedReader reader = new BufferedReader(
+                         new InputStreamReader(is, StandardCharsets.UTF_8))) {
 
-                // Parse the JSON delta
-                try {
-                    JsonObject chunk = gson.fromJson(data, JsonObject.class);
-                    JsonArray choices = chunk.getAsJsonArray("choices");
-                    if (choices == null || choices.isEmpty()) continue;
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        // SSE lines are prefixed with "data: "
+                        if (!line.startsWith("data: ")) {
+                            continue; // skip empty lines, comments, event: lines
+                        }
 
-                    JsonObject choice = choices.get(0).getAsJsonObject();
-                    JsonObject delta = choice.getAsJsonObject("delta");
-                    if (delta == null) continue;
+                        String data = line.substring(6).trim();
 
-                    JsonElement contentEl = delta.get("content");
-                    if (contentEl != null && !contentEl.isJsonNull()) {
-                        String token = contentEl.getAsString();
-                        fullResponse.append(token);
-                        if (onToken != null) {
-                            onToken.accept(token);
+                        // Terminal signal
+                        if ("[DONE]".equals(data)) {
+                            break;
+                        }
+
+                        // Parse the JSON delta
+                        try {
+                            JsonObject chunk = gson.fromJson(data, JsonObject.class);
+                            JsonArray choices = chunk.getAsJsonArray("choices");
+                            if (choices == null || choices.isEmpty()) continue;
+
+                            JsonObject choice = choices.get(0).getAsJsonObject();
+                            JsonObject delta = choice.getAsJsonObject("delta");
+                            if (delta == null) continue;
+
+                            JsonElement contentEl = delta.get("content");
+                            if (contentEl != null && !contentEl.isJsonNull()) {
+                                String token = contentEl.getAsString();
+                                fullResponse.append(token);
+                                if (onToken != null) {
+                                    onToken.accept(token);
+                                }
+                            }
+                        } catch (Exception e) {
+                            // Skip malformed SSE lines
+                            System.err.println("WARN: Skipping malformed SSE chunk: " + data);
                         }
                     }
-                } catch (Exception e) {
-                    // Skip malformed SSE lines
-                    System.err.println("WARN: Skipping malformed SSE chunk: " + data);
                 }
-            }
-        } catch (IOException e) {
-            throw new RuntimeException("Error reading SSE stream: " + e.getMessage(), e);
-        }
 
-        return fullResponse.toString();
+                return fullResponse.toString();
+            });
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to call streaming chat endpoint at " + url + ": " + e.getMessage(), e);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -227,6 +231,11 @@ public class LmStudioChatService implements ChatService {
         body.addProperty("stream", stream);
 
         return gson.toJson(body);
+    }
+
+    @Override
+    public void close() throws Exception {
+        httpClient.close();
     }
 }
 

@@ -8,7 +8,7 @@ import java.util.List;
  * <p>Implementations may call a local LM-Studio endpoint, OpenAI API,
  * or any other OpenAI-compatible {@code /v1/embeddings} service.
  */
-public interface EmbeddingService {
+public interface EmbeddingService extends AutoCloseable {
 
     /**
      * Embed a single text string into a dense vector.
@@ -25,5 +25,14 @@ public interface EmbeddingService {
      * @return list of embedding vectors (same order as input)
      */
     List<float[]> embedBatch(List<String> texts);
+
+    /**
+     * Release underlying resources (e.g. HTTP connections).
+     * Default implementation is a no-op for backward compatibility.
+     */
+    @Override
+    default void close() throws Exception {
+        // no-op by default
+    }
 }
 

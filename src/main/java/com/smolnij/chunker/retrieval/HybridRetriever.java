@@ -221,6 +221,7 @@ public class HybridRetriever {
                     candidates.putAll(vectorChunks);
                 }
             } catch (Exception e) {
+//                There is no such vector schema index: method_embeddings
                 e.printStackTrace();
                 System.err.println("WARN: Vector supplement failed: " + e.getMessage());
             }

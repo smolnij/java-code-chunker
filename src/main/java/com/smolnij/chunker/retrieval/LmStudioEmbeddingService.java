@@ -4,21 +4,27 @@ import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import org.apache.hc.client5.http.classic.methods.HttpPost;
+import org.apache.hc.client5.http.config.ConnectionConfig;
+import org.apache.hc.client5.http.config.RequestConfig;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
+import org.apache.hc.core5.http.ContentType;
+import org.apache.hc.core5.http.io.entity.EntityUtils;
+import org.apache.hc.core5.http.io.entity.StringEntity;
+import org.apache.hc.core5.util.Timeout;
 
 import java.io.IOException;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * {@link EmbeddingService} implementation that calls an OpenAI-compatible
  * {@code /v1/embeddings} REST endpoint (e.g. LM-Studio, Ollama, vLLM, OpenAI).
  *
- * <p>Uses JDK 17 {@link HttpClient} — no extra dependencies needed.
+ * <p>Uses Apache HttpClient 5 — auto-closeable for proper resource management.
  *
  * <h3>Expected endpoint contract:</h3>
  * <pre>
@@ -43,7 +49,7 @@ public class LmStudioEmbeddingService implements EmbeddingService {
 
     private final String url;
     private final String model;
-    private final HttpClient httpClient;
+    private final CloseableHttpClient httpClient;
     private final Gson gson;
 
     /**
@@ -53,10 +59,23 @@ public class LmStudioEmbeddingService implements EmbeddingService {
     public LmStudioEmbeddingService(String url, String model) {
         this.url = url;
         this.model = model;
-        this.httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(30))
-            .build();
         this.gson = new Gson();
+
+        var connManager = PoolingHttpClientConnectionManagerBuilder.create()
+            .setDefaultConnectionConfig(ConnectionConfig.custom()
+                .setConnectTimeout(30, TimeUnit.SECONDS)
+                .setSocketTimeout(120, TimeUnit.SECONDS)
+                .build())
+            .build();
+
+        RequestConfig requestConfig = RequestConfig.custom()
+            .setResponseTimeout(Timeout.ofSeconds(120))
+            .build();
+
+        this.httpClient = HttpClients.custom()
+            .setConnectionManager(connManager)
+            .setDefaultRequestConfig(requestConfig)
+            .build();
     }
 
     /**
@@ -106,28 +125,28 @@ public class LmStudioEmbeddingService implements EmbeddingService {
         String requestBody = gson.toJson(body);
 
         // ── Send HTTP request ──
-        HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create(url))
-            .header("Content-Type", "application/json")
-            .timeout(Duration.ofSeconds(120))
-            .POST(HttpRequest.BodyPublishers.ofString(requestBody))
-            .build();
+        HttpPost httpPost = new HttpPost(url);
+        httpPost.setHeader("Content-Type", "application/json");
+        httpPost.setEntity(new StringEntity(requestBody, ContentType.APPLICATION_JSON));
 
-        HttpResponse<String> response;
+        String responseBody;
         try {
-            response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-        } catch (IOException | InterruptedException e) {
+            responseBody = httpClient.execute(httpPost, response -> {
+                int code = response.getCode();
+                String entity = EntityUtils.toString(response.getEntity());
+                if (code != 200) {
+                    throw new IOException(
+                        "Embedding endpoint returned HTTP " + code + ": " + entity
+                    );
+                }
+                return entity;
+            });
+        } catch (IOException e) {
             throw new RuntimeException("Failed to call embedding endpoint at " + url + ": " + e.getMessage(), e);
         }
 
-        if (response.statusCode() != 200) {
-            throw new RuntimeException(
-                "Embedding endpoint returned HTTP " + response.statusCode() + ": " + response.body()
-            );
-        }
-
         // ── Parse response ──
-        JsonObject responseJson = gson.fromJson(response.body(), JsonObject.class);
+        JsonObject responseJson = gson.fromJson(responseBody, JsonObject.class);
         JsonArray dataArray = responseJson.getAsJsonArray("data");
 
         // The API may return embeddings out of order — sort by index
@@ -174,5 +193,9 @@ public class LmStudioEmbeddingService implements EmbeddingService {
         double denom = Math.sqrt(normA) * Math.sqrt(normB);
         return denom == 0.0 ? 0.0 : dot / denom;
     }
-}
 
+    @Override
+    public void close() throws Exception {
+        httpClient.close();
+    }
+}

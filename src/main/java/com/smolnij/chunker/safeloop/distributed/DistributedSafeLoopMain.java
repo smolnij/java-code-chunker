@@ -213,84 +213,84 @@ public class DistributedSafeLoopMain {
         System.out.println();
 
         // ── Build components ──
-        try (Neo4jGraphReader reader = new Neo4jGraphReader(neo4jUri, neo4jUser, neo4jPassword, retrievalConfig)) {
-            EmbeddingService embeddings = new LmStudioEmbeddingService(retrievalConfig);
+        try (Neo4jGraphReader reader = new Neo4jGraphReader(neo4jUri, neo4jUser, neo4jPassword, retrievalConfig);
+             EmbeddingService embeddings = new LmStudioEmbeddingService(retrievalConfig)) {
             HybridRetriever retriever = new HybridRetriever(reader, embeddings, retrievalConfig);
 
             // 🟦 Generator chat service (REFACTOR_MACHINE, no tool calling)
             // The Generator is now a plain chat service — the Planner calls it via refactorCode()
-            ChatService generatorChat = new LmStudioChatService(
-                distConfig.getRefactorUrl(),
-                distConfig.getRefactorModel(),
-                distConfig.getRefactorTemperature(),
-                distConfig.getTopP(),
-                distConfig.getMaxTokens()
-            );
+            try (ChatService generatorChat = new LmStudioChatService(
+                    distConfig.getRefactorUrl(),
+                    distConfig.getRefactorModel(),
+                    distConfig.getRefactorTemperature(),
+                    distConfig.getTopP(),
+                    distConfig.getMaxTokens())) {
 
-            // 🟩 Planner tools (retrieval runs locally, refactor delegates to Generator)
-            PlannerTools plannerTools = new PlannerTools(
-                retriever,
-                reader,
-                generatorChat,
-                distConfig.getMaxChunksPerRetrieval(),
-                distConfig.getMaxRetrievalDepth()
-            );
+                // 🟩 Planner tools (retrieval runs locally, refactor delegates to Generator)
+                PlannerTools plannerTools = new PlannerTools(
+                    retriever,
+                    reader,
+                    generatorChat,
+                    distConfig.getMaxChunksPerRetrieval(),
+                    distConfig.getMaxRetrievalDepth()
+                );
 
-            // 🟩 Planner–Analyzer agent (S_ANALYZE_MACHINE with tool calling)
-            PlannerAgent plannerAgent = new PlannerAgent(distConfig, plannerTools);
+                // 🟩 Planner–Analyzer agent (S_ANALYZE_MACHINE with tool calling)
+                PlannerAgent plannerAgent = new PlannerAgent(distConfig, plannerTools);
 
-            // ── Build and run the planner-driven loop ──
-            DistributedSafeRefactorLoop loop = new DistributedSafeRefactorLoop(
-                plannerAgent, distConfig);
+                // ── Build and run the planner-driven loop ──
+                DistributedSafeRefactorLoop loop = new DistributedSafeRefactorLoop(
+                    plannerAgent, distConfig);
 
-            System.out.println("━━━ Starting Planner-Driven Distributed Loop ━━━━━━━━━━━");
-            System.out.println();
-
-            SafeLoopResult result = loop.run(query);
-
-            // ── Output ──
-            String output = result.toDisplayString();
-
-            if (outputFile != null) {
-                Files.writeString(Path.of(outputFile), output);
-                System.out.println("✓ Result written to " + outputFile);
-            } else {
+                System.out.println("━━━ Starting Planner-Driven Distributed Loop ━━━━━━━━━━━");
                 System.out.println();
-                System.out.println(output);
-            }
 
-            if (debug) {
-                System.out.println();
-                System.out.println("── Debug: Full Verdict History ─────────────────────────");
-                for (int i = 0; i < result.getVerdictHistory().size(); i++) {
-                    SafetyVerdict v = result.getVerdictHistory().get(i);
-                    System.out.println("  Round " + (i + 1) + ":");
-                    System.out.println("    " + v);
-                    System.out.println("    Risks: " + v.getRisks().size());
-                    for (SafetyVerdict.Risk risk : v.getRisks()) {
-                        System.out.println("      " + risk);
-                    }
-                    if (!v.getMissingContext().isEmpty()) {
-                        System.out.println("    Needs: " + v.getMissingContext());
-                    }
-                    System.out.println("    Raw: " + v.getRawResponse().substring(0,
-                        Math.min(300, v.getRawResponse().length())) + "...");
+                SafeLoopResult result = loop.run(query);
+
+                // ── Output ──
+                String output = result.toDisplayString();
+
+                if (outputFile != null) {
+                    Files.writeString(Path.of(outputFile), output);
+                    System.out.println("✓ Result written to " + outputFile);
+                } else {
                     System.out.println();
+                    System.out.println(output);
                 }
 
-                System.out.println("── Debug: Raw Planner Response ─────────────────────────");
-                System.out.println(result.getRawAgentResponse());
+                if (debug) {
+                    System.out.println();
+                    System.out.println("── Debug: Full Verdict History ─────────────────────────");
+                    for (int i = 0; i < result.getVerdictHistory().size(); i++) {
+                        SafetyVerdict v = result.getVerdictHistory().get(i);
+                        System.out.println("  Round " + (i + 1) + ":");
+                        System.out.println("    " + v);
+                        System.out.println("    Risks: " + v.getRisks().size());
+                        for (SafetyVerdict.Risk risk : v.getRisks()) {
+                            System.out.println("      " + risk);
+                        }
+                        if (!v.getMissingContext().isEmpty()) {
+                            System.out.println("    Needs: " + v.getMissingContext());
+                        }
+                        System.out.println("    Raw: " + v.getRawResponse().substring(0,
+                            Math.min(300, v.getRawResponse().length())) + "...");
+                        System.out.println();
+                    }
 
-                System.out.println();
-                System.out.println("── Debug: Planner Stats ────────────────────────────────");
-                System.out.println("  Tool calls: " + plannerTools.getToolCallCount());
-                System.out.println("  Refactor delegations: " + plannerTools.getRefactorCallCount());
-                System.out.println("  Graph nodes retrieved: " + plannerTools.getTotalNodesRetrieved());
-                System.out.println("  Retrieved node IDs: " + plannerTools.getRetrievedNodeIds());
+                    System.out.println("── Debug: Raw Planner Response ─────────────────────────");
+                    System.out.println(result.getRawAgentResponse());
+
+                    System.out.println();
+                    System.out.println("── Debug: Planner Stats ────────────────────────────────");
+                    System.out.println("  Tool calls: " + plannerTools.getToolCallCount());
+                    System.out.println("  Refactor delegations: " + plannerTools.getRefactorCallCount());
+                    System.out.println("  Graph nodes retrieved: " + plannerTools.getTotalNodesRetrieved());
+                    System.out.println("  Retrieved node IDs: " + plannerTools.getRetrievedNodeIds());
+                }
+
+                // Exit with appropriate code
+                System.exit(result.isSafe() ? 0 : 1);
             }
-
-            // Exit with appropriate code
-            System.exit(result.isSafe() ? 0 : 1);
 
         } catch (Exception e) {
             System.err.println("ERROR: " + e.getMessage());
