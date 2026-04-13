@@ -62,11 +62,14 @@ import java.nio.file.Path;
  * Mistral, Llama 3.1+, or any model with tool-use capability).
  */
 public class SafeLoopMain {
+    public static final String NEO4J_DEFAULT_URL = "bolt://localhost:7687";
+    public static final String NEO4J_DEFAULT_USER = "neo4j";
+    public static final String NEO4J_DEFAULT_PASSWORD = "12345678";
 
     public static void main(String[] args) {
 
         // ── Parse arguments ──
-        String query = null;
+        String query = "Refactor RalphLoop to take prompt from file";
         String outputFile = null;
         boolean noStream = false;
         boolean debug = false;
@@ -141,9 +144,9 @@ public class SafeLoopMain {
             safeConfig = safeConfig.withStream(false);
         }
 
-        String neo4jUri = getConfigValue("NEO4J_URI", "neo4j.uri", null);
-        String neo4jUser = getConfigValue("NEO4J_USER", "neo4j.user", "neo4j");
-        String neo4jPassword = getConfigValue("NEO4J_PASSWORD", "neo4j.password", null);
+        String neo4jUri = getConfigValue("NEO4J_URI", "neo4j.uri", NEO4J_DEFAULT_URL);
+        String neo4jUser = getConfigValue("NEO4J_USER", "neo4j.user", NEO4J_DEFAULT_USER);
+        String neo4jPassword = getConfigValue("NEO4J_PASSWORD", "neo4j.password", NEO4J_DEFAULT_PASSWORD);
 
         if (neo4jUri == null || neo4jPassword == null) {
             System.err.println("ERROR: NEO4J_URI and NEO4J_PASSWORD must be set.");

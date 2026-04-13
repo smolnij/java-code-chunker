@@ -221,6 +221,7 @@ public class HybridRetriever {
                     candidates.putAll(vectorChunks);
                 }
             } catch (Exception e) {
+                e.printStackTrace();
                 System.err.println("WARN: Vector supplement failed: " + e.getMessage());
             }
         }
