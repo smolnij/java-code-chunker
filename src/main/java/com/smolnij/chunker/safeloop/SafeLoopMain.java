@@ -27,7 +27,7 @@ import java.nio.file.Path;
  *
  * <h3>Usage:</h3>
  * <pre>
- *   java -cp java-code-chunker.jar com.example.chunker.safeloop.SafeLoopMain "Refactor createUser to async"
+ *   java -cp java-code-chunker.jar com.smolnij.chunker.safeloop.SafeLoopMain "Refactor createUser to async"
  *
  *   Required environment variables / system properties:
  *     NEO4J_URI      / -Dneo4j.uri      — bolt URI (e.g. bolt://localhost:7687)
@@ -70,9 +70,9 @@ public class SafeLoopMain {
 
         // ── Parse arguments ──
         String query = "Refactor RalphLoop to take prompt from file";
-        String outputFile = null;
+        String outputFile = "/home/smola/llmout5";
         boolean noStream = false;
-        boolean debug = false;
+        boolean debug = true;
         Integer maxIterOverride = null;
         Double thresholdOverride = null;
 
