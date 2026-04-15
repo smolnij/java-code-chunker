@@ -69,7 +69,8 @@ public class SafeLoopMain {
     public static void main(String[] args) {
 
         // ── Parse arguments ──
-        String query = "Refactor RalphLoop to take prompt from file";
+        String query = "Suggest refactoring of RalphLoop to take prompt from file instead of from CLI. " +
+                "Don't change files, write your suggestion to output file. Do not use \"CHANGES\" tool, you don't have it";
         String outputFile = "/home/smola/llmout5";
         boolean noStream = false;
         boolean debug = true;

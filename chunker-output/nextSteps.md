@@ -1,3 +1,6 @@
+ASK QWEN: you've trained to use the "CHANGES", give the tool documentation, signature, spec, etc
+
+
 🧠 Step 4: Graph-Aware Scoring (IMPORTANT)
 
 Upgrade ranking:
