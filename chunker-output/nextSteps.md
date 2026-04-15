@@ -56,3 +56,24 @@ Step 2 — Subgraph: 0 nodes
 Step 3 — Candidates: 0 chunks
 Step 4 — Ranked 0 results
 Step 5 — Selected top-0 results
+
+What's missing for full path-based GraphRAG
+Capability
+Status
+Path extraction — Cypher shortestPath() / allShortestPaths() to return the actual sequence of nodes and edges between two methods
+❌ Not used anywhere (grep confirms zero hits)
+Path-based reasoning — "How does Controller.handleRequest reach Repository.save?" with the intermediate call chain exposed to the LLM
+❌ Not implemented
+Call chain tracing — Following a transitive dependency chain and presenting it as an ordered sequence
+❌ Listed as a future item ("trace call chain")
+Multi-hop reasoning — LLM walks the graph interactively, following edges step-by-step
+❌ Listed as future item #1 in nextSteps.md
+Subgraph structure — Presenting the retrieved subgraph as a graph (nodes + edges + directions) rather than as a flat list of code chunks
+❌ formatChunksForAgent() in SafeLoopTools renders chunks as a flat list with Calls: and Called by: metadata, but no graph topology
+What SafeLoop actually is
+SafeLoop is a graph-augmented RAG system — it uses the call graph to select better context (via BFS expansion, distance-weighted ranking, and coverage enforcement), but the graph structure itself is not exposed to the LLM for reasoning. The LLM sees:
+A flat list of code chunks
+Per-chunk metadata (Calls: ..., Called by: ...)
+AST diff results with caller counts
+It never sees an actual path like A → B → C → D connecting two methods, nor can it reason about why method A transitively depends on method D through a specific chain.
+In short: SafeLoop uses the graph for smart retrieval, not for path-based reasoning. The graph informs what context to retrieve, but the retrieved context is presented as a flat, unstructured list — the LLM doesn't see or reason over graph paths.
