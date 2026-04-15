@@ -36,8 +36,8 @@ import java.nio.file.Path;
  *     LLM_CHAT_MODEL            / -Dllm.chatModel            — model name (default: whatever is loaded)
  *     LLM_TEMPERATURE           / -Dllm.temperature          — sampling temperature (default: 0.1)
  *     LLM_MAX_TOKENS            / -Dllm.maxTokens            — max response tokens (default: 4096)
- *     REFACTOR_MAX_TOOL_CALLS   / -Drefactor.maxToolCalls    — max tool calls per conversation (default: 10)
- *     REFACTOR_CHAT_MEMORY_SIZE / -Drefactor.chatMemorySize  — sliding window size (default: 20)
+ *     REFACTOR_MAX_TOOL_CALLS   / -Drefactor.maxToolCalls    — max tool calls per conversation (default: 20)
+ *     REFACTOR_CHAT_MEMORY_SIZE / -Drefactor.chatMemorySize  — sliding window size (default: 40)
  *     REFACTOR_MAX_CHUNKS       / -Drefactor.maxChunks       — chunks per tool call (default: 6)
  *     EMBEDDING_URL             / -Dembedding.url            — embedding endpoint
  *

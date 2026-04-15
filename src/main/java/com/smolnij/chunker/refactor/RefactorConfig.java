@@ -18,8 +18,8 @@ package com.smolnij.chunker.refactor;
  *   maxRefinements   = 2      (how many expand-and-retry rounds)
  *   stream           = true   (SSE streaming from LM-Studio)
  *   agentMode        = false  (true → use LangChain4j agentic loop with tool calling)
- *   maxToolCalls     = 10     (safety cap on LLM tool invocations per conversation)
- *   chatMemorySize   = 20     (sliding window of messages for agent memory)
+ *   maxToolCalls     = 20     (safety cap on LLM tool invocations per conversation)
+ *   chatMemorySize   = 40     (sliding window of messages for agent memory)
  * </pre>
  */
 public class RefactorConfig {
@@ -44,8 +44,8 @@ public class RefactorConfig {
 
     // ── Agent mode (LangChain4j) ──
     private boolean agentMode = false;
-    private int maxToolCalls = 10;
-    private int chatMemorySize = 20;
+    private int maxToolCalls = 20;
+    private int chatMemorySize = 40;
 
     // ═══════════════════════════════════════════════════════════════
     // Factory

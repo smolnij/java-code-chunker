@@ -65,7 +65,7 @@ import java.time.Duration;
  * </pre>
  */
 public class PlannerAgent {
-
+    public static final int MAX_SEQUENTIAL_TOOLS_EXECUTIONS = 200;
     // ═══════════════════════════════════════════════════════════════
     // Planner AI Service interface
     // ═══════════════════════════════════════════════════════════════
@@ -164,6 +164,7 @@ public class PlannerAgent {
             .chatLanguageModel(chatModel)
             .chatMemory(chatMemory)
             .tools(tools)
+//            .maxSequentialToolsInvocations(MAX_SEQUENTIAL_TOOLS_EXECUTIONS)
             .build();
     }
 

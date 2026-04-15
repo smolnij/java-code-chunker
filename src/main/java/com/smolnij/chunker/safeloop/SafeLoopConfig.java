@@ -27,8 +27,8 @@ package com.smolnij.chunker.safeloop;
  *   safetyThreshold       = 0.9    (confidence ≥ this → SAFE)
  *   maxIterations         = 5      (hard cap on refine loops)
  *   maxChunks             = 8      (context chunks per retrieval)
- *   chatMemorySize        = 30     (sliding window for agent memory)
- *   maxToolCalls          = 15     (safety cap on tool invocations)
+ *   chatMemorySize        = 60     (sliding window for agent memory)
+ *   maxToolCalls          = 30     (safety cap on tool invocations)
  *   minCallerDepth        = 1      (ensure at least this many hops of callers)
  *   minCalleeDepth        = 1      (ensure at least this many hops of callees)
  *   stopOnNoNewNodes      = true   (stop loop if graph expansion yields nothing new)
@@ -57,8 +57,8 @@ public class SafeLoopConfig {
 
     // ── Context ──
     private int maxChunks = 8;
-    private int chatMemorySize = 30;
-    private int maxToolCalls = 15;
+    private int chatMemorySize = 60;
+    private int maxToolCalls = 30;
 
     // ── Graph coverage requirements ──
     private int minCallerDepth = 1;

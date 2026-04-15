@@ -39,8 +39,8 @@ import com.smolnij.chunker.safeloop.SafeLoopConfig;
  *   DIST_SAFETY_THRESHOLD    / -Ddist.safetyThreshold     — min confidence (default: 0.9)
  *   DIST_MAX_ITERATIONS      / -Ddist.maxIterations       — max loop iterations (default: 5)
  *   DIST_MAX_CHUNKS          / -Ddist.maxChunks           — context chunks (default: 8)
- *   DIST_CHAT_MEMORY_SIZE    / -Ddist.chatMemorySize      — agent memory window (default: 30)
- *   DIST_MAX_TOOL_CALLS      / -Ddist.maxToolCalls        — tool call cap (default: 15)
+ *   DIST_CHAT_MEMORY_SIZE    / -Ddist.chatMemorySize      — agent memory window (default: 60)
+ *   DIST_MAX_TOOL_CALLS      / -Ddist.maxToolCalls        — tool call cap (default: 30)
  *   DIST_MIN_CALLER_DEPTH    / -Ddist.minCallerDepth      — min caller hops (default: 1)
  *   DIST_MIN_CALLEE_DEPTH    / -Ddist.minCalleeDepth      — min callee hops (default: 1)
  *   DIST_STOP_NO_NEW_NODES   / -Ddist.stopOnNoNewNodes    — stop on convergence (default: true)
@@ -73,8 +73,8 @@ public class DistributedSafeLoopConfig {
 
     // ── Context ──
     private int maxChunks = 8;
-    private int chatMemorySize = 30;
-    private int maxToolCalls = 15;
+    private int chatMemorySize = 60;
+    private int maxToolCalls = 30;
 
     // ── Graph coverage requirements ──
     private int minCallerDepth = 1;

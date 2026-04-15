@@ -3,10 +3,17 @@ package com.smolnij.chunker.safeloop;
 import com.smolnij.chunker.refactor.ChatService;
 import com.smolnij.chunker.refactor.RefactorAgent;
 import com.smolnij.chunker.refactor.RefactorTools;
+import com.smolnij.chunker.refactor.diff.AstDiffEngine;
+import com.smolnij.chunker.refactor.diff.DiffScorer;
+import com.smolnij.chunker.refactor.diff.MethodDiff;
+import com.smolnij.chunker.refactor.diff.ScoredDiff;
+import com.smolnij.chunker.model.CodeChunk;
 import com.smolnij.chunker.retrieval.RetrievalResult;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.function.Consumer;
 
 /**
@@ -131,19 +138,43 @@ public class SafeRefactorLoop {
     private final RefactorTools agentTools;
     private final SafeLoopConfig config;
 
+    /** AST diff engine for structural comparison (null if not configured). */
+    private final AstDiffEngine diffEngine;
+
+    /** Graph-aware diff scorer (null if not configured). */
+    private final DiffScorer diffScorer;
+
     /** Callback for streaming progress updates. */
     private Consumer<String> progressCallback;
 
+    /**
+     * Construct without AST diff support (backward-compatible).
+     */
     public SafeRefactorLoop(RefactorAgent agent,
                             ChatService analyzerChat,
                             SafeLoopTools loopTools,
                             RefactorTools agentTools,
                             SafeLoopConfig config) {
+        this(agent, analyzerChat, loopTools, agentTools, config, null, null);
+    }
+
+    /**
+     * Construct with AST diff support for structural validation in Phase 4.
+     */
+    public SafeRefactorLoop(RefactorAgent agent,
+                            ChatService analyzerChat,
+                            SafeLoopTools loopTools,
+                            RefactorTools agentTools,
+                            SafeLoopConfig config,
+                            AstDiffEngine diffEngine,
+                            DiffScorer diffScorer) {
         this.agent = agent;
         this.analyzerChat = analyzerChat;
         this.loopTools = loopTools;
         this.agentTools = agentTools;
         this.config = config;
+        this.diffEngine = diffEngine;
+        this.diffScorer = diffScorer;
         this.progressCallback = System.out::print;
     }
 
@@ -169,6 +200,9 @@ public class SafeRefactorLoop {
 
         List<SafetyVerdict> verdictHistory = new ArrayList<>();
         String lastAgentResponse = "";
+        String lastAstDiffReport = "";
+        List<ScoredDiff> lastScoredDiffs = List.of();
+        double lastAstSafetyScore = 1.0;
         SafeLoopResult.TerminalReason terminalReason = SafeLoopResult.TerminalReason.MAX_ITERATIONS;
 
         try {
@@ -227,7 +261,9 @@ public class SafeRefactorLoop {
                 } else {
                     // Subsequent iterations: ask the agent to refine based on safety feedback
                     SafetyVerdict lastVerdict = verdictHistory.get(verdictHistory.size() - 1);
-                    String refinementPrompt = buildRefinementPrompt(lastVerdict, iteration);
+                    String refinementPrompt = buildRefinementPrompt(
+                            lastVerdict, iteration, lastAstDiffReport,
+                            lastScoredDiffs, lastAstSafetyScore);
                     lastAgentResponse = agent.getAssistant().chat(refinementPrompt);
                 }
 
@@ -237,7 +273,37 @@ public class SafeRefactorLoop {
                 // ── Phase 4: VALIDATE ──
                 System.out.println("━━━ " + iterLabel + ": Phase 4 — Safety Validation ━━━━━");
 
-                String analyzerPrompt = buildAnalyzerPrompt(userQuery, lastAgentResponse, iteration);
+                // Phase 4a: AST diff scoring (deterministic, if configured)
+                String astDiffReport = "";
+                double astSafetyScore = 1.0;
+                List<ScoredDiff> scoredDiffs = List.of();
+                if (diffEngine != null && diffScorer != null) {
+                    System.out.println("  ┌─ AST Diff ────────────────────────────────────────");
+                    scoredDiffs = computeAstDiffs(lastAgentResponse);
+                    if (!scoredDiffs.isEmpty()) {
+                        StringBuilder diffSb = new StringBuilder();
+                        diffSb.append("AST DIFF ANALYSIS (deterministic, ").append(scoredDiffs.size()).append(" methods):\n\n");
+                        for (ScoredDiff sd : scoredDiffs) {
+                            diffSb.append(sd.toDisplayString());
+                            astSafetyScore = Math.min(astSafetyScore, sd.getSafetyScore());
+                            System.out.println("  │ " + sd.getDiff().getChunkId()
+                                + ": score=" + String.format("%.2f", sd.getSafetyScore())
+                                + " callers=" + sd.getAffectedCallerCount());
+                        }
+                        astDiffReport = diffSb.toString();
+                    } else {
+                        System.out.println("  │ (no code blocks matched to graph methods)");
+                    }
+                    System.out.println("  │ Worst-case AST safety: " + String.format("%.2f", astSafetyScore));
+                    System.out.println("  └───────────────────────────────────────────────────");
+                }
+                // Store for next iteration's refinement prompt
+                lastAstDiffReport = astDiffReport;
+                lastScoredDiffs = scoredDiffs;
+                lastAstSafetyScore = astSafetyScore;
+
+                // Phase 4b: LLM analyzer evaluation (with AST diff injected)
+                String analyzerPrompt = buildAnalyzerPrompt(userQuery, lastAgentResponse, iteration, astDiffReport);
                 System.out.println("  ┌─ Analyzer ─────────────────────────────────────");
                 String analyzerResponse = analyzerChat.chat(ANALYZER_SYSTEM_PROMPT, analyzerPrompt);
                 System.out.println("  │ " + truncateForLog(analyzerResponse, 300).replace("\n", "\n  │ "));
@@ -344,8 +410,14 @@ public class SafeRefactorLoop {
 
     /**
      * Build the prompt for the analyzer LLM to evaluate a refactoring proposal.
+     *
+     * @param originalQuery the user's refactoring request
+     * @param agentResponse the agent's proposed refactoring
+     * @param iteration     current iteration index (0-based)
+     * @param astDiffReport AST diff analysis report (empty string if not available)
      */
-    private String buildAnalyzerPrompt(String originalQuery, String agentResponse, int iteration) {
+    private String buildAnalyzerPrompt(String originalQuery, String agentResponse,
+                                       int iteration, String astDiffReport) {
         StringBuilder sb = new StringBuilder();
 
         sb.append("TASK: Evaluate the safety of this proposed refactoring.\n\n");
@@ -360,6 +432,15 @@ public class SafeRefactorLoop {
         sb.append("Total methods retrieved: ").append(loopTools.getTotalNodesRetrieved()).append("\n");
         sb.append("Graph expansions performed: ").append(loopTools.getExpansionCount()).append("\n\n");
 
+        // Inject AST diff results (deterministic structural analysis)
+        if (astDiffReport != null && !astDiffReport.isEmpty()) {
+            sb.append("── DETERMINISTIC AST ANALYSIS (from JavaParser) ──────────\n");
+            sb.append("The following is a deterministic structural diff computed by parsing\n");
+            sb.append("the proposed code and comparing it against the original AST.\n");
+            sb.append("Use these facts to inform your safety assessment:\n\n");
+            sb.append(astDiffReport).append("\n");
+        }
+
         sb.append("Evaluate this refactoring against ALL safety criteria.\n");
         sb.append("Be thorough — check for broken signatures, missing deps, threading, and side effects.\n");
         sb.append("If you need to see specific methods to increase confidence, list them in NEEDS.\n");
@@ -368,16 +449,59 @@ public class SafeRefactorLoop {
     }
 
     /**
-     * Build a refinement prompt that feeds the analyzer's safety feedback back
-     * to the refactoring agent.
+     * Build a refinement prompt that feeds the analyzer's safety feedback
+     * and deterministic AST diff results back to the refactoring agent.
+     *
+     * <p>When AST diff data is available, a concise actionable summary is
+     * generated first (e.g. "Your previous proposal had a safety score of
+     * 0.35 because you changed the return type, affecting 4 callers."),
+     * followed by the full structural report. This gives the agent both
+     * an immediate understanding of what went wrong and the detailed
+     * evidence to fix it.
+     *
+     * @param verdict         the analyzer's safety verdict from the previous iteration
+     * @param iteration       current iteration index (0-based)
+     * @param astDiffReport   AST diff analysis from Phase 4a (empty if unavailable)
+     * @param scoredDiffs     structured AST diff results for actionable summary
+     * @param astSafetyScore  worst-case AST safety score across all diffs (1.0 if none)
      */
-    private String buildRefinementPrompt(SafetyVerdict verdict, int iteration) {
+    private String buildRefinementPrompt(SafetyVerdict verdict, int iteration,
+                                         String astDiffReport,
+                                         List<ScoredDiff> scoredDiffs,
+                                         double astSafetyScore) {
         StringBuilder sb = new StringBuilder();
 
         sb.append("Your previous refactoring was evaluated by a safety analyzer.\n\n");
 
         sb.append("SAFETY RESULT: ").append(verdict.isVerdictSafe() ? "SAFE" : "UNSAFE").append("\n");
-        sb.append("CONFIDENCE: ").append(String.format("%.2f", verdict.getConfidence())).append("\n\n");
+        sb.append("CONFIDENCE: ").append(String.format("%.2f", verdict.getConfidence())).append("\n");
+
+        // Show the deterministic AST safety score alongside the LLM confidence
+        if (!scoredDiffs.isEmpty()) {
+            sb.append("AST SAFETY SCORE: ").append(String.format("%.2f", astSafetyScore)).append(" / 1.00\n");
+        }
+        sb.append("\n");
+
+        // Inject actionable summary derived from structured AST diff data
+        if (!scoredDiffs.isEmpty()) {
+            sb.append("── STRUCTURAL ISSUES (deterministic, from JavaParser AST diff) ──\n\n");
+            sb.append(buildAstDiffSummary(scoredDiffs, astSafetyScore));
+            sb.append("\n");
+
+            // Append the full detailed report as supporting evidence
+            if (astDiffReport != null && !astDiffReport.isEmpty()) {
+                sb.append("── FULL AST DIFF DETAILS ──\n");
+                sb.append(astDiffReport).append("\n");
+            }
+        } else if (astDiffReport != null && !astDiffReport.isEmpty()) {
+            // Fallback: no structured diffs but we have a text report
+            sb.append("── STRUCTURAL ANALYSIS (deterministic, from JavaParser AST diff) ──\n");
+            sb.append("The following is a factual structural diff of your proposed code\n");
+            sb.append("compared against the original method in the codebase:\n\n");
+            sb.append(astDiffReport).append("\n");
+            sb.append("Use these facts to guide your revision. If the safety score is low,\n");
+            sb.append("consider preserving the original method signature and adding an overload.\n\n");
+        }
 
         if (!verdict.getRisks().isEmpty()) {
             sb.append("RISKS IDENTIFIED:\n");
@@ -403,6 +527,119 @@ public class SafeRefactorLoop {
         sb.append("4. Do not introduce new issues while fixing old ones\n");
         sb.append("5. This is refinement iteration ").append(iteration + 1)
             .append(" — previous attempts were not safe enough\n");
+
+        return sb.toString();
+    }
+
+    /**
+     * Build a concise, actionable natural-language summary from structured
+     * AST diff results. This tells the refactoring agent exactly what went
+     * wrong and why, deterministically.
+     *
+     * <p>Example output:
+     * <pre>
+     *   Your previous proposal had a safety score of 0.35 because:
+     *   • You changed the return type of `createUser` from void to CompletableFuture,
+     *     affecting 4 callers: [UserService#register, AdminService#bulkCreate, ...]
+     *   • You narrowed the visibility of `validate` from public to private
+     *
+     *   To fix this, preserve the original method signature and add an overload,
+     *   or update all affected callers in your proposal.
+     * </pre>
+     *
+     * @param scoredDiffs    the list of scored AST diffs from Phase 4a
+     * @param worstScore     the worst-case safety score across all diffs
+     * @return a concise summary string for LLM consumption
+     */
+    private static String buildAstDiffSummary(List<ScoredDiff> scoredDiffs, double worstScore) {
+        StringBuilder sb = new StringBuilder();
+
+        sb.append("Your previous proposal had a safety score of ")
+            .append(String.format("%.2f", worstScore))
+            .append(" because:\n");
+
+        boolean hasSignatureIssue = false;
+        boolean hasCallerImpact = false;
+
+        for (ScoredDiff sd : scoredDiffs) {
+            MethodDiff diff = sd.getDiff();
+            String methodId = diff.getChunkId();
+
+            if (diff.isParseError()) {
+                sb.append("  • Your proposed code for `").append(methodId)
+                    .append("` does not parse: ").append(diff.getParseErrorDetail()).append("\n");
+                continue;
+            }
+
+            if (sd.isCompletelySafe()) {
+                continue; // skip safe diffs from the summary
+            }
+
+            List<String> issues = new ArrayList<>();
+
+            if (diff.isReturnTypeChanged()) {
+                issues.add("changed the return type from `" + diff.getOldReturnType()
+                    + "` to `" + diff.getNewReturnType() + "`");
+                hasSignatureIssue = true;
+            }
+            if (diff.isParamsChanged()) {
+                issues.add("changed the parameters from `(" + diff.getOldParams()
+                    + ")` to `(" + diff.getNewParams() + ")`");
+                hasSignatureIssue = true;
+            }
+            if (diff.isVisibilityChanged()) {
+                issues.add("changed the visibility from `" + diff.getOldVisibility()
+                    + "` to `" + diff.getNewVisibility() + "`");
+                hasSignatureIssue = true;
+            }
+            if (diff.isThrowsChanged()) {
+                issues.add("changed the throws clause from `" + diff.getOldThrows()
+                    + "` to `" + diff.getNewThrows() + "`");
+                hasSignatureIssue = true;
+            }
+            if (!diff.getRemovedCalls().isEmpty()) {
+                issues.add("removed " + diff.getRemovedCalls().size()
+                    + " method call(s): " + diff.getRemovedCalls());
+            }
+            if (!diff.getAddedCalls().isEmpty()) {
+                issues.add("added " + diff.getAddedCalls().size()
+                    + " new method call(s): " + diff.getAddedCalls());
+            }
+            if (!diff.getRemovedAnnotations().isEmpty()) {
+                issues.add("removed annotations: " + diff.getRemovedAnnotations());
+            }
+            if (!diff.getAddedAnnotations().isEmpty()) {
+                issues.add("added annotations: " + diff.getAddedAnnotations());
+            }
+
+            if (issues.isEmpty()) continue;
+
+            sb.append("  • In `").append(methodId).append("`: you ");
+            sb.append(String.join("; ", issues));
+
+            // Append caller impact
+            if (sd.getAffectedCallerCount() > 0) {
+                hasCallerImpact = true;
+                sb.append(", affecting ").append(sd.getAffectedCallerCount()).append(" caller(s)");
+                if (!sd.getAffectedCallers().isEmpty()) {
+                    sb.append(": ").append(sd.getAffectedCallers());
+                }
+            }
+            sb.append("\n");
+        }
+
+        // Actionable guidance based on what went wrong
+        sb.append("\n");
+        if (hasSignatureIssue && hasCallerImpact) {
+            sb.append("To fix this: preserve the original method signature and add a new overload,\n");
+            sb.append("or include updates to ALL affected callers in your proposal.\n");
+            sb.append("Use your retrieval tools to fetch the affected callers listed above.\n");
+        } else if (hasSignatureIssue) {
+            sb.append("To fix this: preserve the original method signature to avoid breaking callers.\n");
+            sb.append("Consider adding a new overloaded method instead of modifying the existing one.\n");
+        } else {
+            sb.append("Review the structural changes above and ensure they are intentional.\n");
+        }
 
         return sb.toString();
     }
@@ -451,6 +688,109 @@ public class SafeRefactorLoop {
     private static String truncateForLog(String text, int maxLen) {
         if (text.length() <= maxLen) return text;
         return text.substring(0, maxLen) + "\n... (" + text.length() + " chars total)";
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // AST Diff support
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Extract Java code blocks from the agent's response and compute
+     * AST diffs against the originals in the graph.
+     *
+     * <p>Matching strategy: for each ```java block, extract the method name
+     * from the code, search the graph for a matching method, and diff.
+     */
+    private List<ScoredDiff> computeAstDiffs(String agentResponse) {
+        List<ScoredDiff> results = new ArrayList<>();
+        if (diffEngine == null || diffScorer == null) return results;
+
+        // Extract all ```java blocks
+        List<String> codeBlocks = extractCodeBlocks(agentResponse);
+        if (codeBlocks.isEmpty()) return results;
+
+        // For each code block, try to match it to a graph method and diff
+        for (String codeBlock : codeBlocks) {
+            try {
+                // Try to extract a method name from the code block
+                String methodName = extractMethodNameFromCode(codeBlock);
+                if (methodName == null || methodName.isEmpty()) continue;
+
+                // Resolve in the graph
+                String resolvedId = loopTools.resolveMethodForDiff(methodName);
+                if (resolvedId == null) continue;
+
+                // Fetch original
+                Map<String, CodeChunk> chunks = loopTools.fetchChunksForDiff(Set.of(resolvedId));
+                CodeChunk original = chunks.get(resolvedId);
+                if (original == null) continue;
+
+                // Compute AST diff
+                MethodDiff diff = diffEngine.diff(original, codeBlock);
+                ScoredDiff scored = diffScorer.score(diff);
+                results.add(scored);
+
+            } catch (Exception e) {
+                System.out.println("    WARN: AST diff failed for code block: " + e.getMessage());
+            }
+        }
+
+        return results;
+    }
+
+    /**
+     * Extract all ```java code blocks from a response string.
+     */
+    private static List<String> extractCodeBlocks(String response) {
+        List<String> blocks = new ArrayList<>();
+        if (response == null) return blocks;
+
+        int searchFrom = 0;
+        while (true) {
+            int start = response.indexOf("```java", searchFrom);
+            if (start < 0) break;
+
+            int codeStart = response.indexOf('\n', start);
+            if (codeStart < 0) break;
+            codeStart++; // skip the newline
+
+            int end = response.indexOf("```", codeStart);
+            if (end < 0) break;
+
+            String block = response.substring(codeStart, end).trim();
+            if (!block.isEmpty()) {
+                blocks.add(block);
+            }
+            searchFrom = end + 3;
+        }
+        return blocks;
+    }
+
+    /**
+     * Try to extract a method name from a code block.
+     *
+     * <p>Looks for common Java method declaration patterns:
+     * {@code (public|private|protected|static|...) ReturnType methodName(}
+     */
+    private static String extractMethodNameFromCode(String code) {
+        // Look for method declaration pattern
+        java.util.regex.Pattern methodPattern = java.util.regex.Pattern.compile(
+                "(?:public|private|protected|static|final|abstract|synchronized|native|\\s)*"
+                        + "\\s+\\w[\\w<>\\[\\],\\s]*\\s+(\\w+)\\s*\\(",
+                java.util.regex.Pattern.MULTILINE
+        );
+
+        java.util.regex.Matcher matcher = methodPattern.matcher(code);
+        if (matcher.find()) {
+            String name = matcher.group(1);
+            // Filter out common false positives
+            if (!"if".equals(name) && !"for".equals(name) && !"while".equals(name)
+                    && !"switch".equals(name) && !"catch".equals(name)
+                    && !"new".equals(name) && !"return".equals(name)) {
+                return name;
+            }
+        }
+        return null;
     }
 }
 

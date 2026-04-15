@@ -17,6 +17,10 @@ import java.time.Duration;
  * invoke {@link RefactorTools} to gather code context from the Neo4j graph
  * before suggesting refactorings.
  *
+ * <p>Safety validation (AST diff scoring) is handled externally by
+ * {@link com.smolnij.chunker.safeloop.SafeRefactorLoop} in Phase 4a —
+ * the agent focuses only on retrieval and code generation.
+ *
  * <h3>Architecture:</h3>
  * <pre>
  *   User ──→ Assistant.chat("Refactor createUser to async")
@@ -40,6 +44,7 @@ import java.time.Duration;
  * </pre>
  */
 public class RefactorAgent {
+    public static final int MAX_SEQUENTIAL_TOOLS_EXECUTIONS = 200;
 
     // ═══════════════════════════════════════════════════════════════
     // Assistant interface — LangChain4j AI Service
@@ -103,11 +108,12 @@ public class RefactorAgent {
                 .maxMessages(config.getChatMemorySize())
                 .build();
 
-        // ── Wire up the AI Service with tools ──
+        // ── Wire up the AI Service with retrieval tools ──
         this.assistant = AiServices.builder(Assistant.class)
                 .chatLanguageModel(chatModel)
                 .chatMemory(chatMemory)
                 .tools(tools)
+//                .maxSequentialToolsInvocations(MAX_SEQUENTIAL_TOOLS_EXECUTIONS)
                 .build();
     }
 

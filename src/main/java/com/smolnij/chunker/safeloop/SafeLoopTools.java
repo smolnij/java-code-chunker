@@ -243,6 +243,32 @@ public class SafeLoopTools {
     }
 
     // ═══════════════════════════════════════════════════════════════
+    // AST Diff support (public delegates for SafeRefactorLoop)
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Resolve a method name to its graph node ID for AST diff comparison.
+     * Public delegate of the internal {@link #resolveMethodId(String)}.
+     *
+     * @param methodName simple method name, e.g. "createUser"
+     * @return the resolved chunkId, or null if not found
+     */
+    public String resolveMethodForDiff(String methodName) {
+        return resolveMethodId(methodName);
+    }
+
+    /**
+     * Fetch method chunks by IDs for AST diff comparison.
+     * Delegates to {@link Neo4jGraphReader#fetchMethodChunks(java.util.Collection)}.
+     *
+     * @param chunkIds the set of chunkIds to fetch
+     * @return map of chunkId → CodeChunk
+     */
+    public Map<String, CodeChunk> fetchChunksForDiff(Set<String> chunkIds) {
+        return graphReader.fetchMethodChunks(chunkIds);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
     // Internal helpers
     // ═══════════════════════════════════════════════════════════════
 

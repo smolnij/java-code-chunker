@@ -1,6 +1,8 @@
 package com.smolnij.chunker.safeloop;
 
 import com.smolnij.chunker.refactor.*;
+import com.smolnij.chunker.refactor.diff.AstDiffEngine;
+import com.smolnij.chunker.refactor.diff.DiffScorer;
 import com.smolnij.chunker.retrieval.*;
 
 import java.nio.file.Files;
@@ -43,8 +45,8 @@ import java.nio.file.Path;
  *     SAFELOOP_SAFETY_THRESHOLD  / -Dsafeloop.safetyThreshold  — min confidence (default: 0.9)
  *     SAFELOOP_MAX_ITERATIONS    / -Dsafeloop.maxIterations    — max loop iterations (default: 5)
  *     SAFELOOP_MAX_CHUNKS        / -Dsafeloop.maxChunks        — context chunks (default: 8)
- *     SAFELOOP_CHAT_MEMORY_SIZE  / -Dsafeloop.chatMemorySize   — agent memory window (default: 30)
- *     SAFELOOP_MAX_TOOL_CALLS    / -Dsafeloop.maxToolCalls     — tool call cap (default: 15)
+ *     SAFELOOP_CHAT_MEMORY_SIZE  / -Dsafeloop.chatMemorySize   — agent memory window (default: 60)
+ *     SAFELOOP_MAX_TOOL_CALLS    / -Dsafeloop.maxToolCalls     — tool call cap (default: 30)
  *     SAFELOOP_MIN_CALLER_DEPTH  / -Dsafeloop.minCallerDepth   — min caller hops (default: 1)
  *     SAFELOOP_MIN_CALLEE_DEPTH  / -Dsafeloop.minCalleeDepth   — min callee hops (default: 1)
  *     EMBEDDING_URL              / -Dembedding.url             — embedding endpoint
@@ -71,7 +73,7 @@ public class SafeLoopMain {
         // ── Parse arguments ──
         String query = "Suggest refactoring of RalphLoop to take prompt from file instead of from CLI. " +
                 "Don't change files, write your suggestion to output file. Do not use \"CHANGES\" tool, you don't have it";
-        String outputFile = "/home/smola/llmout5";
+        String outputFile = "/home/smola/llmout6_with_AST_lang4j13";
         boolean noStream = false;
         boolean debug = true;
         Integer maxIterOverride = null;
@@ -189,7 +191,11 @@ public class SafeLoopMain {
             // Agent tools (LangChain4j @Tool-annotated, used by the LLM)
             RefactorTools agentTools = new RefactorTools(retriever, reader, safeConfig.getMaxChunks());
 
-            // Refactoring agent (LangChain4j AI Service with tool calling)
+            // AST diff engine + scorer (deterministic structural validation, used by SafeRefactorLoop Phase 4a)
+            AstDiffEngine diffEngine = new AstDiffEngine();
+            DiffScorer diffScorer = new DiffScorer(reader);
+
+            // Refactoring agent (LangChain4j AI Service with retrieval tools only)
             RefactorAgent agent = new RefactorAgent(refactorConfig, agentTools);
 
             // Analyzer chat service (separate, no tool calling — just evaluation)
@@ -204,7 +210,9 @@ public class SafeLoopMain {
                 SafeLoopTools loopTools = new SafeLoopTools(retriever, reader, safeConfig);
 
                 // ── Build and run the loop ──
-                SafeRefactorLoop loop = new SafeRefactorLoop(agent, analyzerChat, loopTools, agentTools, safeConfig);
+                SafeRefactorLoop loop = new SafeRefactorLoop(
+                        agent, analyzerChat, loopTools, agentTools, safeConfig,
+                        diffEngine, diffScorer);
 
                 System.out.println("━━━ Starting Safe Refactoring Loop ━━━━━━━━━━━━━━━━━━━");
                 System.out.println();
