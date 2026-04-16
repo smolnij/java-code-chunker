@@ -1,13 +1,17 @@
 package com.smolnij.chunker.refactor;
 
+import dev.langchain4j.http.client.jdk.JdkHttpClientBuilder;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
-import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.SystemMessage;
 import dev.langchain4j.service.UserMessage;
 
+import java.net.http.HttpClient;
 import java.time.Duration;
+
+import static com.smolnij.chunker.util.Util.lmStudioHttpClientBuilder;
 
 /**
  * LangChain4j-powered agentic refactoring assistant.
@@ -101,7 +105,7 @@ public class RefactorAgent {
         this.tools = tools;
 
         // ── Build the OpenAI-compatible chat model (LM-Studio) ──
-        ChatLanguageModel chatModel = buildChatModel(config);
+        ChatModel chatModel = buildChatModel(config);
 
         // ── Build chat memory (sliding window) ──
         MessageWindowChatMemory chatMemory = MessageWindowChatMemory.builder()
@@ -110,7 +114,7 @@ public class RefactorAgent {
 
         // ── Wire up the AI Service with retrieval tools ──
         this.assistant = AiServices.builder(Assistant.class)
-                .chatLanguageModel(chatModel)
+                .chatModel(chatModel)
                 .chatMemory(chatMemory)
                 .tools(tools)
 //                .maxSequentialToolsInvocations(MAX_SEQUENTIAL_TOOLS_EXECUTIONS)
@@ -174,7 +178,7 @@ public class RefactorAgent {
      * <p>Uses the same endpoint and sampling parameters from {@link RefactorConfig}.
      * The base URL is derived from the chat URL by stripping the path.
      */
-    private static ChatLanguageModel buildChatModel(RefactorConfig config) {
+    private static ChatModel buildChatModel(RefactorConfig config) {
         // Extract base URL from the chat completions URL
         // e.g. "http://localhost:1234/v1/chat/completions" → "http://localhost:1234/v1"
         String chatUrl = config.getChatUrl();
@@ -192,6 +196,7 @@ public class RefactorAgent {
                 .topP(config.getTopP())
                 .maxTokens(config.getMaxTokens())
                 .timeout(Duration.ofMinutes(5))
+                .httpClientBuilder(lmStudioHttpClientBuilder())
                 .logRequests(false)
                 .logResponses(false);
 

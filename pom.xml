@@ -24,7 +24,7 @@
         <jtokkit.version>1.1.0</jtokkit.version>
         <gson.version>2.12.1</gson.version>
         <neo4j.driver.version>5.27.0</neo4j.driver.version>
-        <langchain4j.version>1.0.0-beta1</langchain4j.version>
+        <langchain4j.version>1.13.0</langchain4j.version>
     </properties>
 
     <dependencies>
@@ -67,6 +67,18 @@
         <dependency>
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j-open-ai</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
+
+        <!--
+            JDK HTTP client impl for langchain4j. Pinned explicitly so we can force
+            HTTP/1.1 on LM-Studio — the default HTTP/2 upgrade handshake makes
+            LM-Studio hang on the first request (see langchain4j issue #2758,
+            lmstudio-bug-tracker #1079).
+        -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-http-client-jdk</artifactId>
             <version>${langchain4j.version}</version>
         </dependency>
 

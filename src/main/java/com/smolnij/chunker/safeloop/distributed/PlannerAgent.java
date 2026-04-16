@@ -1,13 +1,15 @@
 package com.smolnij.chunker.safeloop.distributed;
 
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
-import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.SystemMessage;
 import dev.langchain4j.service.UserMessage;
 
 import java.time.Duration;
+
+import static com.smolnij.chunker.util.Util.lmStudioHttpClientBuilder;
 
 /**
  * LangChain4j-powered Planner–Analyzer agent for the distributed safe refactoring loop.
@@ -152,7 +154,7 @@ public class PlannerAgent {
         this.tools = tools;
 
         // Build the OpenAI-compatible chat model for the Planner (S_ANALYZE_MACHINE)
-        ChatLanguageModel chatModel = buildChatModel(config);
+        ChatModel chatModel = buildChatModel(config);
 
         // Build chat memory (sliding window)
         MessageWindowChatMemory chatMemory = MessageWindowChatMemory.builder()
@@ -161,7 +163,7 @@ public class PlannerAgent {
 
         // Wire up the AI Service with planner tools
         this.assistant = AiServices.builder(PlannerAssistant.class)
-            .chatLanguageModel(chatModel)
+            .chatModel(chatModel)
             .chatMemory(chatMemory)
             .tools(tools)
 //            .maxSequentialToolsInvocations(MAX_SEQUENTIAL_TOOLS_EXECUTIONS)
@@ -222,7 +224,7 @@ public class PlannerAgent {
     // Chat model builder
     // ═══════════════════════════════════════════════════════════════
 
-    private static ChatLanguageModel buildChatModel(DistributedSafeLoopConfig config) {
+    private static ChatModel buildChatModel(DistributedSafeLoopConfig config) {
         // Extract base URL from the analyzer URL
         String chatUrl = config.getAnalyzerUrl();
         String baseUrl = chatUrl;
@@ -239,6 +241,7 @@ public class PlannerAgent {
             .topP(config.getTopP())
             .maxTokens(config.getMaxTokens())
             .timeout(Duration.ofMinutes(10))  // Planner may take longer due to multiple tool calls
+            .httpClientBuilder(lmStudioHttpClientBuilder())
             .logRequests(false)
             .logResponses(false);
 

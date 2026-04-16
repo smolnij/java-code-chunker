@@ -60,6 +60,6 @@
     <jtokkit.version>1.1.0</jtokkit.version>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <neo4j.driver.version>5.27.0</neo4j.driver.version>
-    <langchain4j.version>1.0.0-beta1</langchain4j.version>
+    <langchain4j.version>1.13.0</langchain4j.version>
   </properties>
 </project>
