@@ -1,9 +1,12 @@
 package com.smolnij.chunker.refactor;
 
 import com.smolnij.chunker.model.CodeChunk;
+import com.smolnij.chunker.retrieval.GraphPath;
 import com.smolnij.chunker.retrieval.HybridRetriever;
 import com.smolnij.chunker.retrieval.Neo4jGraphReader;
+import com.smolnij.chunker.retrieval.PathEdge;
 import com.smolnij.chunker.retrieval.RetrievalResult;
+import com.smolnij.chunker.retrieval.SubgraphView;
 
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
@@ -337,6 +340,254 @@ public class RefactorTools {
     }
 
     // ═══════════════════════════════════════════════════════════════
+    // Tool 5: Find call path between two methods
+    // ═══════════════════════════════════════════════════════════════
+
+    @Tool("""
+        Find the shortest call path(s) between two methods.
+        Returns a chain like A -[CALLS]-> B -[CALLS]-> C showing how one method reaches another.
+        Falls back to an undirected traversal (mixing CALLS and CALLED_BY) when no purely
+        directed call path exists within the hop budget.
+        Use this to explain transitive dependencies.
+        """)
+    public String findCallPath(
+            @P("Source method id or name, e.g. 'UserService#createUser'")
+            String fromMethod,
+            @P("Target method id or name, e.g. 'Repository#save'")
+            String toMethod,
+            @P("Max path length in hops (1-6)")
+            int maxDepth) {
+
+        toolCallCount++;
+        System.out.println("  🔧 Tool call #" + toolCallCount
+                + ": findCallPath(\"" + fromMethod + "\" → \"" + toMethod + "\", depth=" + maxDepth + ")");
+
+        try {
+            String fromId = resolveMethodId(fromMethod);
+            if (fromId == null) return "Source method not found: " + fromMethod;
+            String toId = resolveMethodId(toMethod);
+            if (toId == null) return "Target method not found: " + toMethod;
+
+            int clamped = Math.max(1, Math.min(maxDepth, 6));
+
+            List<GraphPath> paths = graphReader.findShortestCallPaths(fromId, toId, clamped);
+            boolean undirectedFallback = false;
+            if (paths.isEmpty()) {
+                paths = graphReader.findUndirectedPaths(fromId, toId, clamped);
+                undirectedFallback = true;
+            }
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("=== Call path: ").append(fromId).append(" → ").append(toId).append(" ===\n");
+
+            if (paths.isEmpty()) {
+                sb.append("No path found within ").append(clamped).append(" hops (directed or undirected).\n");
+                return sb.toString();
+            }
+            if (undirectedFallback) {
+                sb.append("(no directed path within ").append(clamped)
+                        .append(" hops; showing undirected fallback using CALLS + CALLED_BY)\n");
+            }
+            sb.append("\n");
+
+            for (int i = 0; i < paths.size(); i++) {
+                GraphPath p = paths.get(i);
+                sb.append("Path ").append(i + 1).append(" (length ").append(p.length()).append("):\n");
+                sb.append("  ").append(p.render()).append("\n\n");
+            }
+
+            // Batch-load code for nodes on the first path, capped at maxChunksPerCall.
+            GraphPath first = paths.get(0);
+            List<String> nodeIds = first.getNodes();
+            int bodyLimit = Math.min(nodeIds.size(), maxChunksPerCall);
+            Set<String> toFetch = new LinkedHashSet<>(nodeIds.subList(0, bodyLimit));
+            Map<String, CodeChunk> bodies = graphReader.fetchMethodChunks(toFetch);
+
+            for (int i = 0; i < bodyLimit; i++) {
+                String id = nodeIds.get(i);
+                CodeChunk c = bodies.get(id);
+                if (c == null) continue;
+                sb.append("── Step ").append(i + 1).append(": ").append(id).append(" ──\n");
+                sb.append("Signature: ").append(c.getMethodSignature()).append("\n");
+                sb.append("```java\n").append(c.getCode()).append("\n```\n\n");
+            }
+            if (nodeIds.size() > bodyLimit) {
+                sb.append("(").append(nodeIds.size() - bodyLimit).append(" further nodes on the path; code omitted)\n");
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return "Error finding call path: " + e.getMessage();
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Tool 6: Trace a transitive call chain (callers or callees)
+    // ═══════════════════════════════════════════════════════════════
+
+    @Tool("""
+        Walk the call graph from a method following callers (incoming) or callees (outgoing).
+        Returns the chain as an indented tree of method ids (no code bodies).
+        Use this to understand the full transitive reach in one direction.
+        """)
+    public String traceCallChain(
+            @P("Method id or name")
+            String methodId,
+            @P("'callers' (who calls this) or 'callees' (who this calls)")
+            String direction,
+            @P("Max traversal depth 1-4")
+            int maxDepth) {
+
+        toolCallCount++;
+        System.out.println("  🔧 Tool call #" + toolCallCount
+                + ": traceCallChain(\"" + methodId + "\", " + direction + ", depth=" + maxDepth + ")");
+
+        try {
+            String resolvedId = resolveMethodId(methodId);
+            if (resolvedId == null) return "Method not found: " + methodId;
+
+            boolean callers;
+            if ("callers".equalsIgnoreCase(direction)) callers = true;
+            else if ("callees".equalsIgnoreCase(direction)) callers = false;
+            else return "Invalid direction '" + direction + "'. Use 'callers' or 'callees'.";
+
+            int clamped = Math.max(1, Math.min(maxDepth, 4));
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("=== Call chain (").append(callers ? "callers" : "callees")
+                    .append(") from ").append(resolvedId).append(" ===\n");
+            sb.append(resolvedId).append("\n");
+
+            Set<String> visited = new HashSet<>();
+            visited.add(resolvedId);
+            int printed = traverseChain(resolvedId, callers, 1, clamped, visited, sb, 0);
+            if (printed == 0) {
+                sb.append("  (no ").append(callers ? "callers" : "callees").append(" found)\n");
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return "Error tracing call chain: " + e.getMessage();
+        }
+    }
+
+    private int traverseChain(String currentId, boolean callers, int depth, int maxDepth,
+                               Set<String> visited, StringBuilder sb, int printedSoFar) {
+        if (depth > maxDepth) return printedSoFar;
+        List<PathEdge> edges = graphReader.getImmediateNeighbors(currentId);
+        int printed = printedSoFar;
+        for (PathEdge e : edges) {
+            boolean isCallerEdge = e.getDirection() == PathEdge.Direction.IN;
+            if (callers != isCallerEdge) continue;
+            String neighbor = callers ? e.getSourceId() : e.getTargetId();
+            if (!visited.add(neighbor)) continue;
+            sb.append("  ".repeat(depth))
+                    .append(callers ? "← " : "→ ")
+                    .append(neighbor).append("\n");
+            printed++;
+            printed = traverseChain(neighbor, callers, depth + 1, maxDepth, visited, sb, printed);
+        }
+        return printed;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Tool 7: Subgraph topology around a method (no code bodies)
+    // ═══════════════════════════════════════════════════════════════
+
+    @Tool("""
+        Return the call-graph topology (nodes + directed CALLS edges) around a method,
+        without code bodies. Useful for a high-level map before zooming into specific chunks.
+        """)
+    public String getSubgraphTopology(
+            @P("Method id or name to anchor the subgraph")
+            String anchorMethodId,
+            @P("Graph expansion depth 1-3")
+            int depth) {
+
+        toolCallCount++;
+        System.out.println("  🔧 Tool call #" + toolCallCount
+                + ": getSubgraphTopology(\"" + anchorMethodId + "\", depth=" + depth + ")");
+
+        try {
+            String resolvedId = resolveMethodId(anchorMethodId);
+            if (resolvedId == null) return "Method not found: " + anchorMethodId;
+
+            int clamped = Math.max(1, Math.min(depth, 3));
+            Map<String, Integer> subgraph = graphReader.expandSubgraph(resolvedId, clamped);
+            if (subgraph.isEmpty()) subgraph = new LinkedHashMap<>(Map.of(resolvedId, 0));
+            else subgraph.putIfAbsent(resolvedId, 0);
+
+            List<PathEdge> induced = graphReader.getInducedEdges(subgraph.keySet());
+            SubgraphView view = new SubgraphView(new LinkedHashSet<>(subgraph.keySet()), induced);
+
+            int cap = retriever.getConfig().getMaxTopologyEdges();
+            StringBuilder sb = new StringBuilder();
+            sb.append("=== Subgraph topology around ").append(resolvedId)
+                    .append(" (depth ").append(clamped).append(") ===\n");
+            sb.append(view.renderTopology(resolvedId, cap)).append("\n");
+            return sb.toString();
+        } catch (Exception e) {
+            return "Error computing subgraph topology: " + e.getMessage();
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Tool 8: One-hop neighbor expansion (for interactive graph walks)
+    // ═══════════════════════════════════════════════════════════════
+
+    @Tool("""
+        Show only the immediate (1-hop) neighbors of a method with edge direction.
+        Use this to walk the graph interactively one step at a time, following
+        either outgoing calls or incoming callers.
+        """)
+    public String expandNode(
+            @P("Method id or name")
+            String methodId) {
+
+        toolCallCount++;
+        System.out.println("  🔧 Tool call #" + toolCallCount + ": expandNode(\"" + methodId + "\")");
+
+        try {
+            String resolvedId = resolveMethodId(methodId);
+            if (resolvedId == null) return "Method not found: " + methodId;
+
+            List<PathEdge> edges = graphReader.getImmediateNeighbors(resolvedId);
+            List<PathEdge> out = new ArrayList<>();
+            List<PathEdge> in = new ArrayList<>();
+            for (PathEdge e : edges) {
+                if (e.getDirection() == PathEdge.Direction.OUT) out.add(e);
+                else in.add(e);
+            }
+            Collections.sort(out);
+            Collections.sort(in);
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("=== Neighbors of ").append(resolvedId).append(" ===\n\n");
+            sb.append("Outgoing (callees):\n");
+            if (out.isEmpty()) {
+                sb.append("  (none)\n");
+            } else {
+                for (PathEdge e : out) {
+                    sb.append("  - ").append(e.getSourceId())
+                            .append(" -[").append(e.getRelType()).append("]-> ")
+                            .append(e.getTargetId()).append("\n");
+                }
+            }
+            sb.append("\nIncoming (callers):\n");
+            if (in.isEmpty()) {
+                sb.append("  (none)\n");
+            } else {
+                for (PathEdge e : in) {
+                    sb.append("  - ").append(e.getSourceId())
+                            .append(" -[").append(e.getRelType()).append("]-> ")
+                            .append(e.getTargetId()).append("\n");
+                }
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return "Error expanding node: " + e.getMessage();
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
     // Formatting helpers
     // ═══════════════════════════════════════════════════════════════
 
@@ -418,6 +669,19 @@ public class RefactorTools {
         }
 
         return sb.toString();
+    }
+
+    /**
+     * Resolve a method id or name to a canonical chunkId.
+     * Falls back through stripToSimpleName like the other tools do.
+     *
+     * @return the resolved chunkId, or {@code null} if no match
+     */
+    private String resolveMethodId(String methodId) {
+        if (methodId == null || methodId.isBlank()) return null;
+        String resolved = graphReader.findMethodExact(methodId);
+        if (resolved != null) return resolved;
+        return graphReader.findMethodExact(stripToSimpleName(methodId));
     }
 
     /**

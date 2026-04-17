@@ -31,6 +31,9 @@ public class RetrievalResult implements Comparable<RetrievalResult> {
     // ── Flags ──
     private boolean isAnchor;            // true if this is the original entry point
 
+    // ── Path context (optional) ──
+    private GraphPath pathFromAnchor;    // shortest CALLS path from anchor to this chunk (null if unreachable)
+
     public RetrievalResult(CodeChunk chunk) {
         this.chunk = chunk;
         this.chunkId = chunk.getChunkId();
@@ -99,6 +102,19 @@ public class RetrievalResult implements Comparable<RetrievalResult> {
 
     public boolean isAnchor() { return isAnchor; }
     public void setAnchor(boolean v) { this.isAnchor = v; }
+
+    public GraphPath getPathFromAnchor() { return pathFromAnchor; }
+    public void setPathFromAnchor(GraphPath p) { this.pathFromAnchor = p; }
+
+    /**
+     * Render the path from the anchor to this chunk for LLM consumption.
+     * Returns a stable placeholder for the anchor itself or when no path exists.
+     */
+    public String formatPathFromAnchor() {
+        if (isAnchor) return "(this is the anchor)";
+        if (pathFromAnchor == null) return "(no graph path to anchor)";
+        return pathFromAnchor.render();
+    }
 
     // ═══════════════════════════════════════════════════════════════
     // Display

@@ -47,6 +47,10 @@ public class HybridRetriever {
         this.config = config;
     }
 
+    public RetrievalConfig getConfig() {
+        return config;
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // Main entry point
     // ═══════════════════════════════════════════════════════════════
@@ -83,6 +87,9 @@ public class HybridRetriever {
         List<RetrievalResult> selected = selectFinal(ranked, anchorId);
         System.out.println("Step 5 — Selected top-" + selected.size() + " results");
 
+        // ── Enrich with path-from-anchor + induced subgraph topology ──
+        SubgraphView subgraphView = enrichWithGraphStructure(selected, anchorId);
+
         // ── Print ranking debug ──
         System.out.println();
         System.out.println("── Ranking ─────────────────────────────────────────────");
@@ -91,7 +98,39 @@ public class HybridRetriever {
         }
         System.out.println();
 
-        return new RetrievalResponse(userQuery, anchorId, selected);
+        return new RetrievalResponse(userQuery, anchorId, selected, subgraphView, config.getMaxTopologyEdges());
+    }
+
+    /**
+     * Attach a shortest path-from-anchor to each selected result and compute
+     * the induced subgraph topology among the selected chunks.
+     */
+    private SubgraphView enrichWithGraphStructure(List<RetrievalResult> selected, String anchorId) {
+        if (selected.isEmpty()) {
+            return new SubgraphView(Set.of(), List.of());
+        }
+        LinkedHashSet<String> selectedIds = new LinkedHashSet<>();
+        for (RetrievalResult r : selected) selectedIds.add(r.getChunkId());
+
+        if (anchorId != null) {
+            try {
+                Map<String, GraphPath> paths =
+                    graphReader.getShortestPathsFromAnchor(anchorId, selectedIds, config.getMaxDepth());
+                for (RetrievalResult r : selected) {
+                    r.setPathFromAnchor(paths.get(r.getChunkId()));
+                }
+            } catch (Exception e) {
+                System.err.println("WARN: Path-from-anchor batch query failed: " + e.getMessage());
+            }
+        }
+
+        List<PathEdge> induced = List.of();
+        try {
+            induced = graphReader.getInducedEdges(selectedIds);
+        } catch (Exception e) {
+            System.err.println("WARN: Induced-edge query failed: " + e.getMessage());
+        }
+        return new SubgraphView(selectedIds, induced);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -413,16 +452,22 @@ public class HybridRetriever {
         private final String query;
         private final String anchorId;
         private final List<RetrievalResult> results;
+        private final SubgraphView subgraphView;
+        private final int maxTopologyEdges;
 
-        public RetrievalResponse(String query, String anchorId, List<RetrievalResult> results) {
+        public RetrievalResponse(String query, String anchorId, List<RetrievalResult> results,
+                                 SubgraphView subgraphView, int maxTopologyEdges) {
             this.query = query;
             this.anchorId = anchorId;
             this.results = results;
+            this.subgraphView = subgraphView;
+            this.maxTopologyEdges = maxTopologyEdges;
         }
 
         public String getQuery() { return query; }
         public String getAnchorId() { return anchorId; }
         public List<RetrievalResult> getResults() { return results; }
+        public SubgraphView getSubgraphView() { return subgraphView; }
 
         /**
          * Format the retrieval results as an LLM-ready context string.
@@ -453,12 +498,21 @@ public class HybridRetriever {
             sb.append("Retrieved ").append(results.size())
               .append(" relevant code chunks (ranked by relevance):\n\n");
 
+            if (subgraphView != null && anchorId != null) {
+                sb.append("=== SUBGRAPH TOPOLOGY ===\n");
+                sb.append(subgraphView.renderTopology(anchorId, maxTopologyEdges));
+                sb.append("\n\n");
+            }
+
             for (int i = 0; i < results.size(); i++) {
                 RetrievalResult r = results.get(i);
                 sb.append("── Chunk ").append(i + 1).append(" of ").append(results.size());
                 sb.append(String.format(" (score: %.4f", r.getFinalScore()));
                 if (r.isAnchor()) sb.append(", anchor");
                 sb.append(") ──\n");
+                if (anchorId != null) {
+                    sb.append("Path from anchor: ").append(r.formatPathFromAnchor()).append("\n");
+                }
                 sb.append(r.getChunk().toPromptFormat());
                 sb.append("\n");
             }

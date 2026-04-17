@@ -46,6 +46,10 @@ public class RetrievalConfig {
     private String vectorIndexName = "method_embeddings";
     private int vectorSearchK = 20;
 
+    // ── Path / topology rendering ──
+    private int maxPathsReturned = 3;
+    private int maxTopologyEdges = 200;
+
     // ═══════════════════════════════════════════════════════════════
     // Factory — load from env / system properties
     // ═══════════════════════════════════════════════════════════════
@@ -76,6 +80,9 @@ public class RetrievalConfig {
         cfg.vectorIndexName = strVal("VECTOR_INDEX_NAME", "vector.indexName", cfg.vectorIndexName);
         cfg.vectorSearchK = intVal("VECTOR_SEARCH_K", "vector.searchK", cfg.vectorSearchK);
 
+        cfg.maxPathsReturned = intVal("RETRIEVAL_MAX_PATHS_RETURNED", "retrieval.maxPathsReturned", cfg.maxPathsReturned);
+        cfg.maxTopologyEdges = intVal("RETRIEVAL_MAX_TOPOLOGY_EDGES", "retrieval.maxTopologyEdges", cfg.maxTopologyEdges);
+
         return cfg;
     }
 
@@ -102,6 +109,9 @@ public class RetrievalConfig {
     public String getVectorIndexName() { return vectorIndexName; }
     public int getVectorSearchK() { return vectorSearchK; }
 
+    public int getMaxPathsReturned() { return maxPathsReturned; }
+    public int getMaxTopologyEdges() { return maxTopologyEdges; }
+
     // ═══════════════════════════════════════════════════════════════
     // Setters (for programmatic / builder-style use)
     // ═══════════════════════════════════════════════════════════════
@@ -116,14 +126,17 @@ public class RetrievalConfig {
     public RetrievalConfig withEmbeddingDimensions(int v) { this.embeddingDimensions = v; return this; }
     public RetrievalConfig withVectorIndexName(String v) { this.vectorIndexName = v; return this; }
     public RetrievalConfig withVectorSearchK(int v) { this.vectorSearchK = v; return this; }
+    public RetrievalConfig withMaxPathsReturned(int v) { this.maxPathsReturned = v; return this; }
+    public RetrievalConfig withMaxTopologyEdges(int v) { this.maxTopologyEdges = v; return this; }
 
     @Override
     public String toString() {
         return String.format(
             "RetrievalConfig { depth=%d, topK=%d, weights=[%.2f/%.2f/%.2f], " +
-            "embeddingUrl=%s, model=%s, dims=%d, vectorIndex=%s }",
+            "embeddingUrl=%s, model=%s, dims=%d, vectorIndex=%s, maxPaths=%d, maxTopoEdges=%d }",
             maxDepth, topK, semanticWeight, graphWeight, structuralWeight,
-            embeddingUrl, embeddingModel, embeddingDimensions, vectorIndexName
+            embeddingUrl, embeddingModel, embeddingDimensions, vectorIndexName,
+            maxPathsReturned, maxTopologyEdges
         );
     }
 

@@ -396,6 +396,231 @@ public class Neo4jGraphReader implements AutoCloseable {
         return v.asList(Value::asString);
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    // Path / topology queries (for graph-aware LLM context)
+    // ═══════════════════════════════════════════════════════════════
+
+    private static final int PATH_MAX_HOPS_CEILING = 6;
+
+    private static int clampHops(int maxHops) {
+        if (maxHops < 1) return 1;
+        if (maxHops > PATH_MAX_HOPS_CEILING) return PATH_MAX_HOPS_CEILING;
+        return maxHops;
+    }
+
+    /**
+     * Find the shortest directed CALLS path(s) between two methods.
+     *
+     * <p>Returns up to {@link RetrievalConfig#getMaxPathsReturned()} shortest
+     * paths. Returns a single length-0 path when {@code fromChunkId == toChunkId}.
+     * Returns an empty list when no directed path of length ≤ {@code maxHops} exists.
+     *
+     * @param maxHops clamped to {@code [1, 6]}
+     */
+    public List<GraphPath> findShortestCallPaths(String fromChunkId, String toChunkId, int maxHops) {
+        if (fromChunkId == null || toChunkId == null) return List.of();
+        if (fromChunkId.equals(toChunkId)) {
+            return List.of(GraphPath.single(fromChunkId));
+        }
+        int hops = clampHops(maxHops);
+        int cap = Math.max(1, config.getMaxPathsReturned());
+        try (Session session = driver.session()) {
+            return session.executeRead(tx -> {
+                Result r = tx.run(
+                    "MATCH (a:Method {chunkId:$from}), (b:Method {chunkId:$to}) " +
+                    "MATCH p = allShortestPaths((a)-[:CALLS*.." + hops + "]->(b)) " +
+                    "RETURN [n IN nodes(p) | n.chunkId] AS ns, " +
+                    "       [rel IN relationships(p) | type(rel)] AS ts " +
+                    "LIMIT $cap",
+                    Map.of("from", fromChunkId, "to", toChunkId, "cap", cap)
+                );
+                List<GraphPath> paths = new ArrayList<>();
+                while (r.hasNext()) {
+                    Record rec = r.next();
+                    List<String> nodes = rec.get("ns").asList(Value::asString);
+                    List<String> types = rec.get("ts").asList(Value::asString);
+                    paths.add(buildDirectedPath(nodes, types));
+                }
+                return paths;
+            });
+        }
+    }
+
+    /**
+     * Find the shortest undirected path(s) between two methods, traversing
+     * either {@code CALLS} or {@code CALLED_BY} edges. Used as a fallback when
+     * no purely directed call path exists.
+     *
+     * <p>Per-edge direction is reconstructed by comparing the edge's
+     * {@code startNode.chunkId} against the previous node in the path.
+     */
+    public List<GraphPath> findUndirectedPaths(String fromChunkId, String toChunkId, int maxHops) {
+        if (fromChunkId == null || toChunkId == null) return List.of();
+        if (fromChunkId.equals(toChunkId)) {
+            return List.of(GraphPath.single(fromChunkId));
+        }
+        int hops = clampHops(maxHops);
+        int cap = Math.max(1, config.getMaxPathsReturned());
+        try (Session session = driver.session()) {
+            return session.executeRead(tx -> {
+                Result r = tx.run(
+                    "MATCH (a:Method {chunkId:$from}), (b:Method {chunkId:$to}) " +
+                    "MATCH p = allShortestPaths((a)-[:CALLS|CALLED_BY*.." + hops + "]-(b)) " +
+                    "RETURN [n IN nodes(p) | n.chunkId] AS ns, " +
+                    "       [rel IN relationships(p) | {t: type(rel), s: startNode(rel).chunkId}] AS rs " +
+                    "LIMIT $cap",
+                    Map.of("from", fromChunkId, "to", toChunkId, "cap", cap)
+                );
+                List<GraphPath> paths = new ArrayList<>();
+                while (r.hasNext()) {
+                    Record rec = r.next();
+                    List<String> nodes = rec.get("ns").asList(Value::asString);
+                    List<Value> rs = rec.get("rs").asList(v -> v);
+                    List<PathEdge> edges = new ArrayList<>(rs.size());
+                    for (int i = 0; i < rs.size(); i++) {
+                        String type = rs.get(i).get("t").asString();
+                        String startId = rs.get(i).get("s").asString();
+                        String src = nodes.get(i);
+                        String tgt = nodes.get(i + 1);
+                        PathEdge.Direction dir = startId.equals(src)
+                            ? PathEdge.Direction.OUT
+                            : PathEdge.Direction.IN;
+                        edges.add(new PathEdge(src, tgt, type, dir));
+                    }
+                    paths.add(new GraphPath(nodes, edges));
+                }
+                return paths;
+            });
+        }
+    }
+
+    /**
+     * Return all {@code CALLS} edges induced among the given set of method nodes.
+     * Used to render the topology of a retrieved subgraph.
+     */
+    public List<PathEdge> getInducedEdges(Collection<String> chunkIds) {
+        if (chunkIds == null || chunkIds.size() < 2) return List.of();
+        try (Session session = driver.session()) {
+            return session.executeRead(tx -> {
+                Result r = tx.run(
+                    "MATCH (a:Method)-[rel:CALLS]->(b:Method) " +
+                    "WHERE a.chunkId IN $ids AND b.chunkId IN $ids " +
+                    "RETURN DISTINCT a.chunkId AS src, b.chunkId AS tgt, type(rel) AS t",
+                    Map.of("ids", new ArrayList<>(chunkIds))
+                );
+                List<PathEdge> edges = new ArrayList<>();
+                while (r.hasNext()) {
+                    Record rec = r.next();
+                    edges.add(new PathEdge(
+                        rec.get("src").asString(),
+                        rec.get("tgt").asString(),
+                        rec.get("t").asString(),
+                        PathEdge.Direction.OUT
+                    ));
+                }
+                return edges;
+            });
+        }
+    }
+
+    /**
+     * Batch-compute the shortest {@code CALLS} path from an anchor to each
+     * target chunkId. Absent entries in the returned map indicate no path
+     * was found within {@code maxHops}. The anchor maps to a length-0 path.
+     */
+    public Map<String, GraphPath> getShortestPathsFromAnchor(String anchorId,
+                                                              Collection<String> targetIds,
+                                                              int maxHops) {
+        if (anchorId == null || targetIds == null || targetIds.isEmpty()) return Map.of();
+        int hops = clampHops(maxHops);
+        try (Session session = driver.session()) {
+            return session.executeRead(tx -> {
+                Result r = tx.run(
+                    "MATCH (a:Method {chunkId:$anchor}) " +
+                    "UNWIND $targets AS tid " +
+                    "OPTIONAL MATCH (b:Method {chunkId:tid}) " +
+                    "OPTIONAL MATCH p = shortestPath((a)-[:CALLS*.." + hops + "]->(b)) " +
+                    "RETURN tid, " +
+                    "       CASE WHEN p IS NULL THEN null ELSE [n IN nodes(p) | n.chunkId] END AS ns, " +
+                    "       CASE WHEN p IS NULL THEN null ELSE [rel IN relationships(p) | type(rel)] END AS ts",
+                    Map.of("anchor", anchorId, "targets", new ArrayList<>(targetIds))
+                );
+                Map<String, GraphPath> out = new LinkedHashMap<>();
+                while (r.hasNext()) {
+                    Record rec = r.next();
+                    String tid = rec.get("tid").asString();
+                    if (tid.equals(anchorId)) {
+                        out.put(tid, GraphPath.single(anchorId));
+                        continue;
+                    }
+                    Value nsVal = rec.get("ns");
+                    Value tsVal = rec.get("ts");
+                    if (nsVal.isNull() || tsVal.isNull()) continue;
+                    List<String> nodes = nsVal.asList(Value::asString);
+                    List<String> types = tsVal.asList(Value::asString);
+                    if (nodes.isEmpty()) continue;
+                    out.put(tid, buildDirectedPath(nodes, types));
+                }
+                return out;
+            });
+        }
+    }
+
+    /**
+     * Return the immediate (1-hop) {@code CALLS} neighbors of a method,
+     * separated by direction. Outgoing edges use {@link PathEdge.Direction#OUT OUT}
+     * (this method calls the neighbor) and incoming use {@link PathEdge.Direction#IN IN}
+     * (the neighbor calls this method).
+     */
+    public List<PathEdge> getImmediateNeighbors(String chunkId) {
+        if (chunkId == null) return List.of();
+        try (Session session = driver.session()) {
+            return session.executeRead(tx -> {
+                List<PathEdge> edges = new ArrayList<>();
+                Result outs = tx.run(
+                    "MATCH (m:Method {chunkId:$id})-[rel:CALLS]->(n:Method) " +
+                    "RETURN m.chunkId AS src, n.chunkId AS tgt, type(rel) AS t",
+                    Map.of("id", chunkId)
+                );
+                while (outs.hasNext()) {
+                    Record rec = outs.next();
+                    edges.add(new PathEdge(
+                        rec.get("src").asString(),
+                        rec.get("tgt").asString(),
+                        rec.get("t").asString(),
+                        PathEdge.Direction.OUT
+                    ));
+                }
+                Result ins = tx.run(
+                    "MATCH (n:Method)-[rel:CALLS]->(m:Method {chunkId:$id}) " +
+                    "RETURN n.chunkId AS src, m.chunkId AS tgt, type(rel) AS t",
+                    Map.of("id", chunkId)
+                );
+                while (ins.hasNext()) {
+                    Record rec = ins.next();
+                    edges.add(new PathEdge(
+                        rec.get("src").asString(),
+                        rec.get("tgt").asString(),
+                        rec.get("t").asString(),
+                        PathEdge.Direction.IN
+                    ));
+                }
+                return edges;
+            });
+        }
+    }
+
+    private static GraphPath buildDirectedPath(List<String> nodes, List<String> types) {
+        if (nodes.size() == 1 && types.isEmpty()) {
+            return GraphPath.single(nodes.get(0));
+        }
+        List<PathEdge> edges = new ArrayList<>(types.size());
+        for (int i = 0; i < types.size(); i++) {
+            edges.add(new PathEdge(nodes.get(i), nodes.get(i + 1), types.get(i), PathEdge.Direction.OUT));
+        }
+        return new GraphPath(nodes, edges);
+    }
+
     @Override
     public void close() {
         if (driver != null) {
