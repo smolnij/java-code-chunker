@@ -539,7 +539,12 @@ public class Neo4jGraphReader implements AutoCloseable {
                     "MATCH (a:Method {chunkId:$anchor}) " +
                     "UNWIND $targets AS tid " +
                     "OPTIONAL MATCH (b:Method {chunkId:tid}) " +
-                    "OPTIONAL MATCH p = shortestPath((a)-[:CALLS*.." + hops + "]->(b)) " +
+                    "CALL { " +
+                    "  WITH a, b " +
+                    "  OPTIONAL MATCH p = (a)-[:CALLS*0.." + hops + "]->(b) " +
+                    "  WITH p ORDER BY length(p) ASC LIMIT 1 " +
+                    "  RETURN p " +
+                    "} " +
                     "RETURN tid, " +
                     "       CASE WHEN p IS NULL THEN null ELSE [n IN nodes(p) | n.chunkId] END AS ns, " +
                     "       CASE WHEN p IS NULL THEN null ELSE [rel IN relationships(p) | type(rel)] END AS ts",
@@ -549,10 +554,6 @@ public class Neo4jGraphReader implements AutoCloseable {
                 while (r.hasNext()) {
                     Record rec = r.next();
                     String tid = rec.get("tid").asString();
-                    if (tid.equals(anchorId)) {
-                        out.put(tid, GraphPath.single(anchorId));
-                        continue;
-                    }
                     Value nsVal = rec.get("ns");
                     Value tsVal = rec.get("ts");
                     if (nsVal.isNull() || tsVal.isNull()) continue;
