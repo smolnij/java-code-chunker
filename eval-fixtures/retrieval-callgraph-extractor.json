@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "retrieval-callgraph-extractor",
+  "description": "Retrieve the call-graph extraction surface — extractCalls + getCallsFrom/getCallersOf accessors.",
+  "mode": "retrieval",
+  "query": "How does CallGraphExtractor record forward and reverse call edges?",
+  "topK": 6,
+  "gold": {
+    "anchor": "com.smolnij.chunker.callgraph.CallGraphExtractor#extractCalls(MethodDeclaration, String)",
+    "relevant": [
+      "com.smolnij.chunker.callgraph.CallGraphExtractor#extractCalls(MethodDeclaration, String)",
+      "com.smolnij.chunker.callgraph.CallGraphExtractor#getCallsFrom(String)",
+      "com.smolnij.chunker.callgraph.CallGraphExtractor#getCallersOf(String)"
+    ]
+  },
+  "expected": {
+    "analyzer": null,
+    "compile": null,
+    "tests": []
+  },
+  "tags": ["self-eval", "retrieval", "callgraph"],
+  "timeoutSeconds": 120
+}

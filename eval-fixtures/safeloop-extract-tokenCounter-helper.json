@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "safeloop-extract-tokenCounter-helper",
+  "description": "Drive SafeRefactorLoop on an extract-method refactor inside TokenCounter. Purely local, no cross-class callers; should produce a SAFE verdict.",
+  "mode": "safeloop",
+  "query": "In com.smolnij.chunker.tokenizer.TokenCounter.splitIfNeeded, extract the line-boundary splitting logic into a private helper method named splitAtLineBoundaries.",
+  "topK": 8,
+  "gold": {
+    "anchor": "com.smolnij.chunker.tokenizer.TokenCounter#splitIfNeeded(String)",
+    "relevant": [
+      "com.smolnij.chunker.tokenizer.TokenCounter#splitIfNeeded(String)"
+    ]
+  },
+  "expected": {
+    "analyzer": "SAFE",
+    "compile": null,
+    "tests": []
+  },
+  "tags": ["self-eval", "safeloop", "extract-method"],
+  "timeoutSeconds": 600
+}

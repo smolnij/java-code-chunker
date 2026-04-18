@@ -1,3 +1,19 @@
+1. Retrieval + SafeLoop only (Recommended)                                                                                   
+   Leanest footprint. Retrieval scored without LLM; SafeLoop has the richest verdict output. Refactor/Ralph/Agent runners
+   stubbed as TODO, added once the harness is proven.
+   ❯ 2. All five modes (retrieval/refactor/safeloop/ralph/agent)
+   Every existing entry point gets a runner on day 1. More code, but every mode is measurable immediately.
+3. Retrieval-only
+   Pure retrieval precision/recall. No LLM integration at all in the first PR. Fastest to ship; LLM modes are a follow-up.
+4. Type something.
+   ─────────────────────
+
+
+The useful refactor, if anything, is to extract SafeLoopMain's wiring (config load → reader/retriever/agent/analyzer/loop    
+construction) into a reusable builder so EvalMain can instantiate the same loop per-fixture without duplicating setup. But   
+SafeLoopMain itself shouldn't pull in eval scoring.
+
+
 Ultraplan approved in browser. Here is the plan:
 
   <ultraplan>                                                                                                                  

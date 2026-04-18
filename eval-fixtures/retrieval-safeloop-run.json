@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "retrieval-safeloop-run",
+  "description": "Retrieve SafeRefactorLoop.run and its immediate collaborators (SafetyVerdict.parse, SafeLoopTools.expandForAnalyzer).",
+  "mode": "retrieval",
+  "query": "How does SafeRefactorLoop.run iterate toward a safe refactor verdict?",
+  "topK": 8,
+  "gold": {
+    "anchor": "com.smolnij.chunker.safeloop.SafeRefactorLoop#run(String)",
+    "relevant": [
+      "com.smolnij.chunker.safeloop.SafeRefactorLoop#run(String)",
+      "com.smolnij.chunker.safeloop.SafetyVerdict#parse(String)",
+      "com.smolnij.chunker.safeloop.SafeLoopTools#expandForAnalyzer(List)",
+      "com.smolnij.chunker.safeloop.SafeLoopTools#initialRetrieve(String)"
+    ]
+  },
+  "expected": {
+    "analyzer": null,
+    "compile": null,
+    "tests": []
+  },
+  "tags": ["self-eval", "retrieval", "safeloop-context"],
+  "timeoutSeconds": 120
+}

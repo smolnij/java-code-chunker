@@ -52,7 +52,7 @@ There are no automated tests — the project uses main classes for manual verifi
 | `store/Neo4jGraphStore` | Graph DB persistence + vector index initialization |
 | `retrieval/HybridRetriever` | RAG pipeline: exact match → graph BFS → vector fallback → re-rank |
 
-### Refactoring Modes (6 entry points)
+### Refactoring Modes (7 entry points)
 
 All modes use `HybridRetriever` to fetch context from Neo4j, then drive an LM-Studio LLM:
 
@@ -62,6 +62,7 @@ All modes use `HybridRetriever` to fetch context from Neo4j, then drive an LM-St
 4. **`RalphMain`** — worker/judge loop (separate LLM personas)
 5. **`SafeLoopMain`** — safety-gated loop with judge verdicts
 6. **`DistributedSafeLoopMain`** — multi-machine planner + analyzer agents
+7. **`EvalMain`** — golden-task eval harness; scores retrieval + safeloop fixtures from `eval-fixtures/` against a gold set (precision@K, recall@K, MRR, analyzer.verdict). Supports `--self-check` (no Neo4j/LLM) and `--baseline` regression diffs. Compile/test verifier is stubbed pending N-1.
 
 ### Environment Variables
 

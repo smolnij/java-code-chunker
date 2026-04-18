@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "retrieval-hybrid-rerank",
+  "description": "Retrieve the ranking pipeline inside HybridRetriever — retrieve entry, rerank step, and score aggregation on RetrievalResult.",
+  "mode": "retrieval",
+  "query": "How does HybridRetriever score and rerank chunks from BFS + vector candidates?",
+  "topK": 8,
+  "gold": {
+    "anchor": "com.smolnij.chunker.retrieval.HybridRetriever#retrieve(String)",
+    "relevant": [
+      "com.smolnij.chunker.retrieval.HybridRetriever#retrieve(String)",
+      "com.smolnij.chunker.retrieval.RetrievalResult#computeFinalScore(double, double, double)"
+    ]
+  },
+  "expected": {
+    "analyzer": null,
+    "compile": null,
+    "tests": []
+  },
+  "tags": ["self-eval", "retrieval", "ranking"],
+  "timeoutSeconds": 120
+}
