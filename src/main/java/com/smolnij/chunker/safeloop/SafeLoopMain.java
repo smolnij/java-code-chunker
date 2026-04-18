@@ -1,8 +1,5 @@
 package com.smolnij.chunker.safeloop;
 
-import com.smolnij.chunker.refactor.*;
-import com.smolnij.chunker.refactor.diff.AstDiffEngine;
-import com.smolnij.chunker.refactor.diff.DiffScorer;
 import com.smolnij.chunker.retrieval.*;
 
 import java.nio.file.Files;
@@ -176,48 +173,12 @@ public class SafeLoopMain {
 
             HybridRetriever retriever = new HybridRetriever(reader, embeddings, retrievalConfig);
 
-            // Build the RefactorConfig for the agent (maps SafeLoopConfig fields)
-            RefactorConfig refactorConfig = new RefactorConfig()
-                .withChatUrl(safeConfig.getChatUrl())
-                .withChatModel(safeConfig.getRefactorModel())
-                .withTemperature(safeConfig.getRefactorTemperature())
-                .withTopP(safeConfig.getTopP())
-                .withMaxTokens(safeConfig.getMaxTokens())
-                .withMaxChunks(safeConfig.getMaxChunks())
-                .withAgentMode(true)
-                .withMaxToolCalls(safeConfig.getMaxToolCalls())
-                .withChatMemorySize(safeConfig.getChatMemorySize());
-
-            // Agent tools (LangChain4j @Tool-annotated, used by the LLM)
-            RefactorTools agentTools = new RefactorTools(retriever, reader, safeConfig.getMaxChunks());
-
-            // AST diff engine + scorer (deterministic structural validation, used by SafeRefactorLoop Phase 4a)
-            AstDiffEngine diffEngine = new AstDiffEngine();
-            DiffScorer diffScorer = new DiffScorer(reader);
-
-            // Refactoring agent (LangChain4j AI Service with retrieval tools only)
-            RefactorAgent agent = new RefactorAgent(refactorConfig, agentTools);
-
-            // Analyzer chat service (separate, no tool calling — just evaluation)
-            try (ChatService analyzerChat = new LmStudioChatService(
-                    safeConfig.getChatUrl(),
-                    safeConfig.getAnalyzerModel(),
-                    safeConfig.getAnalyzerTemperature(),
-                    safeConfig.getTopP(),
-                    safeConfig.getMaxTokens())) {
-
-                // SafeLoop tools (programmatic graph management)
-                SafeLoopTools loopTools = new SafeLoopTools(retriever, reader, safeConfig);
-
-                // ── Build and run the loop ──
-                SafeRefactorLoop loop = new SafeRefactorLoop(
-                        agent, analyzerChat, loopTools, agentTools, safeConfig,
-                        diffEngine, diffScorer);
+            try (SafeLoopBundle bundle = SafeLoopBundle.build(reader, retriever, safeConfig)) {
 
                 System.out.println("━━━ Starting Safe Refactoring Loop ━━━━━━━━━━━━━━━━━━━");
                 System.out.println();
 
-                SafeLoopResult result = loop.run(query);
+                SafeLoopResult result = bundle.loop().run(query);
 
                 // ── Output ──
                 String output = result.toDisplayString();

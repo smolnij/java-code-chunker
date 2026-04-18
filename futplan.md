@@ -14,6 +14,10 @@ construction) into a reusable builder so EvalMain can instantiate the same loop 
 SafeLoopMain itself shouldn't pull in eval scoring.
 
 
+Extract SafeLoopMain's wiring (config load → reader/retriever/agent/analyzer/loop    
+construction) into a reusable builder so EvalMain can instantiate the same loop per-fixture without duplicating setup.
+
+
 Ultraplan approved in browser. Here is the plan:
 
   <ultraplan>                                                                                                                  

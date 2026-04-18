@@ -5,19 +5,11 @@ import com.google.gson.JsonObject;
 import com.smolnij.chunker.eval.fixture.Fixture;
 import com.smolnij.chunker.eval.result.RetrievedChunk;
 import com.smolnij.chunker.eval.result.RunResult;
-import com.smolnij.chunker.refactor.ChatService;
-import com.smolnij.chunker.refactor.LmStudioChatService;
-import com.smolnij.chunker.refactor.RefactorAgent;
-import com.smolnij.chunker.refactor.RefactorConfig;
-import com.smolnij.chunker.refactor.RefactorTools;
-import com.smolnij.chunker.refactor.diff.AstDiffEngine;
-import com.smolnij.chunker.refactor.diff.DiffScorer;
 import com.smolnij.chunker.retrieval.HybridRetriever.RetrievalResponse;
 import com.smolnij.chunker.retrieval.RetrievalResult;
+import com.smolnij.chunker.safeloop.SafeLoopBundle;
 import com.smolnij.chunker.safeloop.SafeLoopConfig;
 import com.smolnij.chunker.safeloop.SafeLoopResult;
-import com.smolnij.chunker.safeloop.SafeLoopTools;
-import com.smolnij.chunker.safeloop.SafeRefactorLoop;
 import com.smolnij.chunker.safeloop.SafetyVerdict;
 
 import java.time.Instant;
@@ -61,36 +53,10 @@ public final class SafeLoopRunner implements ModeRunner {
                 retrieved.add(new RetrievedChunk(r.getChunkId(), r.getFinalScore(), i + 1));
             }
 
-            RefactorConfig refactorConfig = new RefactorConfig()
-                    .withChatUrl(safeConfig.getChatUrl())
-                    .withChatModel(safeConfig.getRefactorModel())
-                    .withTemperature(safeConfig.getRefactorTemperature())
-                    .withTopP(safeConfig.getTopP())
-                    .withMaxTokens(safeConfig.getMaxTokens())
-                    .withMaxChunks(safeConfig.getMaxChunks())
-                    .withAgentMode(true)
-                    .withMaxToolCalls(safeConfig.getMaxToolCalls())
-                    .withChatMemorySize(safeConfig.getChatMemorySize());
-
-            RefactorTools agentTools = new RefactorTools(
-                    ctx.retriever(), ctx.reader(), safeConfig.getMaxChunks());
-            AstDiffEngine diffEngine = new AstDiffEngine();
-            DiffScorer diffScorer = new DiffScorer(ctx.reader());
-            RefactorAgent agent = new RefactorAgent(refactorConfig, agentTools);
-
             SafeLoopResult result;
-            try (ChatService analyzerChat = new LmStudioChatService(
-                    safeConfig.getChatUrl(),
-                    safeConfig.getAnalyzerModel(),
-                    safeConfig.getAnalyzerTemperature(),
-                    safeConfig.getTopP(),
-                    safeConfig.getMaxTokens())) {
-
-                SafeLoopTools loopTools = new SafeLoopTools(ctx.retriever(), ctx.reader(), safeConfig);
-                SafeRefactorLoop loop = new SafeRefactorLoop(
-                        agent, analyzerChat, loopTools, agentTools, safeConfig,
-                        diffEngine, diffScorer);
-                result = loop.run(fixture.query());
+            try (SafeLoopBundle bundle = SafeLoopBundle.build(
+                    ctx.reader(), ctx.retriever(), safeConfig)) {
+                result = bundle.loop().run(fixture.query());
             }
 
             long duration = System.currentTimeMillis() - t0;
