@@ -1,6 +1,11 @@
 package com.smolnij.chunker.refactor;
 
 import com.smolnij.chunker.model.CodeChunk;
+import com.smolnij.chunker.refactor.diff.AstDiffEngine;
+import com.smolnij.chunker.refactor.diff.CrossMethodDiff;
+import com.smolnij.chunker.refactor.diff.DiffScorer;
+import com.smolnij.chunker.refactor.diff.MethodDiff;
+import com.smolnij.chunker.refactor.diff.ScoredDiff;
 import com.smolnij.chunker.retrieval.HybridRetriever;
 import com.smolnij.chunker.retrieval.Neo4jGraphReader;
 import com.smolnij.chunker.retrieval.RetrievalResult;
@@ -45,6 +50,8 @@ public class RefactorLoop {
     private final RefactorConfig config;
     private final PromptBuilder promptBuilder;
     private final LlmResponseParser parser;
+    private final AstDiffEngine diffEngine;
+    private final DiffScorer diffScorer;
 
     /** Callback for streaming tokens to the console (or elsewhere). */
     private Consumer<String> streamCallback;
@@ -52,13 +59,17 @@ public class RefactorLoop {
     public RefactorLoop(HybridRetriever retriever,
                         Neo4jGraphReader graphReader,
                         ChatService chatService,
-                        RefactorConfig config) {
+                        RefactorConfig config,
+                        AstDiffEngine diffEngine,
+                        DiffScorer diffScorer) {
         this.retriever = retriever;
         this.graphReader = graphReader;
         this.chatService = chatService;
         this.config = config;
         this.promptBuilder = new PromptBuilder(config);
         this.parser = new LlmResponseParser();
+        this.diffEngine = Objects.requireNonNull(diffEngine, "diffEngine");
+        this.diffScorer = Objects.requireNonNull(diffScorer, "diffScorer");
         this.streamCallback = System.out::print; // default: print to stdout
     }
 
@@ -151,8 +162,10 @@ public class RefactorLoop {
         List<String> allBreakingChanges = new ArrayList<>();
 
         if (lastResponse != null && lastResponse.hasCode()) {
+            String astDiffReport = computeAstDiffReport(lastResponse.getRawResponse(), currentResults);
+
             String safetyPrompt = promptBuilder.buildSafetyCheckPrompt(
-                lastResponse.getRawResponse(), currentResults
+                lastResponse.getRawResponse(), currentResults, astDiffReport
             );
             StructuredOutputSpec safetySpec = PromptBuilder.specFor(
                 PromptBuilder.PromptKind.SAFETY_CHECK, config.getStructuredOutput());
@@ -245,6 +258,51 @@ public class RefactorLoop {
             System.out.println("  ╚══════════════════════════════════════════════════════════╝");
         }
         System.out.println();
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // AST diff (deterministic structural analysis)
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Compute a deterministic AST-level structural diff between the chunks
+     * currently in context and the LLM's proposed code, returning a formatted
+     * report suitable for injection into the safety-check prompt.
+     *
+     * <p>Returns an empty string when the proposal parses cleanly with no
+     * structural issues worth surfacing.
+     */
+    private String computeAstDiffReport(String proposedResponse, List<RetrievalResult> contextResults) {
+        try {
+            List<CodeChunk> originals = new ArrayList<>();
+            for (RetrievalResult r : contextResults) {
+                originals.add(r.getChunk());
+            }
+            CrossMethodDiff crossDiff = diffEngine.analyze(originals, proposedResponse);
+            if (crossDiff.isEmpty()) return "";
+
+            List<ScoredDiff> scoredDiffs = new ArrayList<>();
+            for (MethodDiff md : crossDiff.getMethodDiffs()) {
+                scoredDiffs.add(diffScorer.score(md));
+            }
+
+            StringBuilder sb = new StringBuilder();
+            if (!scoredDiffs.isEmpty()) {
+                sb.append("AST DIFF ANALYSIS (deterministic, ").append(scoredDiffs.size()).append(" method(s)):\n\n");
+                for (ScoredDiff sd : scoredDiffs) {
+                    sb.append(sd.toDisplayString());
+                }
+            }
+            String crossDisplay = crossDiff.toDisplayString();
+            if (!crossDisplay.isEmpty()) {
+                if (sb.length() > 0) sb.append("\n");
+                sb.append(crossDisplay);
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            System.out.println("  ⚠ AST diff failed: " + e.getMessage());
+            return "";
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════

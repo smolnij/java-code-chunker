@@ -8,6 +8,7 @@ import com.smolnij.chunker.refactor.RefactorConfig;
 import com.smolnij.chunker.refactor.RefactorTools;
 import com.smolnij.chunker.refactor.StructuredOutputSpec;
 import com.smolnij.chunker.refactor.diff.AstDiffEngine;
+import com.smolnij.chunker.refactor.diff.CrossMethodDiff;
 import com.smolnij.chunker.refactor.diff.DiffScorer;
 import com.smolnij.chunker.refactor.diff.MethodDiff;
 import com.smolnij.chunker.refactor.diff.ScoredDiff;
@@ -17,6 +18,7 @@ import com.smolnij.chunker.retrieval.RetrievalResult;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
 
@@ -140,28 +142,19 @@ public class SafeRefactorLoop {
     private final RefactorTools agentTools;
     private final SafeLoopConfig config;
 
-    /** AST diff engine for structural comparison (null if not configured). */
+    /** AST diff engine for structural comparison (required). */
     private final AstDiffEngine diffEngine;
 
-    /** Graph-aware diff scorer (null if not configured). */
+    /** Graph-aware diff scorer (required). */
     private final DiffScorer diffScorer;
 
     /** Callback for streaming progress updates. */
     private Consumer<String> progressCallback;
 
     /**
-     * Construct without AST diff support (backward-compatible).
-     */
-    public SafeRefactorLoop(RefactorAgent agent,
-                            ChatService analyzerChat,
-                            SafeLoopTools loopTools,
-                            RefactorTools agentTools,
-                            SafeLoopConfig config) {
-        this(agent, analyzerChat, loopTools, agentTools, config, null, null);
-    }
-
-    /**
      * Construct with AST diff support for structural validation in Phase 4.
+     * Both {@code diffEngine} and {@code diffScorer} are required — AST diffing
+     * is the cheapest empirical correctness signal and runs locally.
      */
     public SafeRefactorLoop(RefactorAgent agent,
                             ChatService analyzerChat,
@@ -175,8 +168,8 @@ public class SafeRefactorLoop {
         this.loopTools = loopTools;
         this.agentTools = agentTools;
         this.config = config;
-        this.diffEngine = diffEngine;
-        this.diffScorer = diffScorer;
+        this.diffEngine = Objects.requireNonNull(diffEngine, "diffEngine");
+        this.diffScorer = Objects.requireNonNull(diffScorer, "diffScorer");
         this.progressCallback = System.out::print;
     }
 
@@ -204,6 +197,7 @@ public class SafeRefactorLoop {
         String lastAgentResponse = "";
         String lastAstDiffReport = "";
         List<ScoredDiff> lastScoredDiffs = List.of();
+        CrossMethodDiff lastCrossDiff = CrossMethodDiff.empty();
         double lastAstSafetyScore = 1.0;
         SafeLoopResult.TerminalReason terminalReason = SafeLoopResult.TerminalReason.MAX_ITERATIONS;
 
@@ -265,7 +259,7 @@ public class SafeRefactorLoop {
                     SafetyVerdict lastVerdict = verdictHistory.get(verdictHistory.size() - 1);
                     String refinementPrompt = buildRefinementPrompt(
                             lastVerdict, iteration, lastAstDiffReport,
-                            lastScoredDiffs, lastAstSafetyScore);
+                            lastScoredDiffs, lastCrossDiff, lastAstSafetyScore);
                     lastAgentResponse = agent.getAssistant().chat(refinementPrompt);
                 }
 
@@ -278,33 +272,49 @@ public class SafeRefactorLoop {
                 // ── Phase 4: VALIDATE ──
                 System.out.println("━━━ " + iterLabel + ": Phase 4 — Safety Validation ━━━━━");
 
-                // Phase 4a: AST diff scoring (deterministic, if configured)
-                String astDiffReport = "";
+                // Phase 4a: AST diff scoring (deterministic)
+                System.out.println("  ┌─ AST Diff ────────────────────────────────────────");
+                CrossMethodDiff crossDiff = analyzeCrossMethod(lastAgentResponse);
+                List<ScoredDiff> scoredDiffs = new ArrayList<>();
                 double astSafetyScore = 1.0;
-                List<ScoredDiff> scoredDiffs = List.of();
-                if (diffEngine != null && diffScorer != null) {
-                    System.out.println("  ┌─ AST Diff ────────────────────────────────────────");
-                    scoredDiffs = computeAstDiffs(lastAgentResponse);
-                    if (!scoredDiffs.isEmpty()) {
-                        StringBuilder diffSb = new StringBuilder();
-                        diffSb.append("AST DIFF ANALYSIS (deterministic, ").append(scoredDiffs.size()).append(" methods):\n\n");
-                        for (ScoredDiff sd : scoredDiffs) {
-                            diffSb.append(sd.toDisplayString());
-                            astSafetyScore = Math.min(astSafetyScore, sd.getSafetyScore());
-                            System.out.println("  │ " + sd.getDiff().getChunkId()
-                                + ": score=" + String.format("%.2f", sd.getSafetyScore())
-                                + " callers=" + sd.getAffectedCallerCount());
-                        }
-                        astDiffReport = diffSb.toString();
-                    } else {
-                        System.out.println("  │ (no code blocks matched to graph methods)");
-                    }
-                    System.out.println("  │ Worst-case AST safety: " + String.format("%.2f", astSafetyScore));
-                    System.out.println("  └───────────────────────────────────────────────────");
+                for (MethodDiff md : crossDiff.getMethodDiffs()) {
+                    ScoredDiff sd = diffScorer.score(md);
+                    scoredDiffs.add(sd);
+                    astSafetyScore = Math.min(astSafetyScore, sd.getSafetyScore());
+                    System.out.println("  │ " + sd.getDiff().getChunkId()
+                        + ": score=" + String.format("%.2f", sd.getSafetyScore())
+                        + " callers=" + sd.getAffectedCallerCount());
                 }
+                if (scoredDiffs.isEmpty() && crossDiff.isEmpty()) {
+                    System.out.println("  │ (no code blocks matched to graph methods)");
+                }
+                if (crossDiff.hasInvariantViolations()) {
+                    astSafetyScore = Math.min(astSafetyScore, 0.3);
+                    System.out.println("  │ ⛔ Cross-method violations: "
+                        + crossDiff);
+                }
+
+                StringBuilder diffSb = new StringBuilder();
+                if (!scoredDiffs.isEmpty()) {
+                    diffSb.append("AST DIFF ANALYSIS (deterministic, ").append(scoredDiffs.size()).append(" methods):\n\n");
+                    for (ScoredDiff sd : scoredDiffs) {
+                        diffSb.append(sd.toDisplayString());
+                    }
+                }
+                String crossDisplay = crossDiff.toDisplayString();
+                if (!crossDisplay.isEmpty()) {
+                    if (diffSb.length() > 0) diffSb.append("\n");
+                    diffSb.append(crossDisplay);
+                }
+                String astDiffReport = diffSb.toString();
+
+                System.out.println("  │ Worst-case AST safety: " + String.format("%.2f", astSafetyScore));
+                System.out.println("  └───────────────────────────────────────────────────");
+
                 // Store for next iteration's refinement prompt
                 lastAstDiffReport = astDiffReport;
                 lastScoredDiffs = scoredDiffs;
+                lastCrossDiff = crossDiff;
                 lastAstSafetyScore = astSafetyScore;
 
                 // Phase 4b: LLM analyzer evaluation (with AST diff injected)
@@ -496,6 +506,7 @@ public class SafeRefactorLoop {
     private String buildRefinementPrompt(SafetyVerdict verdict, int iteration,
                                          String astDiffReport,
                                          List<ScoredDiff> scoredDiffs,
+                                         CrossMethodDiff crossDiff,
                                          double astSafetyScore) {
         StringBuilder sb = new StringBuilder();
 
@@ -505,10 +516,16 @@ public class SafeRefactorLoop {
         sb.append("CONFIDENCE: ").append(String.format("%.2f", verdict.getConfidence())).append("\n");
 
         // Show the deterministic AST safety score alongside the LLM confidence
-        if (!scoredDiffs.isEmpty()) {
+        if (!scoredDiffs.isEmpty() || (crossDiff != null && crossDiff.hasInvariantViolations())) {
             sb.append("AST SAFETY SCORE: ").append(String.format("%.2f", astSafetyScore)).append(" / 1.00\n");
         }
         sb.append("\n");
+
+        if (crossDiff != null && crossDiff.hasInvariantViolations()) {
+            sb.append("── CROSS-METHOD INVARIANT VIOLATIONS (deterministic) ──\n");
+            sb.append(buildCrossMethodSummary(crossDiff));
+            sb.append("\n");
+        }
 
         // Inject actionable summary derived from structured AST diff data
         if (!scoredDiffs.isEmpty()) {
@@ -579,6 +596,54 @@ public class SafeRefactorLoop {
      * @param worstScore     the worst-case safety score across all diffs
      * @return a concise summary string for LLM consumption
      */
+    /**
+     * Build a concise natural-language summary of cross-method invariant
+     * violations detected by {@link AstDiffEngine#analyze}.
+     */
+    private static String buildCrossMethodSummary(CrossMethodDiff crossDiff) {
+        StringBuilder sb = new StringBuilder();
+
+        List<CrossMethodDiff.DeletedMember> externalDeletes = new ArrayList<>();
+        for (CrossMethodDiff.DeletedMember d : crossDiff.getDeletedMethods()) {
+            if (d.isExternallyVisible()) externalDeletes.add(d);
+        }
+        if (!externalDeletes.isEmpty()) {
+            sb.append("  • You DELETED public/protected methods that the original class exposed. ");
+            sb.append("Callers that referenced them will fail to compile:\n");
+            for (CrossMethodDiff.DeletedMember d : externalDeletes) {
+                sb.append("      - ").append(d).append("\n");
+            }
+            sb.append("    Restore these methods or keep shim implementations.\n");
+        }
+
+        if (!crossDiff.getAddedPublicMembers().isEmpty()) {
+            sb.append("  • You added new public/protected methods that the task did not ask for. ");
+            sb.append("Either scope them private or remove them unless they are strictly required:\n");
+            for (CrossMethodDiff.AddedMember a : crossDiff.getAddedPublicMembers()) {
+                sb.append("      + ").append(a).append("\n");
+            }
+        }
+
+        if (!crossDiff.getRemovedOverrides().isEmpty()) {
+            sb.append("  • You removed @Override from methods that had it originally. ");
+            sb.append("This breaks polymorphism checks and is almost always a mistake:\n");
+            for (String name : crossDiff.getRemovedOverrides()) {
+                sb.append("      - ").append(name).append("\n");
+            }
+        }
+
+        List<MethodDiff> pubBreaks = crossDiff.getPublicSignatureBreaks();
+        if (!pubBreaks.isEmpty()) {
+            sb.append("  • You changed the signature of originally public/protected members — ");
+            sb.append("each one is a compile-time break for every caller:\n");
+            for (MethodDiff d : pubBreaks) {
+                sb.append("      - ").append(d.getChunkId()).append("\n");
+            }
+        }
+
+        return sb.toString();
+    }
+
     private static String buildAstDiffSummary(List<ScoredDiff> scoredDiffs, double worstScore) {
         StringBuilder sb = new StringBuilder();
 
@@ -723,47 +788,41 @@ public class SafeRefactorLoop {
     // ═══════════════════════════════════════════════════════════════
 
     /**
-     * Extract Java code blocks from the agent's response and compute
-     * AST diffs against the originals in the graph.
+     * Run the full cross-method AST diff for the agent's response.
      *
-     * <p>Matching strategy: for each ```java block, extract the method name
-     * from the code, search the graph for a matching method, and diff.
+     * <p>Collects originals by resolving every method name that appears in the
+     * response via {@link SafeLoopTools#resolveMethodForDiff(String)} and any
+     * nodes already pulled into {@link SafeLoopTools#getRetrievedNodeIds()} so
+     * the engine can detect deletions (originals in scope but absent from the
+     * proposal).
      */
-    private List<ScoredDiff> computeAstDiffs(String agentResponse) {
-        List<ScoredDiff> results = new ArrayList<>();
-        if (diffEngine == null || diffScorer == null) return results;
+    private CrossMethodDiff analyzeCrossMethod(String agentResponse) {
+        try {
+            Set<String> chunkIds = new java.util.LinkedHashSet<>();
 
-        // Extract all ```java blocks
-        List<String> codeBlocks = extractCodeBlocks(agentResponse);
-        if (codeBlocks.isEmpty()) return results;
+            // Include everything the loop has already retrieved — these are the
+            // methods in scope and are the baseline for deletion detection.
+            chunkIds.addAll(loopTools.getRetrievedNodeIds());
 
-        // For each code block, try to match it to a graph method and diff
-        for (String codeBlock : codeBlocks) {
-            try {
-                // Try to extract a method name from the code block
-                String methodName = extractMethodNameFromCode(codeBlock);
+            // Resolve every method-name appearing in the response too, in case
+            // the agent produced code for a method we haven't fetched yet.
+            for (String block : extractCodeBlocks(agentResponse)) {
+                String methodName = extractMethodNameFromCode(block);
                 if (methodName == null || methodName.isEmpty()) continue;
-
-                // Resolve in the graph
-                String resolvedId = loopTools.resolveMethodForDiff(methodName);
-                if (resolvedId == null) continue;
-
-                // Fetch original
-                Map<String, CodeChunk> chunks = loopTools.fetchChunksForDiff(Set.of(resolvedId));
-                CodeChunk original = chunks.get(resolvedId);
-                if (original == null) continue;
-
-                // Compute AST diff
-                MethodDiff diff = diffEngine.diff(original, codeBlock);
-                ScoredDiff scored = diffScorer.score(diff);
-                results.add(scored);
-
-            } catch (Exception e) {
-                System.out.println("    WARN: AST diff failed for code block: " + e.getMessage());
+                String resolved = loopTools.resolveMethodForDiff(methodName);
+                if (resolved != null) chunkIds.add(resolved);
             }
-        }
 
-        return results;
+            if (chunkIds.isEmpty()) return CrossMethodDiff.empty();
+
+            Map<String, CodeChunk> chunks = loopTools.fetchChunksForDiff(chunkIds);
+            if (chunks.isEmpty()) return CrossMethodDiff.empty();
+
+            return diffEngine.analyze(new ArrayList<>(chunks.values()), agentResponse);
+        } catch (Exception e) {
+            System.out.println("    WARN: AST diff failed: " + e.getMessage());
+            return CrossMethodDiff.empty();
+        }
     }
 
     /**

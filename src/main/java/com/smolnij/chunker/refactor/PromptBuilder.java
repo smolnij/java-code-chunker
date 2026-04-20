@@ -149,6 +149,17 @@ public class PromptBuilder {
      * @return the safety-check user prompt
      */
     public String buildSafetyCheckPrompt(String proposedChanges, List<RetrievalResult> results) {
+        return buildSafetyCheckPrompt(proposedChanges, results, "");
+    }
+
+    /**
+     * Build a follow-up safety prompt enriched with a deterministic AST-diff
+     * report. When {@code astDiffReport} is non-empty it is injected as a
+     * "DETERMINISTIC AST ANALYSIS" section so the LLM must reconcile its
+     * verdict with observable structural facts.
+     */
+    public String buildSafetyCheckPrompt(String proposedChanges, List<RetrievalResult> results,
+                                         String astDiffReport) {
         StringBuilder sb = new StringBuilder();
 
         sb.append("TASK:\n");
@@ -157,6 +168,14 @@ public class PromptBuilder {
 
         sb.append("PROPOSED CHANGES:\n");
         sb.append(proposedChanges).append("\n\n");
+
+        if (astDiffReport != null && !astDiffReport.isEmpty()) {
+            sb.append("── DETERMINISTIC AST ANALYSIS (from JavaParser) ──────────\n");
+            sb.append("The following is a deterministic structural diff computed by parsing\n");
+            sb.append("the proposed code and comparing it against the original AST.\n");
+            sb.append("Treat these facts as ground truth when assessing risks:\n\n");
+            sb.append(astDiffReport).append("\n");
+        }
 
         // Include a summary of the call graph for context
         sb.append("CALL GRAPH CONTEXT:\n");

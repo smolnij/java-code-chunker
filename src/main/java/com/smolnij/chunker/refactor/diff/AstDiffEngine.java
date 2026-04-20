@@ -11,6 +11,8 @@ import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -143,6 +145,215 @@ public class AstDiffEngine {
 
         return diff;
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Cross-method analysis
+    // ═══════════════════════════════════════════════════════════════
+
+    private static final Pattern JAVA_FENCE_PATTERN = Pattern.compile(
+            "```\\s*java\\s*\\r?\\n(.*?)```",
+            Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Compare a set of original methods (in scope) against the methods the LLM
+     * proposed in its response. Surfaces cross-method invariants:
+     * <ul>
+     *   <li>originals missing from the proposal</li>
+     *   <li>new public/protected methods the caller didn't ask for</li>
+     *   <li>methods that silently lost {@code @Override}</li>
+     * </ul>
+     *
+     * <p>Matching is by simple method name within each class. When a class is
+     * not identifiable for a proposed method (e.g. a bare method block outside
+     * a class wrapper), the method is matched across the scope by name only.
+     *
+     * <p>Per-method {@link MethodDiff}s inside the returned {@link CrossMethodDiff}
+     * are unscored — callers should wrap each with {@link DiffScorer#score(MethodDiff)}
+     * for blast-radius analysis.
+     *
+     * @param originals the original code chunks that should be preserved
+     * @param agentResponse the full LLM response (may contain multiple ```java blocks)
+     */
+    public CrossMethodDiff analyze(List<CodeChunk> originals, String agentResponse) {
+        if (originals == null || originals.isEmpty() || agentResponse == null || agentResponse.isBlank()) {
+            return CrossMethodDiff.empty();
+        }
+
+        List<ProposedMethod> proposed = extractProposedMethods(agentResponse);
+        if (proposed.isEmpty()) {
+            return CrossMethodDiff.empty();
+        }
+
+        // Index originals: "ClassName#methodName" and bare "methodName" (fallback).
+        Map<String, CodeChunk> originalByQualified = new LinkedHashMap<>();
+        Map<String, List<CodeChunk>> originalByName = new LinkedHashMap<>();
+        for (CodeChunk c : originals) {
+            String key = qualifiedKey(c.getClassName(), c.getMethodName());
+            originalByQualified.put(key, c);
+            originalByName.computeIfAbsent(c.getMethodName(), k -> new ArrayList<>()).add(c);
+        }
+
+        Set<String> matchedOriginals = new LinkedHashSet<>();
+        List<MethodDiff> methodDiffs = new ArrayList<>();
+        List<CrossMethodDiff.AddedMember> addedPublic = new ArrayList<>();
+        List<String> removedOverrides = new ArrayList<>();
+
+        for (ProposedMethod pm : proposed) {
+            CodeChunk match = findOriginalFor(pm, originalByQualified, originalByName, matchedOriginals);
+            if (match == null) {
+                if ("public".equals(pm.visibility()) || "protected".equals(pm.visibility())) {
+                    addedPublic.add(new CrossMethodDiff.AddedMember(
+                            pm.className(), pm.methodName(), pm.visibility(), pm.signature()));
+                }
+                continue;
+            }
+            matchedOriginals.add(match.getChunkId());
+            MethodDiff diff = diff(match, pm.code());
+            methodDiffs.add(diff);
+
+            if (hadOverride(match) && !pm.hasOverride() && !diff.isParseError()) {
+                removedOverrides.add(match.getClassName() + "." + match.getMethodName());
+            }
+        }
+
+        List<CrossMethodDiff.DeletedMember> deleted = new ArrayList<>();
+        for (CodeChunk c : originals) {
+            if (matchedOriginals.contains(c.getChunkId())) continue;
+            String vis = originalVisibility(c);
+            deleted.add(new CrossMethodDiff.DeletedMember(
+                    c.getChunkId(), c.getClassName(), c.getMethodName(), vis));
+        }
+
+        return new CrossMethodDiff(methodDiffs, deleted, addedPublic, removedOverrides);
+    }
+
+    private CodeChunk findOriginalFor(ProposedMethod pm,
+                                       Map<String, CodeChunk> byQualified,
+                                       Map<String, List<CodeChunk>> byName,
+                                       Set<String> alreadyMatched) {
+        if (pm.className() != null && !pm.className().isEmpty()) {
+            CodeChunk direct = byQualified.get(qualifiedKey(pm.className(), pm.methodName()));
+            if (direct != null && !alreadyMatched.contains(direct.getChunkId())) {
+                return direct;
+            }
+        }
+        List<CodeChunk> candidates = byName.get(pm.methodName());
+        if (candidates == null || candidates.isEmpty()) return null;
+        for (CodeChunk c : candidates) {
+            if (!alreadyMatched.contains(c.getChunkId())) {
+                return c;
+            }
+        }
+        return null;
+    }
+
+    private static String qualifiedKey(String className, String methodName) {
+        return (className == null ? "" : className) + "#" + methodName;
+    }
+
+    private static boolean hadOverride(CodeChunk chunk) {
+        List<String> ann = chunk.getMethodAnnotations();
+        if (ann == null) return false;
+        for (String a : ann) {
+            if (a == null) continue;
+            String stripped = a.trim();
+            if (stripped.startsWith("@")) stripped = stripped.substring(1);
+            int paren = stripped.indexOf('(');
+            if (paren >= 0) stripped = stripped.substring(0, paren);
+            if ("Override".equalsIgnoreCase(stripped)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Best-effort visibility extractor for an original {@link CodeChunk}, based
+     * on its recorded method signature text.
+     */
+    static String originalVisibility(CodeChunk chunk) {
+        String sig = chunk.getMethodSignature();
+        if (sig == null) return "package-private";
+        String s = sig.trim();
+        if (s.startsWith("public ")) return "public";
+        if (s.startsWith("protected ")) return "protected";
+        if (s.startsWith("private ")) return "private";
+        // Signature may start with annotations or modifiers in any order
+        if (s.contains(" public ")) return "public";
+        if (s.contains(" protected ")) return "protected";
+        if (s.contains(" private ")) return "private";
+        return "package-private";
+    }
+
+    /** Extract all methods from all ```java fences in the agent response. */
+    private List<ProposedMethod> extractProposedMethods(String response) {
+        List<ProposedMethod> out = new ArrayList<>();
+        Matcher m = JAVA_FENCE_PATTERN.matcher(response);
+        while (m.find()) {
+            String block = m.group(1);
+            collectMethodsFromBlock(block, out);
+        }
+        return out;
+    }
+
+    private void collectMethodsFromBlock(String block, List<ProposedMethod> sink) {
+        CompilationUnit cu = parseToCompilationUnit(block);
+        if (cu == null) return;
+
+        for (MethodDeclaration md : cu.findAll(MethodDeclaration.class)) {
+            String name = md.getNameAsString();
+            String visibility;
+            if (md.isPublic()) visibility = "public";
+            else if (md.isProtected()) visibility = "protected";
+            else if (md.isPrivate()) visibility = "private";
+            else visibility = "package-private";
+
+            String signature;
+            try {
+                signature = md.getDeclarationAsString(true, true, true);
+            } catch (Exception e) {
+                signature = md.getNameAsString() + "(" + md.getParameters() + ")";
+            }
+
+            String className = md.findAncestor(com.github.javaparser.ast.body.TypeDeclaration.class)
+                    .map(t -> t.getNameAsString())
+                    .orElse("");
+            // Ignore the synthetic wrapper class the engine uses internally.
+            if ("_Synthetic".equals(className)) className = "";
+
+            boolean hasOverride = md.getAnnotations().stream()
+                    .map(AnnotationExpr::getNameAsString)
+                    .anyMatch(n -> n.equalsIgnoreCase("Override"));
+
+            sink.add(new ProposedMethod(className, name, visibility, signature, md.toString(), hasOverride));
+        }
+    }
+
+    private CompilationUnit parseToCompilationUnit(String block) {
+        String trimmed = block.trim();
+        try {
+            ParseResult<CompilationUnit> direct = parser.parse(trimmed);
+            if (direct.isSuccessful() && direct.getResult().isPresent()) {
+                CompilationUnit cu = direct.getResult().get();
+                if (!cu.findAll(MethodDeclaration.class).isEmpty()) return cu;
+            }
+        } catch (Exception ignored) { }
+
+        try {
+            ParseResult<CompilationUnit> wrapped = parser.parse(
+                    "class _Synthetic { " + trimmed + " }");
+            if (wrapped.isSuccessful() && wrapped.getResult().isPresent()) {
+                return wrapped.getResult().get();
+            }
+        } catch (Exception ignored) { }
+
+        return null;
+    }
+
+    private record ProposedMethod(String className,
+                                  String methodName,
+                                  String visibility,
+                                  String signature,
+                                  String code,
+                                  boolean hasOverride) { }
 
     // ═══════════════════════════════════════════════════════════════
     // Parsing helpers

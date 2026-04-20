@@ -1,5 +1,7 @@
 package com.smolnij.chunker.refactor;
 
+import com.smolnij.chunker.refactor.diff.AstDiffEngine;
+import com.smolnij.chunker.refactor.diff.DiffScorer;
 import com.smolnij.chunker.retrieval.*;
 
 import java.nio.file.Files;
@@ -139,7 +141,10 @@ public class RefactorMain {
             } else {
                 // ── Legacy pipeline mode ──
                 try (ChatService chatService = new LmStudioChatService(refactorConfig)) {
-                    RefactorLoop loop = new RefactorLoop(retriever, reader, chatService, refactorConfig);
+                    AstDiffEngine diffEngine = new AstDiffEngine();
+                    DiffScorer diffScorer = new DiffScorer(reader);
+                    RefactorLoop loop = new RefactorLoop(
+                            retriever, reader, chatService, refactorConfig, diffEngine, diffScorer);
                     RefactorLoop.RefactorResult result = loop.run(query);
 
                     output = result.toDisplayString();

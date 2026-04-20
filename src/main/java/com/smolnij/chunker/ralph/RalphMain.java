@@ -2,6 +2,8 @@ package com.smolnij.chunker.ralph;
 
 import com.smolnij.chunker.refactor.ChatService;
 import com.smolnij.chunker.refactor.LmStudioChatService;
+import com.smolnij.chunker.refactor.diff.AstDiffEngine;
+import com.smolnij.chunker.refactor.diff.DiffScorer;
 import com.smolnij.chunker.retrieval.*;
 
 import java.nio.file.Files;
@@ -116,7 +118,10 @@ public class RalphMain {
             System.out.println();
 
             // ── Step 2: Build task ──
-            RefactorRalphTask task = new RefactorRalphTask(query, retrievalResponse.getResults(), ralphConfig);
+            AstDiffEngine diffEngine = new AstDiffEngine();
+            DiffScorer diffScorer = new DiffScorer(reader);
+            RefactorRalphTask task = new RefactorRalphTask(
+                    query, retrievalResponse.getResults(), ralphConfig, diffEngine, diffScorer);
 
             // ── Step 3: Build chat services ──
             // Worker and judge can use different models/temperatures

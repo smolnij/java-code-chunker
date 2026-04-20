@@ -1,9 +1,16 @@
 package com.smolnij.chunker.ralph;
 
 import com.smolnij.chunker.model.CodeChunk;
+import com.smolnij.chunker.refactor.diff.AstDiffEngine;
+import com.smolnij.chunker.refactor.diff.CrossMethodDiff;
+import com.smolnij.chunker.refactor.diff.DiffScorer;
+import com.smolnij.chunker.refactor.diff.MethodDiff;
+import com.smolnij.chunker.refactor.diff.ScoredDiff;
 import com.smolnij.chunker.retrieval.RetrievalResult;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * A {@link RalphTask} implementation for graph-aware code refactoring.
@@ -65,15 +72,21 @@ public class RefactorRalphTask implements RalphTask {
     private final String userQuery;
     private final List<RetrievalResult> results;
     private final int maxChunks;
+    private final AstDiffEngine diffEngine;
+    private final DiffScorer diffScorer;
 
-    public RefactorRalphTask(String userQuery, List<RetrievalResult> results, int maxChunks) {
+    public RefactorRalphTask(String userQuery, List<RetrievalResult> results, int maxChunks,
+                             AstDiffEngine diffEngine, DiffScorer diffScorer) {
         this.userQuery = userQuery;
         this.results = results;
         this.maxChunks = maxChunks;
+        this.diffEngine = Objects.requireNonNull(diffEngine, "diffEngine");
+        this.diffScorer = Objects.requireNonNull(diffScorer, "diffScorer");
     }
 
-    public RefactorRalphTask(String userQuery, List<RetrievalResult> results, RalphConfig config) {
-        this(userQuery, results, config.getMaxChunks());
+    public RefactorRalphTask(String userQuery, List<RetrievalResult> results, RalphConfig config,
+                             AstDiffEngine diffEngine, DiffScorer diffScorer) {
+        this(userQuery, results, config.getMaxChunks(), diffEngine, diffScorer);
     }
 
     @Override
@@ -105,6 +118,15 @@ public class RefactorRalphTask implements RalphTask {
             sb.append("A code reviewer found the following issues with your previous attempt. ");
             sb.append("You MUST address ALL of these issues:\n\n");
             sb.append(judgeFeedback).append("\n\n");
+
+            String astDiffReport = computeAstDiffReport(previousAttempt);
+            if (!astDiffReport.isEmpty()) {
+                sb.append("── DETERMINISTIC AST DIFF (from JavaParser) ──────────────\n");
+                sb.append("These are structural facts about your previous code. ");
+                sb.append("Treat them as ground truth when revising:\n\n");
+                sb.append(astDiffReport).append("\n");
+            }
+
             sb.append("YOUR PREVIOUS OUTPUT (for reference):\n");
             sb.append(previousAttempt != null ? truncate(previousAttempt, 2000) : "(none)");
             sb.append("\n\n");
@@ -202,6 +224,16 @@ public class RefactorRalphTask implements RalphTask {
         sb.append("PROPOSED CHANGES (from worker, iteration ").append(iteration + 1).append("):\n");
         sb.append(workerOutput).append("\n\n");
 
+        // ── Deterministic AST diff ──
+        String astDiffReport = computeAstDiffReport(workerOutput);
+        if (!astDiffReport.isEmpty()) {
+            sb.append("── DETERMINISTIC AST ANALYSIS (from JavaParser) ──────────\n");
+            sb.append("The following is a deterministic structural diff of the worker's code\n");
+            sb.append("against the originals in the graph. Use these facts as ground truth —\n");
+            sb.append("you MUST call out anything flagged here in your verdict:\n\n");
+            sb.append(astDiffReport).append("\n");
+        }
+
         // ── Evaluation criteria ──
         sb.append("EVALUATION CRITERIA:\n");
         sb.append("1. CORRECTNESS: Does the refactored code compile? Is the logic correct?\n");
@@ -222,6 +254,48 @@ public class RefactorRalphTask implements RalphTask {
         sb.append("needs to be fixed so the worker can correct it on the next attempt.\n");
 
         return sb.toString();
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // AST diff (deterministic structural analysis)
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Run the AST diff engine on a worker response and format a report for
+     * the judge and for the worker's retry prompt. Returns an empty string
+     * when there is nothing structurally noteworthy.
+     */
+    private String computeAstDiffReport(String response) {
+        if (response == null || response.isBlank()) return "";
+        try {
+            List<CodeChunk> originals = new ArrayList<>();
+            for (RetrievalResult r : results) {
+                originals.add(r.getChunk());
+            }
+            CrossMethodDiff crossDiff = diffEngine.analyze(originals, response);
+            if (crossDiff.isEmpty()) return "";
+
+            List<ScoredDiff> scoredDiffs = new ArrayList<>();
+            for (MethodDiff md : crossDiff.getMethodDiffs()) {
+                scoredDiffs.add(diffScorer.score(md));
+            }
+
+            StringBuilder sb = new StringBuilder();
+            if (!scoredDiffs.isEmpty()) {
+                sb.append("AST DIFF ANALYSIS (deterministic, ").append(scoredDiffs.size()).append(" method(s)):\n\n");
+                for (ScoredDiff sd : scoredDiffs) {
+                    sb.append(sd.toDisplayString());
+                }
+            }
+            String crossDisplay = crossDiff.toDisplayString();
+            if (!crossDisplay.isEmpty()) {
+                if (sb.length() > 0) sb.append("\n");
+                sb.append(crossDisplay);
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════
