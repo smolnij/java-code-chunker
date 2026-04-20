@@ -30,6 +30,7 @@ public class RetrievalResult implements Comparable<RetrievalResult> {
 
     // ── Flags ──
     private boolean isAnchor;            // true if this is the original entry point
+    private boolean topologyOnly;        // true if this chunk is included only as topology (no body)
 
     // ── Path context (optional) ──
     private GraphPath pathFromAnchor;    // shortest CALLS path from anchor to this chunk (null if unreachable)
@@ -103,6 +104,9 @@ public class RetrievalResult implements Comparable<RetrievalResult> {
     public boolean isAnchor() { return isAnchor; }
     public void setAnchor(boolean v) { this.isAnchor = v; }
 
+    public boolean isTopologyOnly() { return topologyOnly; }
+    public void setTopologyOnly(boolean v) { this.topologyOnly = v; }
+
     public GraphPath getPathFromAnchor() { return pathFromAnchor; }
     public void setPathFromAnchor(GraphPath p) { this.pathFromAnchor = p; }
 
@@ -135,7 +139,7 @@ public class RetrievalResult implements Comparable<RetrievalResult> {
         return String.format(
             "[%.4f] %s%s  (sem=%.3f  graph=%.3f@%dhop  struct=%.3f)",
             finalScore,
-            isAnchor ? "⚓ " : "  ",
+            (isAnchor ? "⚓ " : "  ") + (topologyOnly ? " (topo)" : ""),
             chunkId,
             semanticSimilarity,
             graphDistanceScore,

@@ -50,6 +50,13 @@ public class RetrievalConfig {
     private int maxPathsReturned = 3;
     private int maxTopologyEdges = 200;
 
+    // ── Budget allocator percentages (0.0 - 1.0). Remaining fraction becomes topology-only fallback.
+    // Defaults leave a small leftover for topology-only entries.
+    private double anchorPct = 0.15;
+    private double callersPct = 0.30;
+    private double calleesPct = 0.25;
+    private double typeNeighborsPct = 0.20;
+
     // ═══════════════════════════════════════════════════════════════
     // Factory — load from env / system properties
     // ═══════════════════════════════════════════════════════════════
@@ -83,6 +90,11 @@ public class RetrievalConfig {
         cfg.maxPathsReturned = intVal("RETRIEVAL_MAX_PATHS_RETURNED", "retrieval.maxPathsReturned", cfg.maxPathsReturned);
         cfg.maxTopologyEdges = intVal("RETRIEVAL_MAX_TOPOLOGY_EDGES", "retrieval.maxTopologyEdges", cfg.maxTopologyEdges);
 
+        cfg.anchorPct = doubleVal("RETRIEVAL_ANCHOR_PCT", "retrieval.anchorPct", cfg.anchorPct);
+        cfg.callersPct = doubleVal("RETRIEVAL_CALLERS_PCT", "retrieval.callersPct", cfg.callersPct);
+        cfg.calleesPct = doubleVal("RETRIEVAL_CALLEES_PCT", "retrieval.calleesPct", cfg.calleesPct);
+        cfg.typeNeighborsPct = doubleVal("RETRIEVAL_TYPE_NEIGHBORS_PCT", "retrieval.typeNeighborsPct", cfg.typeNeighborsPct);
+
         return cfg;
     }
 
@@ -92,6 +104,17 @@ public class RetrievalConfig {
 
     public int getMaxDepth() { return maxDepth; }
     public int getTopK() { return topK; }
+
+    public double getAnchorPct() { return anchorPct; }
+    public double getCallersPct() { return callersPct; }
+    public double getCalleesPct() { return calleesPct; }
+    public double getTypeNeighborsPct() { return typeNeighborsPct; }
+
+    /** The fraction reserved for topology-only fallback (remaining fraction after other buckets). */
+    public double getTopologyFallbackPct() {
+        double sum = anchorPct + callersPct + calleesPct + typeNeighborsPct;
+        return Math.max(0.0, 1.0 - sum);
+    }
 
     public double getSemanticWeight() { return semanticWeight; }
     public double getGraphWeight() { return graphWeight; }
@@ -128,6 +151,10 @@ public class RetrievalConfig {
     public RetrievalConfig withVectorSearchK(int v) { this.vectorSearchK = v; return this; }
     public RetrievalConfig withMaxPathsReturned(int v) { this.maxPathsReturned = v; return this; }
     public RetrievalConfig withMaxTopologyEdges(int v) { this.maxTopologyEdges = v; return this; }
+    public RetrievalConfig withAnchorPct(double v) { this.anchorPct = v; return this; }
+    public RetrievalConfig withCallersPct(double v) { this.callersPct = v; return this; }
+    public RetrievalConfig withCalleesPct(double v) { this.calleesPct = v; return this; }
+    public RetrievalConfig withTypeNeighborsPct(double v) { this.typeNeighborsPct = v; return this; }
 
     @Override
     public String toString() {

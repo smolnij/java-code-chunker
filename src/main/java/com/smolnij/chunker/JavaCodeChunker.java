@@ -72,7 +72,6 @@ public class JavaCodeChunker {
         this.sourceRoots = sourceRoots;
         this.callGraph = new CallGraphExtractor();
         this.boilerplateDetector = new BoilerplateDetector();
-        this.tokenCounter = new TokenCounter(maxTokensPerChunk);
 
         // ── Configure JavaParser with Symbol Solver ──
         CombinedTypeSolver typeSolver = new CombinedTypeSolver();
@@ -96,6 +95,9 @@ public class JavaCodeChunker {
             .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_17);
 
         this.parser = new JavaParser(config);
+
+        // Now that the project-configured parser is available, create TokenCounter
+        this.tokenCounter = new TokenCounter(maxTokensPerChunk, this.parser);
     }
 
     /**
@@ -185,12 +187,36 @@ public class JavaCodeChunker {
             for (String caller : chunk.getCalledBy()) {
                 graphModel.addEdge(new GraphEdge(GraphEdge.EdgeType.CALLED_BY, chunkId, caller));
             }
+
             // BELONGS_TO: method → class
             graphModel.addEdge(new GraphEdge(
                 GraphEdge.EdgeType.BELONGS_TO,
                 chunkId,
                 chunk.getFullyQualifiedClassName()
             ));
+
+            // Additional P-G1 edges (best-effort). Map chunkId parts back to base method FQN.
+            String baseMethodFqn = chunkId.split("#part")[0];
+
+            // USES_TYPE
+            for (String t : callGraph.getUsesTypesFrom(baseMethodFqn)) {
+                graphModel.addEdge(new GraphEdge(GraphEdge.EdgeType.USES_TYPE, chunkId, t));
+            }
+
+            // RETURNS_TYPE
+            for (String t : callGraph.getReturnsTypesFrom(baseMethodFqn)) {
+                graphModel.addEdge(new GraphEdge(GraphEdge.EdgeType.RETURNS_TYPE, chunkId, t));
+            }
+
+            // THROWS
+            for (String t : callGraph.getThrowsTypesFrom(baseMethodFqn)) {
+                graphModel.addEdge(new GraphEdge(GraphEdge.EdgeType.THROWS, chunkId, t));
+            }
+
+            // TEST_FOR (test method -> callees)
+            for (String t : callGraph.getTestForTargets(baseMethodFqn)) {
+                graphModel.addEdge(new GraphEdge(GraphEdge.EdgeType.TEST_FOR, chunkId, t));
+            }
         }
 
         System.out.println(graphModel.getSummary());
@@ -234,7 +260,7 @@ public class JavaCodeChunker {
 
         // Process each class/interface in the file
         cu.findAll(ClassOrInterfaceDeclaration.class).forEach(classDecl ->
-            processClass(classDecl, relativePath, packageName, imports)
+            processClass(classDecl, relativePath, packageName, imports, cu)
         );
     }
 
@@ -244,7 +270,8 @@ public class JavaCodeChunker {
     private void processClass(ClassOrInterfaceDeclaration classDecl,
                                String relativePath,
                                String packageName,
-                               List<String> imports) {
+                               List<String> imports,
+                               CompilationUnit cu) {
 
         String className = classDecl.getNameAsString();
         String fqClassName = packageName.isEmpty() ? className : packageName + "." + className;
@@ -293,6 +320,21 @@ public class JavaCodeChunker {
         classNode.setImplementedTypes(implementedFqns);
 
         graphModel.addClassNode(classNode);
+
+        // ── IMPORTS: record explicit import edges (normalize import strings)
+        for (String impRaw : imports) {
+            if (impRaw == null || impRaw.isBlank()) continue;
+            String imp = impRaw.replaceFirst("^import\\s+", "").replace(";", "").replaceFirst("static\\s+", "").trim();
+            if (!imp.isEmpty()) {
+                graphModel.addEdge(new GraphEdge(GraphEdge.EdgeType.IMPORTS, fqClassName, imp));
+            }
+        }
+
+        // ── INNER_CLASS_OF: if this class is nested, emit inner->outer edge
+        classDecl.findAncestor(ClassOrInterfaceDeclaration.class).ifPresent(outer -> {
+            String outerFq = packageName.isEmpty() ? outer.getNameAsString() : packageName + "." + outer.getNameAsString();
+            graphModel.addEdge(new GraphEdge(GraphEdge.EdgeType.INNER_CLASS_OF, fqClassName, outerFq));
+        });
 
         // ── CONTAINS edge: package → class ──
         if (!packageName.isEmpty()) {
@@ -360,6 +402,8 @@ public class JavaCodeChunker {
 
             // ── Extract call graph edges ──
             callGraph.extractCalls(method, methodFqn);
+            // ── Extract type / throws / import / test heuristics (best-effort)
+            callGraph.extractTypeInfo(method, methodFqn, cu);
             List<String> calls = new ArrayList<>(callGraph.getCallsFrom(methodFqn));
 
             // ── Token-aware splitting ──

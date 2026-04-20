@@ -75,6 +75,7 @@ public class SafeLoopMain {
         boolean debug = true;
         Integer maxIterOverride = null;
         Double thresholdOverride = null;
+        Double selfReviewTempOverride = null;
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
@@ -90,6 +91,12 @@ public class SafeLoopMain {
                 case "--threshold" -> {
                     if (i + 1 < args.length) {
                         try { thresholdOverride = Double.parseDouble(args[++i]); }
+                        catch (NumberFormatException ignored) { }
+                    }
+                }
+                case "--self-review-temp" -> {
+                    if (i + 1 < args.length) {
+                        try { selfReviewTempOverride = Double.parseDouble(args[++i]); }
                         catch (NumberFormatException ignored) { }
                     }
                 }
@@ -139,6 +146,9 @@ public class SafeLoopMain {
         }
         if (thresholdOverride != null) {
             safeConfig = safeConfig.withSafetyThreshold(thresholdOverride);
+        }
+        if (selfReviewTempOverride != null) {
+            safeConfig = safeConfig.withSelfReviewTemperature(selfReviewTempOverride);
         }
         if (noStream) {
             safeConfig = safeConfig.withStream(false);

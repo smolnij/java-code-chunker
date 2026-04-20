@@ -1,6 +1,9 @@
 package com.smolnij.chunker.safeloop;
 
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.smolnij.chunker.apply.ApplyResult;
 import com.smolnij.chunker.apply.ApplyTools;
 import com.smolnij.chunker.apply.PatchApplier;
@@ -8,9 +11,11 @@ import com.smolnij.chunker.apply.PatchPlan;
 import com.smolnij.chunker.refactor.ChatService;
 import com.smolnij.chunker.refactor.LlmResponseParser;
 import com.smolnij.chunker.refactor.PromptBuilder;
+import com.smolnij.chunker.refactor.LmStudioChatService;
 import com.smolnij.chunker.refactor.RefactorAgent;
 import com.smolnij.chunker.refactor.RefactorConfig;
 import com.smolnij.chunker.refactor.RefactorTools;
+import com.smolnij.chunker.refactor.RefactorUtils;
 import com.smolnij.chunker.refactor.StructuredOutputSpec;
 import com.smolnij.chunker.refactor.diff.AstDiffEngine;
 import com.smolnij.chunker.refactor.diff.CrossMethodDiff;
@@ -19,12 +24,15 @@ import com.smolnij.chunker.refactor.diff.MethodDiff;
 import com.smolnij.chunker.refactor.diff.ScoredDiff;
 import com.smolnij.chunker.model.CodeChunk;
 import com.smolnij.chunker.retrieval.RetrievalResult;
+import com.smolnij.chunker.refactor.verify.CompileVerifier;
+import com.smolnij.chunker.refactor.verify.TestVerifier;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
@@ -276,6 +284,155 @@ public class SafeRefactorLoop {
                 System.out.println("  └───────────────────────────────────────────────────");
                 System.out.println();
 
+                // ── Phase 3.5: SELF-REVIEW (reflexion-style) ──
+                // Ask a low-temperature self-reviewer to list the three weakest
+                // assumptions in the agent's previous edit and request any missing
+                // context. Inject the result into the agent's memory to reduce
+                // analyzer round-trips (cheap LLM call).
+                System.out.println("━━━ " + iterLabel + ": Phase 3.5 — Self-review (low-temperature) ━━━━━━━━━");
+                try {
+                    double reviewTemp = Math.max(0.0, Math.min(0.5, config.getSelfReviewTemperature()));
+
+                    try (LmStudioChatService reviewer = new LmStudioChatService(
+                            config.getChatUrl(), config.getRefactorModel(), reviewTemp, config.getTopP(), config.getMaxTokens())) {
+
+                        String selfReviewPrompt = buildSelfReviewPrompt(lastAgentResponse);
+                        StructuredOutputSpec selfSpec = PromptBuilder.specFor(PromptBuilder.PromptKind.SELF_REVIEW, config.getStructuredOutput());
+
+                        String selfReviewRaw = selfSpec != null
+                            ? reviewer.chat("You are a careful, low-temperature self-reviewer. Be concise and conservative.", selfReviewPrompt, selfSpec)
+                            : reviewer.chat("You are a careful, low-temperature self-reviewer. Be concise and conservative.", selfReviewPrompt);
+
+                        System.out.println("  ┌─ Self-review ─────────────────────────────────────");
+                        System.out.println("  │ " + selfReviewRaw.replace("\n", "\n  │ "));
+                        System.out.println("  └───────────────────────────────────────────────────");
+
+                        // Store structured self-review in the agent tools so the agent can fetch it programmatically
+                        agentTools.ingestSelfReview(selfReviewRaw);
+
+                        // Build a compact human-readable summary for immediate agent memory
+                        String compactSummary = buildCompactSelfReviewSummary(selfReviewRaw);
+                        agent.getAssistant().chat("SELF_REVIEW_SUMMARY:\n\n" + compactSummary);
+
+                        // Make the stored structured review discoverable to the agent
+                        agent.getAssistant().chat("SELF_REVIEW_STORED: fetchSelfReview() and fetchSelfReviewContext() are available as tools.");
+
+                        // Parse structured self-review to a deterministic list of missing identifiers
+                        List<String> deterministicMissing = RefactorUtils.parseMissingFromSelfReview(selfReviewRaw, 10);
+                        if (!deterministicMissing.isEmpty()) {
+                            // Hydrate code context for these missing items and store for agent access
+                            String newContext = loopTools.expandForAnalyzer(deterministicMissing);
+                            if (!newContext.isEmpty()) {
+                                agentTools.storeSelfReviewContext(newContext);
+                                agent.getAssistant().chat(
+                                    "Additional context retrieved for self-review MISSING items:\n\n" + compactSummary
+                                        + "\n\n(See tool fetchSelfReviewContext() for hydrated code.)"
+                                );
+                                System.out.println("  → Expanded graph for self-review MISSING: +" + loopTools.getLastExpansionChunks().size() + " methods");
+
+                                // Immediately call the analyzer with the hydrated missing-context (quick-check)
+                                try {
+                                    String quickPrompt = buildQuickAnalyzerPrompt(userQuery, lastAgentResponse, iteration, "", deterministicMissing, newContext);
+                                    System.out.println("  ┌─ Quick Analyzer (from self-review MISSING) ────────");
+                                    StructuredOutputSpec quickSpec = analyzerSpec(config.getStructuredOutput());
+                                    String quickResp = quickSpec != null
+                                            ? analyzerChat.chat(ANALYZER_SYSTEM_PROMPT, quickPrompt, quickSpec)
+                                            : analyzerChat.chat(ANALYZER_SYSTEM_PROMPT, quickPrompt);
+                                    System.out.println("  │ " + truncateForLog(quickResp, 300).replace("\n", "\n  │ "));
+                                    System.out.println("  └───────────────────────────────────────────────────");
+
+                                    SafetyVerdict quickVerdict = SafetyVerdict.parse(quickResp);
+                                    verdictHistory.add(quickVerdict);
+
+                                    // If quick analyzer already deems the proposal safe, we can finish early
+                                    if (quickVerdict.isSafe(config.getSafetyThreshold())) {
+                                        System.out.println("  → Quick analyzer judged SAFE — short-circuiting loop");
+                                        SafetyVerdict finalVerdict = quickVerdict;
+                                        boolean isSafe = finalVerdict != null && finalVerdict.isSafe(config.getSafetyThreshold());
+                                        return new SafeLoopResult(
+                                            userQuery,
+                                            lastAgentResponse,
+                                            extractExplanation(lastAgentResponse),
+                                            isSafe,
+                                            finalVerdict != null ? finalVerdict.getConfidence() : 0.0,
+                                            SafeLoopResult.TerminalReason.SAFE,
+                                            verdictHistory.size(), verdictHistory,
+                                            agentTools.getToolCallCount(), loopTools.getTotalNodesRetrieved(),
+                                            finalVerdict != null ? finalVerdict.getRisks() : List.of(),
+                                            lastAgentResponse
+                                        );
+                                    }
+
+                                    // If the quick analyzer requested more context, hydrate and inject it
+                                    if (quickVerdict.needsMoreContext()) {
+                                        String more = loopTools.expandForAnalyzer(quickVerdict.getMissingContext());
+                                        if (!more.isEmpty()) {
+                                            agent.getAssistant().chat("ANALYZER_ADDITIONAL_CONTEXT:\n\n" + more);
+                                            System.out.println("  → Quick analyzer requested more context; expanded: +" + loopTools.getLastExpansionChunks().size() + " methods");
+                                        }
+                                    }
+                                } catch (Exception e) {
+                                    System.out.println("  ⚠ Quick analyzer failed: " + e.getMessage());
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    System.out.println("  ⚠ Self-review failed: " + e.getMessage());
+                }
+                System.out.println();
+                // ── Phase 3.8: COMPILE & TEST VERIFICATION ──
+                System.out.println("━━━ " + iterLabel + ": Phase 3.8 — Compile/Test Verification ━━━━━");
+                try {
+                    CompileVerifier compileVerifier = new CompileVerifier();
+                    Optional<String> compileErr = compileVerifier.verifyWithMaven(lastAgentResponse);
+                    if (compileErr.isPresent()) {
+                        System.out.println("  → ✗ COMPILE FAILED — details follow");
+                        System.out.println("  │ " + truncateForLog(compileErr.get(), 800).replace("\n", "\n  │ "));
+
+                        // Inject compile errors into agent memory so the refactorer can see them
+                        try {
+                            agent.getAssistant().chat("COMPILE_ERRORS:\n\n" + compileErr.get());
+                        } catch (Exception ignored) { }
+
+                        // Add a synthetic UNSAFE verdict so the loop treats this as a failing iteration
+                        String synth = "{\"confidence\":0.0, \"verdict\":\"UNSAFE\", \"risks\":[{\"description\":\"Compile errors detected during verification\",\"severity\":\"HIGH\",\"mitigation\":\"Fix compile errors shown in COMPILE_ERRORS\"}], \"needs\":[], \"feedback\":\"Compile failed during verification\"}";
+                        SafetyVerdict compileVerdict = SafetyVerdict.parse(synth);
+                        verdictHistory.add(compileVerdict);
+
+                        System.out.println("  → Short-circuiting iteration due to compile failure\n");
+                        continue; // let the agent refine
+                    } else {
+                        System.out.println("  → ✓ Compile check passed");
+                    }
+
+                    // Optional: run tests when requested via env / sysprop
+                    boolean runTests = false;
+                    String rt = System.getProperty("safeLoop.runTests");
+                    if (rt == null || rt.isBlank()) rt = System.getenv("SAFELOOP_RUN_TESTS");
+                    if (rt != null && (rt.equalsIgnoreCase("1") || rt.equalsIgnoreCase("true"))) runTests = true;
+
+                    if (runTests) {
+                        TestVerifier tv = new TestVerifier();
+                        Optional<String> failing = tv.runTests();
+                        if (failing.isPresent()) {
+                            System.out.println("  → ✗ TESTS FAILED — summary:");
+                            System.out.println("  │ " + truncateForLog(failing.get(), 800).replace("\n", "\n  │ "));
+                            try { agent.getAssistant().chat("TEST_FAILURES:\n\n" + failing.get()); } catch (Exception ignored) {}
+
+                            String synthT = "{\"confidence\":0.0, \"verdict\":\"UNSAFE\", \"risks\":[{\"description\":\"Unit tests failed during verification\",\"severity\":\"HIGH\",\"mitigation\":\"Fix failing tests or update tests accordingly\"}], \"needs\":[], \"feedback\":\"Tests failed during verification\"}";
+                            SafetyVerdict testVerdict = SafetyVerdict.parse(synthT);
+                            verdictHistory.add(testVerdict);
+                            System.out.println("  → Short-circuiting iteration due to test failures\n");
+                            continue;
+                        } else {
+                            System.out.println("  → ✓ Tests passed");
+                        }
+                    }
+                } catch (Exception e) {
+                    System.out.println("  ⚠ Verification phase failed: " + e.getMessage());
+                }
+                System.out.println();
                 // ── Phase 4: VALIDATE ──
                 System.out.println("━━━ " + iterLabel + ": Phase 4 — Safety Validation ━━━━━");
 
@@ -602,6 +759,92 @@ public class SafeRefactorLoop {
             .append(" — previous attempts were not safe enough\n");
 
         return sb.toString();
+    }
+
+    /**
+     * Build the prompt used by the low-temperature self-reviewer.
+     * The reviewer should list the three weakest assumptions made by the
+     * agent in its previous edit and explicitly request any missing context
+     * (method/class names, callers, fields) needed to validate those assumptions.
+     */
+    private String buildSelfReviewPrompt(String agentResponse) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("TASK: You are a low-temperature self-reviewer. Your job is to identify the three weakest assumptions\n");
+        sb.append("that the refactoring agent made in its previous edit. For each assumption, briefly (1-2 sentences) explain\n");
+        sb.append("why it is an assumption, how risky it is, and what concrete context would be required to verify it.\n\n");
+
+        sb.append("OUTPUT FORMAT: Reply with a single JSON object matching the schema '" + PromptBuilder.SELF_REVIEW_SCHEMA_NAME + "'\n");
+        sb.append("(no prose outside the JSON, no markdown fences). The schema requires: assumptions[] and summary.\n\n");
+
+        sb.append("INPUT — Agent's proposed refactoring (do NOT modify):\n");
+        sb.append(agentResponse).append("\n\n");
+
+        sb.append("INSTRUCTIONS:\n");
+        sb.append("- Provide exactly three assumption objects in assumptions[]; if fewer than three meaningful assumptions exist, use an object with assumption='NONE' and empty needs.\n");
+        sb.append("- For each assumption, populate 'assumption', 'why', 'risk' (HIGH|MEDIUM|LOW), and 'needs' (array of class#method or field names you need to see).\n");
+        sb.append("- Be conservative: if you are unsure about a fact, request it in NEEDS.\n");
+        sb.append("- Keep answers short; the agent will consume these as memory hints before the analyzer step.\n");
+
+        return sb.toString();
+    }
+
+    /**
+     * Build a compact analyzer prompt used for the quick-check after self-review.
+     * Injects only the hydrated "missing" context returned by the self-review.
+     */
+    private String buildQuickAnalyzerPrompt(String originalQuery, String agentResponse,
+                                           int iteration, String astDiffReport,
+                                           List<String> missingIds, String hydratedContext) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("TASK: Quickly evaluate the safety of this proposed refactoring given the additional missing context requested by a low-temperature self-reviewer.\n\n");
+        sb.append("ORIGINAL REQUEST:\n");
+        sb.append(originalQuery).append("\n\n");
+
+        sb.append("PROPOSED REFACTORING (iteration ").append(iteration + 1).append("):\n");
+        sb.append(agentResponse).append("\n\n");
+
+        sb.append("MISSING: the reviewer requested the following identifiers to be inspected (deterministic order):\n");
+        for (String id : missingIds) {
+            sb.append(" - ").append(id).append("\n");
+        }
+        sb.append("\n");
+
+        sb.append("HYDRATED CONTEXT (the code/graph snippets retrieved for the MISSING items):\n");
+        sb.append(hydratedContext).append("\n\n");
+
+        sb.append("Note: This quick check should be conservative. If you need more context, list items in NEEDS.\n");
+        return sb.toString();
+    }
+
+    /** Build a compact one-line-per-assumption summary from structured self-review JSON. */
+    private String buildCompactSelfReviewSummary(String selfReviewJson) {
+        try {
+            var parsed = JsonParser.parseString(selfReviewJson).getAsJsonObject();
+            JsonArray assumptions = parsed.has("assumptions") ? parsed.getAsJsonArray("assumptions") : new JsonArray();
+            StringBuilder sb = new StringBuilder();
+            int i = 1;
+            for (JsonElement el : assumptions) {
+                if (!el.isJsonObject()) continue;
+                JsonObject obj = el.getAsJsonObject();
+                String assumption = obj.has("assumption") ? obj.get("assumption").getAsString() : "(none)";
+                String why = obj.has("why") ? obj.get("why").getAsString() : "";
+                String risk = obj.has("risk") ? obj.get("risk").getAsString() : "MEDIUM";
+                List<String> needs = new ArrayList<>();
+                if (obj.has("needs") && obj.get("needs").isJsonArray()) {
+                    for (JsonElement needEl : obj.getAsJsonArray("needs")) {
+                        needs.add(needEl.getAsString());
+                    }
+                }
+                sb.append(i++).append(": ").append(assumption).append(" | ").append(risk);
+                if (!needs.isEmpty()) sb.append(" | NEEDS: ").append(needs);
+                sb.append("\n");
+            }
+            String summary = parsed.has("summary") ? parsed.get("summary").getAsString() : "";
+            if (!summary.isBlank()) sb.append("SUMMARY: ").append(summary).append("\n");
+            return sb.toString();
+        } catch (Exception e) {
+            return "(failed to build compact summary: " + e.getMessage() + ")";
+        }
     }
 
     /**

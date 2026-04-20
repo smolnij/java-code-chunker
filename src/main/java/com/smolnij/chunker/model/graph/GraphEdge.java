@@ -23,7 +23,18 @@ public class GraphEdge {
         HAS_FIELD,
         IMPLEMENTS,
         EXTENDS,
-        CONTAINS
+        CONTAINS,
+        // New edge types for P-G1
+        USES_TYPE,      // Method -> Class/Interface (parameter/local types)
+        RETURNS_TYPE,   // Method -> Class/Interface (return type)
+        READS_FIELD,    // Method -> Field
+        WRITES_FIELD,   // Method -> Field
+        THROWS,         // Method -> ExceptionType
+        CATCHES,        // Method -> ExceptionType
+        OVERRIDES,      // Method -> Method
+        TEST_FOR,       // TestMethod -> Method
+        IMPORTS,        // Class -> Class (explicit imports)
+        INNER_CLASS_OF  // Class -> Class
     }
 
     private final EdgeType type;

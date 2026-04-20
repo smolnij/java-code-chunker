@@ -326,6 +326,14 @@ public class HybridRetriever {
         }
 
         // ── Score each candidate ──
+        // Batch-fetch caller counts to avoid N+1 round-trips to Neo4j
+        Map<String, Integer> callerCounts = Map.of();
+        try {
+            callerCounts = graphReader.getCallerCountsBatch(candidates.keySet());
+        } catch (Exception e) {
+            System.err.println("WARN: Batched caller-count query failed: " + e.getMessage());
+        }
+
         List<RetrievalResult> results = new ArrayList<>();
 
         for (Map.Entry<String, CodeChunk> entry : candidates.entrySet()) {
@@ -352,7 +360,7 @@ public class HybridRetriever {
             // Structural bonus
             boolean sameClass = chunk.getFullyQualifiedClassName().equals(anchorClass);
             boolean samePackage = chunk.getPackageName().equals(anchorPackage);
-            int callerCount = graphReader.getCallerCount(chunkId);
+            int callerCount = callerCounts.getOrDefault(chunkId, 0);
             boolean highFanIn = callerCount >= config.getFanInThreshold();
 
             result.computeStructuralBonus(
@@ -388,39 +396,177 @@ public class HybridRetriever {
 
         int topK = config.getTopK();
 
-        // Check if anchor is already in top-K
-        List<RetrievalResult> topResults = new ArrayList<>();
-        RetrievalResult anchorResult = null;
-        boolean anchorInTopK = false;
+        // If no anchor, fall back to simple top-K
+        if (anchorId == null) {
+            List<RetrievalResult> top = new ArrayList<>();
+            for (int i = 0; i < ranked.size() && top.size() < topK; i++) {
+                RetrievalResult r = ranked.get(i);
+                r.setTopologyOnly(false);
+                top.add(r);
+            }
+            return top;
+        }
 
-        for (int i = 0; i < ranked.size() && topResults.size() < topK; i++) {
-            RetrievalResult r = ranked.get(i);
-            topResults.add(r);
+        // Determine anchor context for type neighbors
+        String anchorClass = "";
+        try {
+            String[] ctx = graphReader.getMethodContext(anchorId);
+            if (ctx != null) anchorClass = ctx[0];
+        } catch (Exception e) {
+            // ignore
+        }
+
+        // Bucket candidates by relationship to anchor (preserve ranked order)
+        List<RetrievalResult> anchorBucket = new ArrayList<>();
+        List<RetrievalResult> callersBucket = new ArrayList<>();
+        List<RetrievalResult> calleesBucket = new ArrayList<>();
+        List<RetrievalResult> typeBucket = new ArrayList<>();
+        List<RetrievalResult> others = new ArrayList<>();
+
+        for (RetrievalResult r : ranked) {
             if (r.isAnchor()) {
-                anchorInTopK = true;
+                anchorBucket.add(r);
+                continue;
+            }
+            CodeChunk c = r.getChunk();
+            boolean placed = false;
+            try {
+                if (c.getCalls() != null && c.getCalls().contains(anchorId)) {
+                    callersBucket.add(r);
+                    placed = true;
+                }
+                if (!placed && c.getCalledBy() != null && c.getCalledBy().contains(anchorId)) {
+                    calleesBucket.add(r);
+                    placed = true;
+                }
+                if (!placed && anchorClass != null && !anchorClass.isEmpty()
+                    && anchorClass.equals(c.getFullyQualifiedClassName())) {
+                    typeBucket.add(r);
+                    placed = true;
+                }
+            } catch (Exception e) {
+                // defensive: place into others
+            }
+            if (!placed) others.add(r);
+        }
+
+        // Compute integer slot allocation from percentages
+        int remainingSlots = topK;
+        Map<String, Integer> slots = new LinkedHashMap<>();
+
+        double anchorPct = config.getAnchorPct();
+        double callersPct = config.getCallersPct();
+        double calleesPct = config.getCalleesPct();
+        double typePct = config.getTypeNeighborsPct();
+        double topoPct = config.getTopologyFallbackPct();
+
+        Map<String, Double> exact = new LinkedHashMap<>();
+        exact.put("anchor", anchorPct * topK);
+        exact.put("callers", callersPct * topK);
+        exact.put("callees", calleesPct * topK);
+        exact.put("type", typePct * topK);
+        exact.put("topo", topoPct * topK);
+
+        Map<String, Integer> floor = new LinkedHashMap<>();
+        Map<String, Double> frac = new LinkedHashMap<>();
+        for (Map.Entry<String, Double> e : exact.entrySet()) {
+            int f = (int) Math.floor(e.getValue());
+            floor.put(e.getKey(), f);
+            frac.put(e.getKey(), e.getValue() - f);
+            remainingSlots -= f;
+        }
+
+        // Ensure anchor gets at least 1 slot if present
+        if (anchorBucket.size() > 0 && floor.get("anchor") == 0 && remainingSlots > 0) {
+            floor.put("anchor", 1);
+            remainingSlots -= 1;
+        }
+
+        // Distribute remaining slots by largest fractional remainder (deterministic)
+        List<String> orderByFrac = new ArrayList<>(frac.keySet());
+        orderByFrac.sort((a, b) -> Double.compare(frac.get(b), frac.get(a)));
+        for (String k : orderByFrac) {
+            if (remainingSlots <= 0) break;
+            floor.put(k, floor.get(k) + 1);
+            remainingSlots -= 1;
+        }
+
+        // Final slots map
+        slots.put("anchor", floor.getOrDefault("anchor", 0));
+        slots.put("callers", floor.getOrDefault("callers", 0));
+        slots.put("callees", floor.getOrDefault("callees", 0));
+        slots.put("type", floor.getOrDefault("type", 0));
+        slots.put("topo", floor.getOrDefault("topo", 0));
+
+        List<RetrievalResult> selected = new ArrayList<>();
+        List<RetrievalResult> overflow = new ArrayList<>();
+
+        // Helper: pick up to n from bucket into selected; push extras to overflow
+        java.util.function.BiConsumer<List<RetrievalResult>, Integer> pickFrom = (bucket, n) -> {
+            int take = Math.min(bucket.size(), Math.max(0, n));
+            for (int i = 0; i < take; i++) {
+                RetrievalResult r = bucket.get(i);
+                r.setTopologyOnly(false);
+                selected.add(r);
+            }
+            for (int i = take; i < bucket.size(); i++) {
+                overflow.add(bucket.get(i));
+            }
+        };
+
+        pickFrom.accept(anchorBucket, slots.getOrDefault("anchor", 0));
+        pickFrom.accept(callersBucket, slots.getOrDefault("callers", 0));
+        pickFrom.accept(calleesBucket, slots.getOrDefault("callees", 0));
+        pickFrom.accept(typeBucket, slots.getOrDefault("type", 0));
+
+        // Others and overflow form the topology pool (in ranked order)
+        List<RetrievalResult> topologyPool = new ArrayList<>();
+        // keep overflow in original ranked order — overflow were appended in ranked order
+        topologyPool.addAll(overflow);
+        for (RetrievalResult r : others) {
+            // skip already-selected
+            if (!selected.contains(r)) topologyPool.add(r);
+        }
+
+        // Fill remaining slots with topology-only items
+        int toFill = topK - selected.size();
+        int topoAllocated = Math.min(toFill, slots.getOrDefault("topo", 0));
+        // If topoAllocated is zero but we still have space, allow filling from topologyPool
+        int fillCount = Math.min(topK - selected.size(), topologyPool.size());
+        for (int i = 0; i < fillCount; i++) {
+            RetrievalResult r = topologyPool.get(i);
+            if (selected.contains(r)) continue;
+            r.setTopologyOnly(true);
+            selected.add(r);
+            if (selected.size() >= topK) break;
+        }
+
+        // As a last resort, if still underfilled and there are more ranked items, take them (non-topology)
+        if (selected.size() < topK) {
+            for (RetrievalResult r : ranked) {
+                if (selected.contains(r)) continue;
+                r.setTopologyOnly(false);
+                selected.add(r);
+                if (selected.size() >= topK) break;
             }
         }
 
-        // If anchor exists but wasn't in top-K, find and pin it
-        if (anchorId != null && !anchorInTopK) {
+        // Ensure anchor is present (if possible)
+        boolean anchorPresent = false;
+        for (RetrievalResult r : selected) if (r.isAnchor()) anchorPresent = true;
+        if (!anchorPresent) {
             for (RetrievalResult r : ranked) {
                 if (r.isAnchor()) {
-                    anchorResult = r;
+                    // replace last element with anchor
+                    if (selected.size() >= topK) selected.set(selected.size() - 1, r);
+                    else selected.add(r);
+                    r.setTopologyOnly(false);
                     break;
                 }
             }
-            if (anchorResult != null) {
-                // Replace the last item with the anchor and re-sort
-                if (topResults.size() >= topK) {
-                    topResults.set(topResults.size() - 1, anchorResult);
-                } else {
-                    topResults.add(anchorResult);
-                }
-                Collections.sort(topResults);
-            }
         }
 
-        return topResults;
+        return selected;
     }
 
     // ═══════════════════════════════════════════════════════════════

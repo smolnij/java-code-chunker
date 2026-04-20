@@ -366,6 +366,17 @@ public class Neo4jGraphStore implements AutoCloseable {
                 case IMPLEMENTS -> buildImplementsEdgeCypher();
                 case EXTENDS -> buildExtendsEdgeCypher();
                 case CONTAINS -> buildContainsEdgeCypher();
+                // New edge types
+                case USES_TYPE -> buildTypeEdgeCypher("Method", "chunkId", "Class", "fqName", "USES_TYPE");
+                case RETURNS_TYPE -> buildTypeEdgeCypher("Method", "chunkId", "Class", "fqName", "RETURNS_TYPE");
+                case READS_FIELD -> buildFieldEdgeCypher("READS_FIELD");
+                case WRITES_FIELD -> buildFieldEdgeCypher("WRITES_FIELD");
+                case THROWS -> buildThrowsEdgeCypher("THROWS");
+                case CATCHES -> buildThrowsEdgeCypher("CATCHES");
+                case OVERRIDES -> buildEdgeCypher("Method", "chunkId", "Method", "chunkId", "OVERRIDES");
+                case TEST_FOR -> buildEdgeCypher("Method", "chunkId", "Method", "chunkId", "TEST_FOR");
+                case IMPORTS -> buildImportsEdgeCypher();
+                case INNER_CLASS_OF -> buildInnerClassEdgeCypher();
             };
 
             executeBatched(cypher, batch, type.name() + " edges");
@@ -456,6 +467,57 @@ public class Neo4jGraphStore implements AutoCloseable {
             "WITH p, coalesce(c, i) AS target " +
             "WHERE target IS NOT NULL " +
             "MERGE (p)-[:CONTAINS]->(target)";
+    }
+
+    /**
+     * Generic Type edge: Method -> Class (or similar). Creates a stub Class node if missing.
+     */
+    private String buildTypeEdgeCypher(String srcLabel, String srcKey, String tgtLabel, String tgtKey, String relType) {
+        return "UNWIND $batch AS row " +
+            "MATCH (a:" + srcLabel + " {" + srcKey + ": row.src}) " +
+            "MERGE (b:" + tgtLabel + " {" + tgtKey + ": row.tgt}) " +
+            "MERGE (a)-[:" + relType + "]->(b)";
+    }
+
+    /**
+     * Field read/write edges: Method -> Field
+     */
+    private String buildFieldEdgeCypher(String relType) {
+        return "UNWIND $batch AS row " +
+            "MATCH (m:Method {chunkId: row.src}) " +
+            "MATCH (f:Field {fqName: row.tgt}) " +
+            "MERGE (m)-[:" + relType + "]->(f)";
+    }
+
+    /**
+     * THROWS / CATCHES: Method -> ExceptionType (stored as :Class stub)
+     */
+    private String buildThrowsEdgeCypher(String relType) {
+        return "UNWIND $batch AS row " +
+            "MATCH (m:Method {chunkId: row.src}) " +
+            "MERGE (e:Class {fqName: row.tgt}) " +
+            "MERGE (m)-[:" + relType + "]->(e)";
+    }
+
+    /**
+     * IMPORTS: Class -> Class
+     */
+    private String buildImportsEdgeCypher() {
+        return "UNWIND $batch AS row " +
+            "MATCH (c:Class {fqName: row.src}) " +
+            "MERGE (imp:Class {fqName: row.tgt}) " +
+            "MERGE (c)-[:IMPORTS]->(imp)";
+    }
+
+    /**
+     * INNER_CLASS_OF: innerClass -> outerClass
+     */
+    private String buildInnerClassEdgeCypher() {
+        return "UNWIND $batch AS row " +
+            "MATCH (inner:Class {fqName: row.src}) " +
+            "OPTIONAL MATCH (outer:Class {fqName: row.tgt}) " +
+            "WHERE outer IS NOT NULL " +
+            "MERGE (inner)-[:INNER_CLASS_OF]->(outer)";
     }
 
     // ═══════════════════════════════════════════════════════════════
