@@ -160,9 +160,22 @@ public class DistributedSafeRefactorLoop {
             System.out.println("━━━ Final Verdict ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             System.out.println("  " + verdict);
 
-            if (!verdict.isParsedFromJson()) {
-                System.out.println("  ⚠ WARNING: Planner did not return valid JSON. Using fallback parsing.");
+            System.out.println();
+            if (verdict.isParsedFromJson()) {
+                System.out.println("  ╔══════════════════════════════════════════════════════════╗");
+                System.out.println("  ║  ✓  STRUCTURED OUTPUT ACTIVE                            ║");
+                System.out.println("  ╠══════════════════════════════════════════════════════════╣");
+                System.out.println("  ║  [Planner] Response parsed from JSON successfully.");
+                System.out.println("  ╚══════════════════════════════════════════════════════════╝");
+            } else {
+                System.out.println("  ╔══════════════════════════════════════════════════════════╗");
+                System.out.println("  ║  ⚠  WARNING: STRUCTURED OUTPUT FALLBACK                 ║");
+                System.out.println("  ╠══════════════════════════════════════════════════════════╣");
+                System.out.println("  ║  [Planner] LLM ignored response_format — using regex fallback.");
+                System.out.println("  ║  Results may be incomplete or misparse. Check model support.");
+                System.out.println("  ╚══════════════════════════════════════════════════════════╝");
             }
+            System.out.println();
 
             // Determine terminal reason
             PlannerTools tools = plannerAgent.getTools();

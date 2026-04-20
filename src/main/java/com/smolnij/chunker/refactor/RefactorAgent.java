@@ -10,6 +10,7 @@ import dev.langchain4j.service.UserMessage;
 
 import java.net.http.HttpClient;
 import java.time.Duration;
+import java.util.Map;
 
 import static com.smolnij.chunker.util.Util.lmStudioHttpClientBuilder;
 
@@ -197,8 +198,16 @@ public class RefactorAgent {
                 .maxTokens(config.getMaxTokens())
                 .timeout(Duration.ofMinutes(5))
                 .httpClientBuilder(lmStudioHttpClientBuilder())
-                .logRequests(false)
-                .logResponses(false);
+                // Force plain-text replies on every request so a sticky server-side
+                // structured-output config in LM-Studio cannot coerce the tool-calling
+                // agent into emitting JSON (which short-circuits tool use and yields
+                // empty code_blocks). LangChain4j's typed responseFormat(TEXT) is
+                // serialized to null and dropped from the wire, so we inject the raw
+                // OpenAI field via customParameters — those are flattened straight
+                // into the request body by @JsonAnyGetter on ChatCompletionRequest.
+                .customParameters(Map.of("response_format", Map.of("type", "text")))
+                .logRequests(true)
+                .logResponses(true);
 
         // Set model name if specified
         String modelName = config.getChatModel();

@@ -20,6 +20,28 @@ public interface ChatService extends AutoCloseable {
     String chat(String systemPrompt, String userPrompt);
 
     /**
+     * Send a chat completion request with a structured-output constraint.
+     *
+     * <p>The returned string is the JSON payload the server emitted
+     * (either {@code choices[0].message.content} when {@code response_format}
+     * is used, or {@code choices[0].message.tool_calls[0].function.arguments}
+     * when {@code spec.preferredMode() == TOOL_CALL}). Callers are expected
+     * to parse it with Gson.
+     *
+     * <p>Default implementation ignores {@code spec} and delegates to
+     * {@link #chat(String, String)} — lets plain text implementations remain
+     * compatible without forcing them to support structured mode.
+     *
+     * @param systemPrompt the system/persona message
+     * @param userPrompt   the user message
+     * @param spec         constraint describing the expected JSON shape; may be {@code null}
+     * @return the assistant's reply (raw JSON text when {@code spec != null})
+     */
+    default String chat(String systemPrompt, String userPrompt, StructuredOutputSpec spec) {
+        return chat(systemPrompt, userPrompt);
+    }
+
+    /**
      * Send a chat completion request with SSE streaming.
      * Each content token is forwarded to {@code onToken} as it arrives.
      *

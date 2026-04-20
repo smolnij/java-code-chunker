@@ -1,5 +1,11 @@
 package com.smolnij.chunker.safeloop;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonSyntaxException;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -8,33 +14,51 @@ import java.util.regex.Pattern;
 /**
  * Structured result parsed from the safety-analyzer LLM's evaluation response.
  *
- * <p>The analyzer is instructed to output:
+ * <p>Primary wire format is JSON, matching the schema requested by
+ * {@code SafeRefactorLoop.ANALYZER_SYSTEM_PROMPT}:
+ * <pre>
+ * {
+ *   "confidence": 0.85,
+ *   "verdict": "SAFE" | "UNSAFE",
+ *   "risks": [{"description": "...", "severity": "HIGH|MEDIUM|LOW", "mitigation": "..."}],
+ *   "needs": ["UserRepository#save"],
+ *   "feedback": "..."
+ * }
+ * </pre>
+ *
+ * <p>Legacy field names (from {@code DistributedSafetyVerdict}) are also
+ * accepted: {@code safe}/{@code issues}/{@code missing_context}/{@code summary}.
+ *
+ * <p>When the LLM returns free-form text instead of JSON (older models,
+ * models without {@code response_format} support), the parser falls back
+ * to the regex logic that still matches the original tagged format:
  * <pre>
  *   CONFIDENCE: 0.85
  *   VERDICT: SAFE           (or VERDICT: UNSAFE)
  *   RISKS:
- *   - RISK: broken method signatures | SEVERITY: HIGH | MITIGATION: update callers
- *   - RISK: threading issue  | SEVERITY: MEDIUM | MITIGATION: add synchronization
+ *   - RISK: ... | SEVERITY: HIGH | MITIGATION: ...
  *   NEEDS:
- *   - UserRepository#save
- *   - ValidationService#validate
+ *   - ClassName#methodName
  * </pre>
  *
- * <p>The parser is intentionally lenient — local LLMs don't always
- * follow the format precisely. Multiple fallback strategies are used:
- * <ol>
- *   <li>Look for explicit {@code CONFIDENCE:} and {@code VERDICT:} headers</li>
- *   <li>Look for keywords like "safe", "no risks", "all clear"</li>
- *   <li>Default to UNSAFE (conservative — avoids false safety declarations)</li>
- * </ol>
- *
- * <p>The {@link #isSafe(double)} method computes safety from both the confidence
- * score and the risk severity: a single HIGH-severity risk forces UNSAFE regardless
- * of confidence.
+ * <p>{@link #isSafe(double)} computes safety from both confidence and
+ * severity: a single HIGH-severity risk forces UNSAFE regardless of
+ * confidence. {@link #isParsedFromJson()} reports whether JSON parsing
+ * succeeded — the eval harness uses it as a format-fidelity metric.
  */
 public class SafetyVerdict {
 
-    // ── Patterns ──
+    private static final Gson GSON = new Gson();
+
+    // ── JSON extraction patterns ──
+
+    private static final Pattern JSON_FENCE_PATTERN =
+        Pattern.compile("```(?:json)?\\s*\\n?(\\{.*?\\})\\s*\\n?```", Pattern.DOTALL);
+
+    private static final Pattern JSON_OBJECT_START_PATTERN =
+        Pattern.compile("(\\{\\s*\"(?:verdict|safe|confidence)\"\\s*:.*\\})", Pattern.DOTALL);
+
+    // ── Legacy text patterns (fallback) ──
 
     private static final Pattern CONFIDENCE_PATTERN =
         Pattern.compile("CONFIDENCE:\\s*([0-9]*\\.?[0-9]+)", Pattern.CASE_INSENSITIVE);
@@ -60,15 +84,18 @@ public class SafetyVerdict {
     private final List<String> missingContext;
     private final String feedback;
     private final String rawResponse;
+    private final boolean parsedFromJson;
 
     private SafetyVerdict(double confidence, boolean verdictSafe, List<Risk> risks,
-                          List<String> missingContext, String feedback, String rawResponse) {
-        this.confidence = confidence;
+                          List<String> missingContext, String feedback, String rawResponse,
+                          boolean parsedFromJson) {
+        this.confidence = Math.max(0.0, Math.min(1.0, confidence));
         this.verdictSafe = verdictSafe;
         this.risks = List.copyOf(risks);
         this.missingContext = List.copyOf(missingContext);
         this.feedback = feedback;
         this.rawResponse = rawResponse;
+        this.parsedFromJson = parsedFromJson;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -111,23 +138,130 @@ public class SafetyVerdict {
     /**
      * Parse a safety-analyzer LLM response into a structured verdict.
      *
-     * @param analyzerResponse the raw text from the analyzer LLM
-     * @return the parsed safety verdict
+     * <p>Strategies, in order: fenced JSON block → raw JSON object →
+     * whole response as JSON → legacy tagged-text regex.
      */
     public static SafetyVerdict parse(String analyzerResponse) {
         if (analyzerResponse == null || analyzerResponse.isBlank()) {
             return new SafetyVerdict(0.0, false, List.of(), List.of(),
-                "Empty analyzer response", "");
+                "Empty analyzer response", "", false);
         }
 
+        Matcher fence = JSON_FENCE_PATTERN.matcher(analyzerResponse);
+        if (fence.find()) {
+            SafetyVerdict v = tryParseJson(fence.group(1), analyzerResponse);
+            if (v != null) return v;
+        }
+
+        Matcher raw = JSON_OBJECT_START_PATTERN.matcher(analyzerResponse);
+        if (raw.find()) {
+            SafetyVerdict v = tryParseJson(raw.group(1), analyzerResponse);
+            if (v != null) return v;
+        }
+
+        SafetyVerdict whole = tryParseJson(analyzerResponse.trim(), analyzerResponse);
+        if (whole != null) return whole;
+
+        return parseFromText(analyzerResponse);
+    }
+
+    private static SafetyVerdict tryParseJson(String jsonStr, String rawResponse) {
+        JsonObject json;
+        try {
+            json = GSON.fromJson(jsonStr, JsonObject.class);
+        } catch (JsonSyntaxException e) {
+            return null;
+        }
+        if (json == null) return null;
+
+        boolean verdictSafe = readVerdict(json);
+        double confidence = readConfidence(json);
+        List<Risk> risks = readRisks(json);
+        List<String> missingContext = readStringArray(json, "needs", "missing_context");
+        String feedback = readStringField(json, "feedback", "summary");
+
+        return new SafetyVerdict(confidence, verdictSafe, risks, missingContext,
+            feedback, rawResponse, true);
+    }
+
+    private static boolean readVerdict(JsonObject json) {
+        if (json.has("verdict") && json.get("verdict").isJsonPrimitive()) {
+            return "SAFE".equalsIgnoreCase(json.get("verdict").getAsString());
+        }
+        if (json.has("safe") && json.get("safe").isJsonPrimitive()) {
+            return json.get("safe").getAsBoolean();
+        }
+        return false;
+    }
+
+    private static double readConfidence(JsonObject json) {
+        if (json.has("confidence") && json.get("confidence").isJsonPrimitive()) {
+            try { return json.get("confidence").getAsDouble(); }
+            catch (NumberFormatException ignored) { }
+        }
+        return 0.0;
+    }
+
+    private static List<Risk> readRisks(JsonObject json) {
+        List<Risk> risks = new ArrayList<>();
+        JsonArray arr = null;
+        if (json.has("risks") && json.get("risks").isJsonArray()) {
+            arr = json.getAsJsonArray("risks");
+        } else if (json.has("issues") && json.get("issues").isJsonArray()) {
+            arr = json.getAsJsonArray("issues");
+        }
+        if (arr == null) return risks;
+
+        for (JsonElement el : arr) {
+            if (el.isJsonPrimitive()) {
+                risks.add(new Risk(el.getAsString(), Risk.Severity.MEDIUM, ""));
+                continue;
+            }
+            if (!el.isJsonObject()) continue;
+            JsonObject o = el.getAsJsonObject();
+            String desc = o.has("description") ? o.get("description").getAsString() : "Unknown risk";
+            Risk.Severity sev = Risk.Severity.MEDIUM;
+            if (o.has("severity") && o.get("severity").isJsonPrimitive()) {
+                try { sev = Risk.Severity.valueOf(o.get("severity").getAsString().trim().toUpperCase()); }
+                catch (IllegalArgumentException ignored) { }
+            }
+            String mit = o.has("mitigation") && o.get("mitigation").isJsonPrimitive()
+                ? o.get("mitigation").getAsString() : "";
+            risks.add(new Risk(desc, sev, mit));
+        }
+        return risks;
+    }
+
+    private static List<String> readStringArray(JsonObject json, String... fieldNames) {
+        List<String> out = new ArrayList<>();
+        for (String name : fieldNames) {
+            if (!json.has(name) || !json.get(name).isJsonArray()) continue;
+            for (JsonElement el : json.getAsJsonArray(name)) {
+                if (!el.isJsonPrimitive()) continue;
+                String s = el.getAsString().trim();
+                if (!s.isEmpty() && !s.equalsIgnoreCase("none")) out.add(s);
+            }
+            if (!out.isEmpty()) break;
+        }
+        return out;
+    }
+
+    private static String readStringField(JsonObject json, String... fieldNames) {
+        for (String name : fieldNames) {
+            if (json.has(name) && json.get(name).isJsonPrimitive()) {
+                return json.get(name).getAsString();
+            }
+        }
+        return "";
+    }
+
+    private static SafetyVerdict parseFromText(String analyzerResponse) {
         // ── Confidence ──
         double confidence = 0.0;
         Matcher cm = CONFIDENCE_PATTERN.matcher(analyzerResponse);
         if (cm.find()) {
-            try {
-                confidence = Double.parseDouble(cm.group(1));
-                confidence = Math.max(0.0, Math.min(1.0, confidence)); // clamp
-            } catch (NumberFormatException ignored) { }
+            try { confidence = Double.parseDouble(cm.group(1)); }
+            catch (NumberFormatException ignored) { }
         }
 
         // ── Verdict ──
@@ -136,17 +270,14 @@ public class SafetyVerdict {
         if (vm.find()) {
             verdictSafe = vm.group(1).equalsIgnoreCase("SAFE");
         } else {
-            // Fallback: keyword detection
             String lower = analyzerResponse.toLowerCase();
             if (lower.contains("no risks") || lower.contains("all clear") ||
                 lower.contains("change is safe") || lower.contains("refactoring is safe") ||
                 lower.contains("no breaking changes detected")) {
                 verdictSafe = true;
             }
-            // else default to UNSAFE (conservative)
         }
 
-        // If confidence is high but no explicit verdict, infer from confidence
         if (confidence >= 0.9 && !vm.find()) {
             verdictSafe = true;
         }
@@ -157,16 +288,12 @@ public class SafetyVerdict {
         while (rm.find()) {
             String desc = rm.group(1).trim();
             Risk.Severity sev;
-            try {
-                sev = Risk.Severity.valueOf(rm.group(2).trim().toUpperCase());
-            } catch (IllegalArgumentException e) {
-                sev = Risk.Severity.MEDIUM;
-            }
+            try { sev = Risk.Severity.valueOf(rm.group(2).trim().toUpperCase()); }
+            catch (IllegalArgumentException e) { sev = Risk.Severity.MEDIUM; }
             String mitigation = rm.group(3) != null ? rm.group(3).trim() : "";
             risks.add(new Risk(desc, sev, mitigation));
         }
 
-        // Fallback: look for bullet-point risks without the structured format
         if (risks.isEmpty()) {
             risks.addAll(extractUnstructuredRisks(analyzerResponse));
         }
@@ -179,7 +306,7 @@ public class SafetyVerdict {
             Matcher itemMatcher = NEEDS_ITEM_PATTERN.matcher(needsBlock);
             while (itemMatcher.find()) {
                 String item = itemMatcher.group(1).trim()
-                    .replaceAll("[`'\"]", ""); // strip quotes/backticks
+                    .replaceAll("[`'\"]", "");
                 if (!item.isEmpty() && !item.equalsIgnoreCase("none") &&
                     !item.equalsIgnoreCase("nothing")) {
                     missingContext.add(item);
@@ -187,11 +314,10 @@ public class SafetyVerdict {
             }
         }
 
-        // ── Feedback (everything after RISKS/NEEDS as general feedback) ──
         String feedback = extractFeedback(analyzerResponse);
 
         return new SafetyVerdict(confidence, verdictSafe, risks, missingContext,
-            feedback, analyzerResponse);
+            feedback, analyzerResponse, false);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -199,36 +325,24 @@ public class SafetyVerdict {
     // ═══════════════════════════════════════════════════════════════
 
     /**
-     * Determine if the refactoring is safe, considering:
-     * <ul>
-     *   <li>Confidence must be ≥ threshold</li>
-     *   <li>No HIGH-severity risks</li>
-     *   <li>The analyzer's own verdict</li>
-     * </ul>
-     *
-     * @param safetyThreshold the minimum confidence to consider safe
-     * @return true if all safety criteria are met
+     * Determine if the refactoring is safe:
+     * verdict must be SAFE, confidence ≥ threshold, no HIGH-severity risks.
      */
     public boolean isSafe(double safetyThreshold) {
         if (!verdictSafe) return false;
         if (confidence < safetyThreshold) return false;
-        // Any HIGH-severity risk forces UNSAFE
         for (Risk r : risks) {
             if (r.getSeverity() == Risk.Severity.HIGH) return false;
         }
         return true;
     }
 
-    /**
-     * Check if the analyzer has requested additional context from the graph.
-     */
     public boolean needsMoreContext() {
         return !missingContext.isEmpty();
     }
 
     /**
-     * Check if this verdict has the same risk descriptions as another
-     * (used for stagnation detection).
+     * Stagnation detection: same risk descriptions as a previous verdict.
      */
     public boolean hasSameRisks(SafetyVerdict other) {
         if (other == null) return false;
@@ -252,6 +366,7 @@ public class SafetyVerdict {
     public List<String> getMissingContext() { return missingContext; }
     public String getFeedback() { return feedback; }
     public String getRawResponse() { return rawResponse; }
+    public boolean isParsedFromJson() { return parsedFromJson; }
 
     public int getHighRiskCount() {
         return (int) risks.stream()
@@ -266,32 +381,28 @@ public class SafetyVerdict {
     @Override
     public String toString() {
         return String.format(
-            "SafetyVerdict { %s, confidence=%.2f, risks=%d (H=%d M=%d L=%d), needs=%d, feedback=%d chars }",
+            "SafetyVerdict { %s, confidence=%.2f, risks=%d (H=%d M=%d L=%d), needs=%d, feedback=%d chars, json=%s }",
             verdictSafe ? "✓ SAFE" : "✗ UNSAFE",
             confidence, risks.size(),
             getHighRiskCount(), getMediumRiskCount(),
             risks.size() - getHighRiskCount() - getMediumRiskCount(),
-            missingContext.size(), feedback.length()
+            missingContext.size(), feedback.length(),
+            parsedFromJson ? "yes" : "FALLBACK"
         );
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // Internal helpers
+    // Internal helpers (shared with the legacy text path)
     // ═══════════════════════════════════════════════════════════════
 
-    /**
-     * Extract bullet-point risks from unstructured text (fallback).
-     */
     private static List<Risk> extractUnstructuredRisks(String response) {
         List<Risk> risks = new ArrayList<>();
 
-        // Look for a RISKS: section
         int risksIdx = response.toLowerCase().indexOf("risks:");
         if (risksIdx < 0) risksIdx = response.toLowerCase().indexOf("risk:");
         if (risksIdx < 0) return risks;
 
         String section = response.substring(risksIdx);
-        // Cut at next major section
         int nextSection = findNextSection(section, 10);
         if (nextSection > 0) {
             section = section.substring(0, nextSection);
@@ -302,7 +413,6 @@ public class SafetyVerdict {
             if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
                 String riskText = trimmed.replaceFirst("^[-*]\\s+", "").trim();
                 if (!riskText.isEmpty() && !riskText.toLowerCase().startsWith("risk:")) {
-                    // Guess severity from keywords
                     Risk.Severity sev = Risk.Severity.MEDIUM;
                     String lower = riskText.toLowerCase();
                     if (lower.contains("critical") || lower.contains("breaking") ||
@@ -319,24 +429,16 @@ public class SafetyVerdict {
         return risks;
     }
 
-    /**
-     * Extract general feedback text from the response.
-     */
     private static String extractFeedback(String response) {
-        // Try to find a FEEDBACK section
         int fbIdx = response.toLowerCase().indexOf("feedback:");
         if (fbIdx >= 0) {
             String after = response.substring(fbIdx + "feedback:".length()).trim();
             int end = findNextSection(after, 0);
             return end > 0 ? after.substring(0, end).trim() : after.trim();
         }
-        // Otherwise use everything as feedback
         return response.trim();
     }
 
-    /**
-     * Find the position of the next section header after a given offset.
-     */
     private static int findNextSection(String text, int startAfter) {
         String[] headers = {"CONFIDENCE:", "VERDICT:", "RISKS:", "NEEDS:", "FEEDBACK:", "```"};
         String sub = text.substring(Math.min(startAfter, text.length()));
@@ -350,4 +452,3 @@ public class SafetyVerdict {
         return earliest > 0 ? earliest + startAfter : -1;
     }
 }
-

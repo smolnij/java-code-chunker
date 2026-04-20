@@ -41,7 +41,8 @@ public final class SafeLoopBundle implements AutoCloseable {
                 .withMaxChunks(config.getMaxChunks())
                 .withAgentMode(true)
                 .withMaxToolCalls(config.getMaxToolCalls())
-                .withChatMemorySize(config.getChatMemorySize());
+                .withChatMemorySize(config.getChatMemorySize())
+                .withStructuredOutput(config.getStructuredOutput());
 
         RefactorTools agentTools = new RefactorTools(retriever, reader, config.getMaxChunks());
         AstDiffEngine diffEngine = new AstDiffEngine();

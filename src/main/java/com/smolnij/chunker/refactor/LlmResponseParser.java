@@ -1,29 +1,62 @@
 package com.smolnij.chunker.refactor;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonSyntaxException;
+
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
  * Parses structured LLM responses from the refactoring loop.
  *
- * <p>Extracts:
- * <ul>
- *   <li>Code blocks (```java ... ```)</li>
- *   <li>Explanation text</li>
- *   <li>Missing-context references (MISSING: [name1, name2])</li>
- *   <li>Breaking changes / risks</li>
- * </ul>
+ * <p>Primary wire format is JSON, matching the schema requested by
+ * {@link PromptBuilder}:
+ * <pre>
+ * {
+ *   "code_blocks": [{"class": "UserService", "method": "createUser", "code": "..."}],
+ *   "explanation": "...",
+ *   "breaking_changes": ["..."],
+ *   "missing_references": ["ClassName.methodName"]
+ * }
+ * </pre>
  *
- * <p>The parser is intentionally lenient — local LLMs may not follow
- * the output format perfectly, so we use multiple detection strategies.
+ * <p>Analysis-step responses use a narrower shape and go through
+ * {@link #parseAnalysis(String)}:
+ * <pre>
+ * { "dependencies": ["..."], "impact": "...", "missing_references": ["..."] }
+ * </pre>
+ *
+ * <p>When the LLM returns free-form text (no {@code response_format}
+ * support), both entry points fall back to the original tagged-text
+ * regex extractor — {@code ```java ... ```} blocks, {@code EXPLANATION:},
+ * {@code BREAKING CHANGES:}, {@code MISSING: [...]} — so existing
+ * {@code RefactorConfig.StructuredOutputMode.OFF} behavior is preserved.
  */
 public class LlmResponseParser {
 
-    // ── Patterns ──
+    private static final Gson GSON = new Gson();
 
-    /** Matches MISSING: [item1, item2, ...] — the structured machine-readable format. */
+    // ── JSON extraction patterns ──
+
+    private static final Pattern JSON_FENCE_PATTERN =
+        Pattern.compile("```(?:json)?\\s*\\n?(\\{.*?\\})\\s*\\n?```", Pattern.DOTALL);
+
+    private static final Pattern JSON_OBJECT_START_PATTERN =
+        Pattern.compile(
+            "(\\{\\s*\"(?:code_blocks|explanation|breaking_changes|missing_references|dependencies|impact)\"\\s*:.*\\})",
+            Pattern.DOTALL
+        );
+
+    // ── Legacy text patterns (fallback) ──
+
+    /** Matches MISSING: [item1, item2, ...] — the original tagged format. */
     private static final Pattern MISSING_BRACKET_PATTERN =
         Pattern.compile("MISSING:\\s*\\[([^\\]]*)]", Pattern.CASE_INSENSITIVE);
 
@@ -44,35 +77,149 @@ public class LlmResponseParser {
         );
 
     // ═══════════════════════════════════════════════════════════════
-    // Main parse
+    // Refactor-response parser
     // ═══════════════════════════════════════════════════════════════
 
-    /**
-     * Parse the full LLM response into structured components.
-     *
-     * @param llmResponse the raw text response from the LLM
-     * @return parsed result containing code, explanation, and missing references
-     */
     public RefactorResponse parse(String llmResponse) {
         if (llmResponse == null || llmResponse.isBlank()) {
-            return new RefactorResponse("", "", List.of(), List.of(), llmResponse);
+            return new RefactorResponse("", "", List.of(), List.of(), llmResponse, false);
         }
+        JsonObject json = extractJson(llmResponse);
+        if (json != null) {
+            RefactorResponse jsonResult = refactorFromJson(json, llmResponse);
+            if (jsonResult != null) return jsonResult;
+        }
+        return refactorFromText(llmResponse);
+    }
 
-        String code = extractCode(llmResponse);
-        String explanation = extractExplanation(llmResponse);
-        List<String> missingRefs = extractMissingReferences(llmResponse);
-        List<String> breakingChanges = extractBreakingChanges(llmResponse);
+    private RefactorResponse refactorFromJson(JsonObject json, String rawResponse) {
+        String code = readCodeBlocks(json);
+        String explanation = readStringField(json, "explanation");
+        List<String> breakingChanges = readStringArray(json, "breaking_changes");
+        List<String> missingRefs = readStringArray(json, "missing_references");
 
-        return new RefactorResponse(code, explanation, missingRefs, breakingChanges, llmResponse);
+        // If JSON is the wrong shape entirely (e.g. analysis response given to parse),
+        // still succeed — missingRefs may be populated and that drives the refinement loop.
+        boolean anyField = !code.isEmpty() || !explanation.isEmpty()
+            || !breakingChanges.isEmpty() || !missingRefs.isEmpty();
+        if (!anyField && !json.has("code_blocks") && !json.has("explanation")
+            && !json.has("breaking_changes") && !json.has("missing_references")) {
+            return null;
+        }
+        return new RefactorResponse(code, explanation, missingRefs, breakingChanges,
+            rawResponse, true);
+    }
+
+    private static String readCodeBlocks(JsonObject json) {
+        if (!json.has("code_blocks") || !json.get("code_blocks").isJsonArray()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (JsonElement el : json.getAsJsonArray("code_blocks")) {
+            String code;
+            if (el.isJsonPrimitive()) {
+                code = el.getAsString();
+            } else if (el.isJsonObject() && el.getAsJsonObject().has("code")
+                       && el.getAsJsonObject().get("code").isJsonPrimitive()) {
+                code = el.getAsJsonObject().get("code").getAsString();
+            } else {
+                continue;
+            }
+            if (sb.length() > 0) sb.append("\n\n");
+            sb.append(code.strip());
+        }
+        return sb.toString();
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // Code extraction
+    // Analysis-response parser
     // ═══════════════════════════════════════════════════════════════
 
-    /**
-     * Extract all Java code blocks from the response, concatenated.
-     */
+    public AnalysisResponse parseAnalysis(String llmResponse) {
+        if (llmResponse == null || llmResponse.isBlank()) {
+            return new AnalysisResponse(List.of(), "", List.of(), llmResponse, false);
+        }
+        JsonObject json = extractJson(llmResponse);
+        if (json != null) {
+            AnalysisResponse jsonResult = analysisFromJson(json, llmResponse);
+            if (jsonResult != null) return jsonResult;
+        }
+        return analysisFromText(llmResponse);
+    }
+
+    private AnalysisResponse analysisFromJson(JsonObject json, String rawResponse) {
+        List<String> dependencies = readStringArray(json, "dependencies");
+        String impact = readStringField(json, "impact");
+        List<String> missingRefs = readStringArray(json, "missing_references");
+        if (!json.has("dependencies") && !json.has("impact") && !json.has("missing_references")) {
+            return null;
+        }
+        return new AnalysisResponse(dependencies, impact, missingRefs, rawResponse, true);
+    }
+
+    private AnalysisResponse analysisFromText(String response) {
+        List<String> missingRefs = extractMissingReferences(response);
+        // No reliable regex for "dependencies" / "impact" in the legacy format — leave empty.
+        return new AnalysisResponse(List.of(), "", missingRefs, response, false);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // JSON extraction helpers
+    // ═══════════════════════════════════════════════════════════════
+
+    private static JsonObject extractJson(String text) {
+        Matcher fence = JSON_FENCE_PATTERN.matcher(text);
+        if (fence.find()) {
+            JsonObject o = tryParse(fence.group(1));
+            if (o != null) return o;
+        }
+        Matcher raw = JSON_OBJECT_START_PATTERN.matcher(text);
+        if (raw.find()) {
+            JsonObject o = tryParse(raw.group(1));
+            if (o != null) return o;
+        }
+        return tryParse(text.trim());
+    }
+
+    private static JsonObject tryParse(String candidate) {
+        try {
+            JsonElement el = GSON.fromJson(candidate, JsonElement.class);
+            return el != null && el.isJsonObject() ? el.getAsJsonObject() : null;
+        } catch (JsonSyntaxException e) {
+            return null;
+        }
+    }
+
+    private static String readStringField(JsonObject json, String name) {
+        if (json.has(name) && json.get(name).isJsonPrimitive()) {
+            return json.get(name).getAsString();
+        }
+        return "";
+    }
+
+    private static List<String> readStringArray(JsonObject json, String name) {
+        List<String> out = new ArrayList<>();
+        if (!json.has(name) || !json.get(name).isJsonArray()) return out;
+        for (JsonElement el : json.getAsJsonArray(name)) {
+            if (el.isJsonPrimitive()) {
+                String s = el.getAsString().trim();
+                if (!s.isEmpty() && !s.equalsIgnoreCase("none")) out.add(s);
+            }
+        }
+        return out;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Legacy text-regex path (fallback when JSON is missing/invalid)
+    // ═══════════════════════════════════════════════════════════════
+
+    private RefactorResponse refactorFromText(String response) {
+        String code = extractCode(response);
+        String explanation = extractExplanation(response);
+        List<String> missingRefs = extractMissingReferences(response);
+        List<String> breakingChanges = extractBreakingChanges(response);
+        return new RefactorResponse(code, explanation, missingRefs, breakingChanges,
+            response, false);
+    }
+
     private String extractCode(String response) {
         StringBuilder sb = new StringBuilder();
 
@@ -82,12 +229,10 @@ public class LlmResponseParser {
             sb.append(m.group(1).trim());
         }
 
-        // Fallback: try generic code blocks if no Java-specific ones found
         if (sb.length() == 0) {
             m = GENERIC_CODE_BLOCK_PATTERN.matcher(response);
             while (m.find()) {
                 String block = m.group(1).trim();
-                // Heuristic: looks like Java code if it has common Java keywords
                 if (looksLikeJava(block)) {
                     if (sb.length() > 0) sb.append("\n\n");
                     sb.append(block);
@@ -104,25 +249,14 @@ public class LlmResponseParser {
                code.contains("return ") || code.contains("import ");
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // Explanation extraction
-    // ═══════════════════════════════════════════════════════════════
-
-    /**
-     * Extract the explanation section from the response.
-     * Looks for an "EXPLANATION:" header or text between code blocks.
-     */
     private String extractExplanation(String response) {
-        // Try to find an explicit EXPLANATION section
         int explIdx = indexOfIgnoreCase(response, "EXPLANATION:");
         if (explIdx >= 0) {
             String after = response.substring(explIdx + "EXPLANATION:".length()).trim();
-            // Take until next section header or code block
             int end = findNextSection(after);
             return end >= 0 ? after.substring(0, end).trim() : after.trim();
         }
 
-        // Fallback: text after the last code block and before BREAKING/MISSING
         Matcher m = CODE_BLOCK_PATTERN.matcher(response);
         int lastCodeEnd = -1;
         while (m.find()) {
@@ -143,63 +277,35 @@ public class LlmResponseParser {
         return "";
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // Missing references
-    // ═══════════════════════════════════════════════════════════════
-
-    /**
-     * Extract the list of missing method/class references.
-     * Uses two strategies:
-     * <ol>
-     *   <li>Structured: MISSING: [name1, name2]</li>
-     *   <li>Heuristic: "I need to see X" / "please provide X"</li>
-     * </ol>
-     */
     List<String> extractMissingReferences(String response) {
-        List<String> missing = new ArrayList<>();
+        Set<String> missing = new LinkedHashSet<>();
 
-        // Strategy 1: structured MISSING: [...] block
         Matcher m = MISSING_BRACKET_PATTERN.matcher(response);
         while (m.find()) {
             String inner = m.group(1).trim();
             if (inner.isEmpty()) continue;
-
-            // Split by comma, trim each
             for (String ref : inner.split(",")) {
-                String cleaned = ref.trim()
-                    .replaceAll("[`'\"]", "")  // strip quotes/backticks
-                    .trim();
-                if (!cleaned.isEmpty()) {
-                    missing.add(cleaned);
-                }
+                String cleaned = ref.trim().replaceAll("[`'\"]", "").trim();
+                if (!cleaned.isEmpty()) missing.add(cleaned);
             }
         }
 
-        // Strategy 2: heuristic NLP detection
         if (missing.isEmpty()) {
             m = NEED_TO_SEE_PATTERN.matcher(response);
             while (m.find()) {
                 String ref = m.group(1).trim();
-                if (!ref.isEmpty() && !missing.contains(ref)) {
-                    missing.add(ref);
-                }
+                if (!ref.isEmpty()) missing.add(ref);
             }
         }
 
-        return missing;
+        return new ArrayList<>(missing);
     }
-
-    // ═══════════════════════════════════════════════════════════════
-    // Breaking changes
-    // ═══════════════════════════════════════════════════════════════
 
     private List<String> extractBreakingChanges(String response) {
         List<String> changes = new ArrayList<>();
 
         int idx = indexOfIgnoreCase(response, "BREAKING CHANGE");
-        if (idx < 0) {
-            idx = indexOfIgnoreCase(response, "BREAKING:");
-        }
+        if (idx < 0) idx = indexOfIgnoreCase(response, "BREAKING:");
         if (idx < 0) return changes;
 
         String section = response.substring(idx).trim();
@@ -208,7 +314,6 @@ public class LlmResponseParser {
             section = section.substring(0, end + 20);
         }
 
-        // Extract bullet points
         for (String line : section.split("\n")) {
             String trimmed = line.trim();
             if (trimmed.startsWith("- ") || trimmed.startsWith("* ") || trimmed.matches("^\\d+\\.\\s.*")) {
@@ -216,7 +321,6 @@ public class LlmResponseParser {
             }
         }
 
-        // If section exists but no bullets, take the whole text
         if (changes.isEmpty() && section.length() > 20) {
             String content = section.replaceFirst("(?i)^BREAKING[^:]*:?\\s*", "").trim();
             if (!content.isEmpty() && !content.equalsIgnoreCase("none") &&
@@ -228,17 +332,10 @@ public class LlmResponseParser {
         return changes;
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // Helpers
-    // ═══════════════════════════════════════════════════════════════
-
     private int indexOfIgnoreCase(String text, String search) {
         return text.toLowerCase().indexOf(search.toLowerCase());
     }
 
-    /**
-     * Find the start of the next section header (e.g. "CHANGES:", "EXPLANATION:", etc.).
-     */
     private int findNextSection(String text) {
         String[] headers = {"CHANGES:", "EXPLANATION:", "BREAKING", "MISSING:", "RISK:", "```"};
         int earliest = -1;
@@ -252,12 +349,9 @@ public class LlmResponseParser {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // Response record
+    // Response records
     // ═══════════════════════════════════════════════════════════════
 
-    /**
-     * Structured result from parsing an LLM refactoring response.
-     */
     public static class RefactorResponse {
 
         private final String code;
@@ -265,16 +359,19 @@ public class LlmResponseParser {
         private final List<String> missingReferences;
         private final List<String> breakingChanges;
         private final String rawResponse;
+        private final boolean parsedFromJson;
 
         public RefactorResponse(String code, String explanation,
                                  List<String> missingReferences,
                                  List<String> breakingChanges,
-                                 String rawResponse) {
+                                 String rawResponse,
+                                 boolean parsedFromJson) {
             this.code = code;
             this.explanation = explanation;
             this.missingReferences = List.copyOf(missingReferences);
             this.breakingChanges = List.copyOf(breakingChanges);
             this.rawResponse = rawResponse;
+            this.parsedFromJson = parsedFromJson;
         }
 
         public String getCode() { return code; }
@@ -282,6 +379,7 @@ public class LlmResponseParser {
         public List<String> getMissingReferences() { return missingReferences; }
         public List<String> getBreakingChanges() { return breakingChanges; }
         public String getRawResponse() { return rawResponse; }
+        public boolean isParsedFromJson() { return parsedFromJson; }
 
         public boolean hasMissingReferences() {
             return !missingReferences.isEmpty();
@@ -294,10 +392,51 @@ public class LlmResponseParser {
         @Override
         public String toString() {
             return String.format(
-                "RefactorResponse { hasCode=%s, missing=%d refs, breaking=%d items, explanation=%d chars }",
-                hasCode(), missingReferences.size(), breakingChanges.size(), explanation.length()
+                "RefactorResponse { hasCode=%s, missing=%d refs, breaking=%d items, explanation=%d chars, json=%s }",
+                hasCode(), missingReferences.size(), breakingChanges.size(),
+                explanation.length(), parsedFromJson ? "yes" : "FALLBACK"
+            );
+        }
+    }
+
+    /**
+     * Structured result from parsing an analysis-step response.
+     */
+    public static class AnalysisResponse {
+
+        private final List<String> dependencies;
+        private final String impact;
+        private final List<String> missingReferences;
+        private final String rawResponse;
+        private final boolean parsedFromJson;
+
+        public AnalysisResponse(List<String> dependencies, String impact,
+                                List<String> missingReferences, String rawResponse,
+                                boolean parsedFromJson) {
+            this.dependencies = List.copyOf(dependencies);
+            this.impact = impact;
+            this.missingReferences = List.copyOf(missingReferences);
+            this.rawResponse = rawResponse;
+            this.parsedFromJson = parsedFromJson;
+        }
+
+        public List<String> getDependencies() { return dependencies; }
+        public String getImpact() { return impact; }
+        public List<String> getMissingReferences() { return missingReferences; }
+        public String getRawResponse() { return rawResponse; }
+        public boolean isParsedFromJson() { return parsedFromJson; }
+
+        public boolean hasMissingReferences() {
+            return !missingReferences.isEmpty();
+        }
+
+        @Override
+        public String toString() {
+            return String.format(
+                "AnalysisResponse { deps=%d, impact=%d chars, missing=%d, json=%s }",
+                dependencies.size(), impact.length(), missingReferences.size(),
+                parsedFromJson ? "yes" : "FALLBACK"
             );
         }
     }
 }
-

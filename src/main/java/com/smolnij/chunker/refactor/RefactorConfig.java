@@ -24,6 +24,12 @@ package com.smolnij.chunker.refactor;
  */
 public class RefactorConfig {
 
+    /**
+     * How the /v1/chat/completions endpoint should constrain its reply.
+     * {@link #OFF} preserves legacy behavior (free-form text + regex parsers).
+     */
+    public enum StructuredOutputMode { OFF, JSON_SCHEMA, JSON_OBJECT, TOOL_CALL }
+
     // ── LLM endpoint ──
     private String chatUrl = "http://localhost:1234/v1/chat/completions";
     private String chatModel = "";
@@ -47,6 +53,9 @@ public class RefactorConfig {
     private int maxToolCalls = 20;
     private int chatMemorySize = 40;
 
+    // ── Structured output (response_format / tool-call) ──
+    private StructuredOutputMode structuredOutput = StructuredOutputMode.JSON_SCHEMA;
+
     // ═══════════════════════════════════════════════════════════════
     // Factory
     // ═══════════════════════════════════════════════════════════════
@@ -69,6 +78,10 @@ public class RefactorConfig {
         cfg.maxToolCalls = intVal("REFACTOR_MAX_TOOL_CALLS", "refactor.maxToolCalls", cfg.maxToolCalls);
         cfg.chatMemorySize = intVal("REFACTOR_CHAT_MEMORY_SIZE", "refactor.chatMemorySize", cfg.chatMemorySize);
 
+        cfg.structuredOutput = enumVal(
+            "LLM_STRUCTURED_OUTPUT", "llm.structuredOutput",
+            StructuredOutputMode.class, cfg.structuredOutput);
+
         return cfg;
     }
 
@@ -87,6 +100,7 @@ public class RefactorConfig {
     public boolean isAgentMode() { return agentMode; }
     public int getMaxToolCalls() { return maxToolCalls; }
     public int getChatMemorySize() { return chatMemorySize; }
+    public StructuredOutputMode getStructuredOutput() { return structuredOutput; }
 
     // ═══════════════════════════════════════════════════════════════
     // Builder-style setters
@@ -103,15 +117,16 @@ public class RefactorConfig {
     public RefactorConfig withAgentMode(boolean v) { this.agentMode = v; return this; }
     public RefactorConfig withMaxToolCalls(int v) { this.maxToolCalls = v; return this; }
     public RefactorConfig withChatMemorySize(int v) { this.chatMemorySize = v; return this; }
+    public RefactorConfig withStructuredOutput(StructuredOutputMode v) { this.structuredOutput = v; return this; }
 
     @Override
     public String toString() {
         return String.format(
             "RefactorConfig { chatUrl=%s, model=%s, temp=%.2f, topP=%.2f, maxTokens=%d, " +
-            "maxChunks=%d, maxRefinements=%d, stream=%s, agentMode=%s, maxToolCalls=%d, chatMemorySize=%d }",
+            "maxChunks=%d, maxRefinements=%d, stream=%s, agentMode=%s, maxToolCalls=%d, chatMemorySize=%d, structuredOutput=%s }",
             chatUrl, chatModel.isEmpty() ? "(default)" : chatModel,
             temperature, topP, maxTokens, maxChunks, maxRefinements, stream,
-            agentMode, maxToolCalls, chatMemorySize
+            agentMode, maxToolCalls, chatMemorySize, structuredOutput
         );
     }
 
@@ -141,6 +156,14 @@ public class RefactorConfig {
         String v = strVal(envKey, sysPropKey, null);
         if (v == null) return defaultValue;
         return Boolean.parseBoolean(v);
+    }
+
+    private static <E extends Enum<E>> E enumVal(String envKey, String sysPropKey,
+                                                 Class<E> enumType, E defaultValue) {
+        String v = strVal(envKey, sysPropKey, null);
+        if (v == null) return defaultValue;
+        try { return Enum.valueOf(enumType, v.trim().toUpperCase()); }
+        catch (IllegalArgumentException e) { return defaultValue; }
     }
 }
 

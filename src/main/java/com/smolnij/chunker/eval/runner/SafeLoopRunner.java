@@ -85,15 +85,21 @@ public final class SafeLoopRunner implements ModeRunner {
         o.addProperty("hasCode", r.hasCode());
 
         JsonArray verdicts = new JsonArray();
+        int jsonParsed = 0;
         for (SafetyVerdict v : r.getVerdictHistory()) {
             JsonObject vj = new JsonObject();
             vj.addProperty("safe", v.isVerdictSafe());
             vj.addProperty("confidence", v.getConfidence());
             vj.addProperty("risks", v.getRisks().size());
             vj.addProperty("missingContext", v.getMissingContext().size());
+            vj.addProperty("parsedFromJson", v.isParsedFromJson());
+            if (v.isParsedFromJson()) jsonParsed++;
             verdicts.add(vj);
         }
         o.add("verdictHistory", verdicts);
+        int verdictCount = r.getVerdictHistory().size();
+        o.addProperty("jsonFidelity",
+            verdictCount == 0 ? 1.0 : (double) jsonParsed / verdictCount);
 
         JsonArray finalRisks = new JsonArray();
         for (SafetyVerdict.Risk risk : r.getFinalRisks()) {

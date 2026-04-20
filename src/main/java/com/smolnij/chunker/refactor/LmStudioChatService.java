@@ -90,7 +90,12 @@ public class LmStudioChatService implements ChatService {
 
     @Override
     public String chat(String systemPrompt, String userPrompt) {
-        String requestBody = buildRequestBody(systemPrompt, userPrompt, false);
+        return chat(systemPrompt, userPrompt, null);
+    }
+
+    @Override
+    public String chat(String systemPrompt, String userPrompt, StructuredOutputSpec spec) {
+        String requestBody = buildRequestBody(systemPrompt, userPrompt, false, spec);
 
         HttpPost httpPost = new HttpPost(url);
         httpPost.setHeader("Content-Type", "application/json");
@@ -112,15 +117,42 @@ public class LmStudioChatService implements ChatService {
             throw new RuntimeException("Failed to call chat endpoint at " + url + ": " + e.getMessage(), e);
         }
 
-        // Parse non-streaming response
         JsonObject json = gson.fromJson(responseBody, JsonObject.class);
         JsonArray choices = json.getAsJsonArray("choices");
         if (choices == null || choices.isEmpty()) {
             throw new RuntimeException("No choices in chat response: " + responseBody);
         }
-
         JsonObject message = choices.get(0).getAsJsonObject().getAsJsonObject("message");
-        return message.get("content").getAsString();
+
+        if (spec != null && spec.preferredMode() == StructuredOutputSpec.Mode.TOOL_CALL) {
+            return extractToolCallArguments(message, spec.name(), responseBody);
+        }
+
+        JsonElement contentEl = message.get("content");
+        if (contentEl == null || contentEl.isJsonNull()) {
+            throw new RuntimeException("No content in chat response: " + responseBody);
+        }
+        return contentEl.getAsString();
+    }
+
+    private static String extractToolCallArguments(JsonObject message, String expectedName, String responseBody) {
+        JsonArray toolCalls = message.getAsJsonArray("tool_calls");
+        if (toolCalls == null || toolCalls.isEmpty()) {
+            throw new RuntimeException(
+                "Expected tool_calls for function '" + expectedName + "' but none were returned: " + responseBody);
+        }
+        JsonObject call = toolCalls.get(0).getAsJsonObject();
+        JsonObject function = call.getAsJsonObject("function");
+        if (function == null) {
+            throw new RuntimeException("tool_calls[0].function missing: " + responseBody);
+        }
+        JsonElement args = function.get("arguments");
+        if (args == null || args.isJsonNull()) {
+            throw new RuntimeException("tool_calls[0].function.arguments missing: " + responseBody);
+        }
+        // OpenAI emits arguments as a JSON-encoded string; some OpenAI-compatible
+        // servers emit it as a nested object. Accept both.
+        return args.isJsonPrimitive() ? args.getAsString() : args.toString();
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -129,7 +161,7 @@ public class LmStudioChatService implements ChatService {
 
     @Override
     public String chatStream(String systemPrompt, String userPrompt, Consumer<String> onToken) {
-        String requestBody = buildRequestBody(systemPrompt, userPrompt, true);
+        String requestBody = buildRequestBody(systemPrompt, userPrompt, true, null);
 
         HttpPost httpPost = new HttpPost(url);
         httpPost.setHeader("Content-Type", "application/json");
@@ -204,7 +236,8 @@ public class LmStudioChatService implements ChatService {
     // Request body builder
     // ═══════════════════════════════════════════════════════════════
 
-    private String buildRequestBody(String systemPrompt, String userPrompt, boolean stream) {
+    private String buildRequestBody(String systemPrompt, String userPrompt, boolean stream,
+                                    StructuredOutputSpec spec) {
         JsonObject body = new JsonObject();
 
         if (model != null && !model.isEmpty()) {
@@ -230,7 +263,50 @@ public class LmStudioChatService implements ChatService {
         body.addProperty("max_tokens", maxTokens);
         body.addProperty("stream", stream);
 
+        if (spec != null) {
+            applyStructuredOutput(body, spec);
+        }
+
         return gson.toJson(body);
+    }
+
+    private static void applyStructuredOutput(JsonObject body, StructuredOutputSpec spec) {
+        switch (spec.preferredMode()) {
+            case JSON_SCHEMA -> {
+                JsonObject schemaWrapper = new JsonObject();
+                schemaWrapper.addProperty("name", spec.name());
+                schemaWrapper.add("schema", spec.jsonSchema());
+                schemaWrapper.addProperty("strict", true);
+                JsonObject responseFormat = new JsonObject();
+                responseFormat.addProperty("type", "json_schema");
+                responseFormat.add("json_schema", schemaWrapper);
+                body.add("response_format", responseFormat);
+            }
+            case JSON_OBJECT -> {
+                JsonObject responseFormat = new JsonObject();
+                responseFormat.addProperty("type", "json_object");
+                body.add("response_format", responseFormat);
+            }
+            case TOOL_CALL -> {
+                JsonObject function = new JsonObject();
+                function.addProperty("name", spec.name());
+                function.addProperty("description", "Submit the structured " + spec.name() + " response.");
+                function.add("parameters", spec.jsonSchema());
+                JsonObject tool = new JsonObject();
+                tool.addProperty("type", "function");
+                tool.add("function", function);
+                JsonArray tools = new JsonArray();
+                tools.add(tool);
+                body.add("tools", tools);
+
+                JsonObject choiceFn = new JsonObject();
+                choiceFn.addProperty("name", spec.name());
+                JsonObject toolChoice = new JsonObject();
+                toolChoice.addProperty("type", "function");
+                toolChoice.add("function", choiceFn);
+                body.add("tool_choice", toolChoice);
+            }
+        }
     }
 
     @Override

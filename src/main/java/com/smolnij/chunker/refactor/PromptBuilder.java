@@ -1,5 +1,7 @@
 package com.smolnij.chunker.refactor;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 import com.smolnij.chunker.model.CodeChunk;
 import com.smolnij.chunker.retrieval.RetrievalResult;
 
@@ -24,6 +26,9 @@ import java.util.List;
  * and a "missing context" prompt that asks the LLM to declare what it needs.
  */
 public class PromptBuilder {
+
+    /** Identifies which prompt (and schema) is being built. */
+    public enum PromptKind { REFACTOR, ANALYSIS, SAFETY_CHECK }
 
     private static final String SYSTEM_PROMPT =
         "You are a senior Java engineer with deep expertise in refactoring, " +
@@ -118,14 +123,15 @@ public class PromptBuilder {
         sb.append("list it in a MISSING section (see output format)\n\n");
 
         // ── OUTPUT FORMAT ──
-        sb.append("OUTPUT FORMAT:\n");
-        sb.append("1. CHANGES: For each modified method, provide the complete updated code in a ```java block\n");
-        sb.append("2. EXPLANATION: Brief explanation of what changed and why\n");
-        sb.append("3. BREAKING CHANGES: List any potential breaking changes or side effects\n");
-        sb.append("4. MISSING: If you need to see additional methods/classes to make a safe change, ");
-        sb.append("list them as:\n");
-        sb.append("   MISSING: [ClassName.methodName, ClassName2.methodName2]\n");
-        sb.append("   If you have everything you need, write: MISSING: []\n");
+        sb.append("OUTPUT FORMAT: Reply with a single JSON object (no prose outside the JSON):\n");
+        sb.append("{\n");
+        sb.append("  \"code_blocks\": [{\"class\": \"ClassName\", \"method\": \"methodName\", \"code\": \"full updated method source\"}],\n");
+        sb.append("  \"explanation\": \"brief summary of what changed and why\",\n");
+        sb.append("  \"breaking_changes\": [\"description of each potential break or regression\"],\n");
+        sb.append("  \"missing_references\": [\"ClassName.methodName\", \"OtherClass.otherMethod\"]\n");
+        sb.append("}\n");
+        sb.append("Rules: use [] for empty arrays; use \"\" for empty strings; do NOT wrap the JSON in markdown fences; ");
+        sb.append("each code_blocks[].code must contain the complete method source as a single string.\n");
 
         return sb.toString();
     }
@@ -166,12 +172,14 @@ public class PromptBuilder {
         }
         sb.append("\n");
 
-        sb.append("OUTPUT FORMAT:\n");
-        sb.append("List each risk as:\n");
-        sb.append("- RISK: <description>\n");
-        sb.append("- SEVERITY: HIGH | MEDIUM | LOW\n");
-        sb.append("- MITIGATION: <what to do about it>\n");
-        sb.append("\nIf there are no risks, write: NO BREAKING CHANGES DETECTED\n");
+        sb.append("OUTPUT FORMAT: Reply with a single JSON object (no prose outside the JSON):\n");
+        sb.append("{\n");
+        sb.append("  \"code_blocks\": [],\n");
+        sb.append("  \"explanation\": \"one-paragraph overall assessment\",\n");
+        sb.append("  \"breaking_changes\": [\"<risk description> | SEVERITY: HIGH|MEDIUM|LOW | MITIGATION: <fix>\"],\n");
+        sb.append("  \"missing_references\": []\n");
+        sb.append("}\n");
+        sb.append("Rules: if there are no risks, use [] for breaking_changes; do NOT wrap the JSON in markdown fences.\n");
 
         return sb.toString();
     }
@@ -207,12 +215,13 @@ public class PromptBuilder {
             sb.append("\n");
         }
 
-        sb.append("OUTPUT FORMAT:\n");
-        sb.append("1. DEPENDENCIES: List all methods/classes that would be affected\n");
-        sb.append("2. IMPACT: Describe the ripple effect of the proposed change\n");
-        sb.append("3. MISSING: If you need to see additional methods/classes, list them as:\n");
-        sb.append("   MISSING: [ClassName.methodName, ClassName2.methodName2]\n");
-        sb.append("   If you have everything you need, write: MISSING: []\n");
+        sb.append("OUTPUT FORMAT: Reply with a single JSON object (no prose outside the JSON):\n");
+        sb.append("{\n");
+        sb.append("  \"dependencies\": [\"ClassName.methodName affected by the change\"],\n");
+        sb.append("  \"impact\": \"one-paragraph description of the ripple effect\",\n");
+        sb.append("  \"missing_references\": [\"ClassName.methodName you need to see to finish\"]\n");
+        sb.append("}\n");
+        sb.append("Rules: use [] for empty arrays; use \"\" for empty strings; do NOT wrap the JSON in markdown fences.\n");
 
         return sb.toString();
     }
@@ -247,6 +256,184 @@ public class PromptBuilder {
         // No hash — just shorten the last segment
         int lastDot = fqRef.lastIndexOf('.');
         return lastDot >= 0 ? fqRef.substring(lastDot + 1) : fqRef;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // JSON schemas for structured output
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Build a {@link StructuredOutputSpec} for a prompt kind under the
+     * given mode. Returns {@code null} when mode is {@link
+     * RefactorConfig.StructuredOutputMode#OFF} — callers should then fall
+     * back to the plain {@link ChatService#chat(String, String)} path.
+     */
+    public static StructuredOutputSpec specFor(PromptKind kind,
+                                               RefactorConfig.StructuredOutputMode mode) {
+        if (mode == RefactorConfig.StructuredOutputMode.OFF) return null;
+        StructuredOutputSpec.Mode wireMode = switch (mode) {
+            case JSON_SCHEMA -> StructuredOutputSpec.Mode.JSON_SCHEMA;
+            case JSON_OBJECT -> StructuredOutputSpec.Mode.JSON_OBJECT;
+            case TOOL_CALL -> StructuredOutputSpec.Mode.TOOL_CALL;
+            case OFF -> throw new IllegalStateException("unreachable");
+        };
+        return new StructuredOutputSpec(schemaName(kind), schemaFor(kind), wireMode);
+    }
+
+    public static JsonObject schemaFor(PromptKind kind) {
+        return switch (kind) {
+            case REFACTOR -> refactorSchema();
+            case ANALYSIS -> analysisSchema();
+            case SAFETY_CHECK -> safetyCheckSchema();
+        };
+    }
+
+    public static final String REFACTOR_SCHEMA_NAME = "refactor_response";
+    public static final String ANALYSIS_SCHEMA_NAME = "analysis_response";
+    public static final String SAFETY_CHECK_SCHEMA_NAME = "safety_check_response";
+    public static final String SAFETY_VERDICT_SCHEMA_NAME = "safety_verdict";
+
+    private static String schemaName(PromptKind kind) {
+        return switch (kind) {
+            case REFACTOR -> REFACTOR_SCHEMA_NAME;
+            case ANALYSIS -> ANALYSIS_SCHEMA_NAME;
+            case SAFETY_CHECK -> SAFETY_CHECK_SCHEMA_NAME;
+        };
+    }
+
+    /**
+     * Schema for the refactoring step. Every property is in {@code required}
+     * so the model cannot shortcut to a minimal object — it must populate
+     * {@code code_blocks} (with at least one entry) and {@code explanation};
+     * {@code breaking_changes} and {@code missing_references} may be {@code []}.
+     */
+    public static JsonObject refactorSchema() {
+        JsonObject codeBlockItem = object(
+            "type", "object",
+            "additionalProperties", Boolean.FALSE,
+            "properties", object(
+                "class", stringSchema(),
+                "method", stringSchema(),
+                "code", stringSchema()
+            ),
+            "required", array("class", "method", "code")
+        );
+        return object(
+            "type", "object",
+            "additionalProperties", Boolean.FALSE,
+            "properties", object(
+                "code_blocks", arraySchema(codeBlockItem),
+                "explanation", stringSchema(),
+                "breaking_changes", arraySchema(stringSchema()),
+                "missing_references", arraySchema(stringSchema())
+            ),
+            "required", array("code_blocks", "explanation", "breaking_changes", "missing_references")
+        );
+    }
+
+    /** Schema for the dependency-analysis step. */
+    public static JsonObject analysisSchema() {
+        return object(
+            "type", "object",
+            "additionalProperties", Boolean.FALSE,
+            "properties", object(
+                "dependencies", arraySchema(stringSchema()),
+                "impact", stringSchema(),
+                "missing_references", arraySchema(stringSchema())
+            ),
+            "required", array("dependencies", "impact", "missing_references")
+        );
+    }
+
+    /** Schema for the post-refactor safety-check step. */
+    public static JsonObject safetyCheckSchema() {
+        return object(
+            "type", "object",
+            "additionalProperties", Boolean.FALSE,
+            "properties", object(
+                "explanation", stringSchema(),
+                "breaking_changes", arraySchema(stringSchema())
+            ),
+            "required", array("explanation", "breaking_changes")
+        );
+    }
+
+    /**
+     * Schema for the SafeRefactorLoop analyzer's verdict. Every field is
+     * required so the LLM cannot satisfy the schema with a trivial object —
+     * it must commit to a {@code verdict}, a numeric {@code confidence},
+     * and populate {@code risks}/{@code needs}/{@code feedback} (empty
+     * arrays / empty string are permitted).
+     */
+    public static JsonObject safetyVerdictSchema() {
+        JsonObject riskItem = object(
+            "type", "object",
+            "additionalProperties", Boolean.FALSE,
+            "properties", object(
+                "description", stringSchema(),
+                "severity", enumSchema("HIGH", "MEDIUM", "LOW"),
+                "mitigation", stringSchema()
+            ),
+            "required", array("description", "severity", "mitigation")
+        );
+        JsonObject confidence = new JsonObject();
+        confidence.addProperty("type", "number");
+        confidence.addProperty("minimum", 0.0);
+        confidence.addProperty("maximum", 1.0);
+        return object(
+            "type", "object",
+            "additionalProperties", Boolean.FALSE,
+            "properties", object(
+                "confidence", confidence,
+                "verdict", enumSchema("SAFE", "UNSAFE"),
+                "risks", arraySchema(riskItem),
+                "needs", arraySchema(stringSchema()),
+                "feedback", stringSchema()
+            ),
+            "required", array("confidence", "verdict", "risks", "needs", "feedback")
+        );
+    }
+
+    private static JsonObject enumSchema(String... values) {
+        JsonObject o = new JsonObject();
+        o.addProperty("type", "string");
+        JsonArray arr = new JsonArray();
+        for (String v : values) arr.add(v);
+        o.add("enum", arr);
+        return o;
+    }
+
+    private static JsonObject stringSchema() {
+        JsonObject o = new JsonObject();
+        o.addProperty("type", "string");
+        return o;
+    }
+
+    private static JsonObject arraySchema(JsonObject itemSchema) {
+        JsonObject o = new JsonObject();
+        o.addProperty("type", "array");
+        o.add("items", itemSchema);
+        return o;
+    }
+
+    private static JsonObject object(Object... kv) {
+        JsonObject o = new JsonObject();
+        for (int i = 0; i < kv.length; i += 2) {
+            String key = (String) kv[i];
+            Object val = kv[i + 1];
+            if (val instanceof JsonObject jo) o.add(key, jo);
+            else if (val instanceof JsonArray ja) o.add(key, ja);
+            else if (val instanceof Boolean b) o.addProperty(key, b);
+            else if (val instanceof Number n) o.addProperty(key, n);
+            else o.addProperty(key, String.valueOf(val));
+        }
+        return o;
+    }
+
+    private static JsonArray array(String... items) {
+        JsonArray arr = new JsonArray();
+        for (String s : items) arr.add(s);
+        return arr;
     }
 }
 

@@ -96,10 +96,14 @@ public class RefactorLoop {
         // ── Step 2: Dependency analysis (optional first pass) ──
         System.out.println("━━━ Step 2: Dependency Analysis ━━━━━━━━━━━━━━━━━━━━━━");
         String analysisPrompt = promptBuilder.buildAnalysisPrompt(userQuery, currentResults);
-        String analysisResponse = callLlm("Analysis", promptBuilder.getSystemPrompt(), analysisPrompt);
+        StructuredOutputSpec analysisSpec = PromptBuilder.specFor(
+            PromptBuilder.PromptKind.ANALYSIS, config.getStructuredOutput());
+        String analysisResponse = callLlm("Analysis", promptBuilder.getSystemPrompt(),
+            analysisPrompt, analysisSpec);
 
         // Check if analysis reveals missing context
-        LlmResponseParser.RefactorResponse analysisParsed = parser.parse(analysisResponse);
+        LlmResponseParser.AnalysisResponse analysisParsed = parser.parseAnalysis(analysisResponse);
+        warnIfFallback("Analysis", analysisParsed.isParsedFromJson(), analysisSpec, analysisResponse);
         if (analysisParsed.hasMissingReferences()) {
             System.out.println();
             System.out.println("  → Analysis found missing refs: " + analysisParsed.getMissingReferences());
@@ -117,9 +121,13 @@ public class RefactorLoop {
             System.out.println("  Context: " + currentResults.size() + " chunks");
 
             String refactorPrompt = promptBuilder.buildRefactorPrompt(userQuery, currentResults);
-            String refactorResponse = callLlm(label, promptBuilder.getSystemPrompt(), refactorPrompt);
+            StructuredOutputSpec refactorSpec = PromptBuilder.specFor(
+                PromptBuilder.PromptKind.REFACTOR, config.getStructuredOutput());
+            String refactorResponse = callLlm(label, promptBuilder.getSystemPrompt(),
+                refactorPrompt, refactorSpec);
 
             lastResponse = parser.parse(refactorResponse);
+            warnIfFallback(label, lastResponse.isParsedFromJson(), refactorSpec, refactorResponse);
 
             System.out.println();
             System.out.println("  → Parsed: " + lastResponse);
@@ -146,11 +154,15 @@ public class RefactorLoop {
             String safetyPrompt = promptBuilder.buildSafetyCheckPrompt(
                 lastResponse.getRawResponse(), currentResults
             );
-            safetyResponse = callLlm("Safety Check", promptBuilder.getSystemPrompt(), safetyPrompt);
+            StructuredOutputSpec safetySpec = PromptBuilder.specFor(
+                PromptBuilder.PromptKind.SAFETY_CHECK, config.getStructuredOutput());
+            safetyResponse = callLlm("Safety Check", promptBuilder.getSystemPrompt(),
+                safetyPrompt, safetySpec);
 
             // Merge breaking changes from refactor + safety
             allBreakingChanges.addAll(lastResponse.getBreakingChanges());
             LlmResponseParser.RefactorResponse safetyParsed = parser.parse(safetyResponse);
+            warnIfFallback("Safety Check", safetyParsed.isParsedFromJson(), safetySpec, safetyResponse);
             allBreakingChanges.addAll(safetyParsed.getBreakingChanges());
         } else {
             System.out.println("  → No code changes produced, skipping safety check");
@@ -166,7 +178,8 @@ public class RefactorLoop {
             safetyResponse,
             round + 1,
             currentResults.size(),
-            lastResponse != null ? lastResponse.getRawResponse() : ""
+            lastResponse != null ? lastResponse.getRawResponse() : "",
+            lastResponse != null && lastResponse.isParsedFromJson()
         );
     }
 
@@ -175,21 +188,63 @@ public class RefactorLoop {
     // ═══════════════════════════════════════════════════════════════
 
     private String callLlm(String label, String systemPrompt, String userPrompt) {
+        return callLlm(label, systemPrompt, userPrompt, null);
+    }
+
+    /**
+     * Call the chat endpoint. When {@code spec != null}, structured output
+     * is requested (streaming is disabled for structured calls — streaming
+     * a JSON blob token-by-token produces a poor console experience and
+     * only delays parsing).
+     */
+    private String callLlm(String label, String systemPrompt, String userPrompt,
+                           StructuredOutputSpec spec) {
         System.out.println("  ┌─ LLM [" + label + "] ─────────────────────────────");
 
         String response;
-        if (config.isStream() && streamCallback != null) {
+        boolean canStream = spec == null && config.isStream() && streamCallback != null;
+        if (canStream) {
             System.out.println("  │ (streaming) ");
             response = chatService.chatStream(systemPrompt, userPrompt, streamCallback::accept);
             System.out.println(); // newline after streamed output
         } else {
-            System.out.println("  │ (waiting for response...) ");
-            response = chatService.chat(systemPrompt, userPrompt);
+            if (spec != null) {
+                System.out.println("  │ (structured: " + spec.preferredMode() + " / " + spec.name() + ") ");
+            } else {
+                System.out.println("  │ (waiting for response...) ");
+            }
+            response = spec != null
+                ? chatService.chat(systemPrompt, userPrompt, spec)
+                : chatService.chat(systemPrompt, userPrompt);
             System.out.println(response);
         }
 
         System.out.println("  └───────────────────────────────────────────────────");
         return response;
+    }
+
+    private static void warnIfFallback(String label, boolean parsedFromJson,
+                                       StructuredOutputSpec spec, String response) {
+        if (spec == null) return;
+        System.out.println();
+        if (parsedFromJson) {
+            System.out.println("  ╔══════════════════════════════════════════════════════════╗");
+            System.out.println("  ║  ✓  STRUCTURED OUTPUT ACTIVE                            ║");
+            System.out.println("  ╠══════════════════════════════════════════════════════════╣");
+            System.out.println("  ║  [" + label + "] Response parsed from JSON successfully (" + spec.preferredMode() + ").");
+            System.out.println("  ╚══════════════════════════════════════════════════════════╝");
+        } else {
+            String preview = response == null ? "" : response.replace("\n", " ");
+            if (preview.length() > 200) preview = preview.substring(0, 200) + "…";
+            System.out.println("  ╔══════════════════════════════════════════════════════════╗");
+            System.out.println("  ║  ⚠  WARNING: STRUCTURED OUTPUT FALLBACK                 ║");
+            System.out.println("  ╠══════════════════════════════════════════════════════════╣");
+            System.out.println("  ║  [" + label + "] LLM ignored response_format — using regex fallback.");
+            System.out.println("  ║  Results may be incomplete or misparse. Check model support.");
+            System.out.println("  ║  Preview: " + preview);
+            System.out.println("  ╚══════════════════════════════════════════════════════════╝");
+        }
+        System.out.println();
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -274,10 +329,12 @@ public class RefactorLoop {
         private final int iterations;
         private final int chunksUsed;
         private final String rawLlmResponse;
+        private final boolean parsedFromJson;
 
         public RefactorResult(String query, String code, String explanation,
                                List<String> breakingChanges, String safetyAnalysis,
-                               int iterations, int chunksUsed, String rawLlmResponse) {
+                               int iterations, int chunksUsed, String rawLlmResponse,
+                               boolean parsedFromJson) {
             this.query = query;
             this.code = code;
             this.explanation = explanation;
@@ -286,6 +343,7 @@ public class RefactorLoop {
             this.iterations = iterations;
             this.chunksUsed = chunksUsed;
             this.rawLlmResponse = rawLlmResponse;
+            this.parsedFromJson = parsedFromJson;
         }
 
         public String getQuery() { return query; }
@@ -296,6 +354,7 @@ public class RefactorLoop {
         public int getIterations() { return iterations; }
         public int getChunksUsed() { return chunksUsed; }
         public String getRawLlmResponse() { return rawLlmResponse; }
+        public boolean isParsedFromJson() { return parsedFromJson; }
 
         public boolean hasCode() {
             return code != null && !code.isBlank();

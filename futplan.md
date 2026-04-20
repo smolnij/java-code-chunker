@@ -9,6 +9,97 @@
    ─────────────────────
 
 
+Summary of what landed:
+
+- StructuredOutputSpec (new) + ChatService.chat(..., spec) overload + LmStudioChatService implementation supporting          
+  response_format: json_schema, response_format: json_object, and forced tool-call extraction
+- RefactorConfig.structuredOutput (default JSON_SCHEMA) + LLM_STRUCTURED_OUTPUT env/sysprop; mirrored into SafeLoopConfig and
+  threaded via SafeLoopBundle
+- SafetyVerdict.parse and LlmResponseParser.parse / new parseAnalysis now try JSON first (fenced → raw-object → whole) and   
+  fall back to the original regex path, exposing parsedFromJson
+- PromptBuilder OUTPUT FORMAT sections now request JSON matching 2 schemas (refactor_response, analysis_response);           
+  schemaFor/specFor emit the JsonObject schemas for the transport layer
+- SafeRefactorLoop.ANALYZER_SYSTEM_PROMPT rewritten to request the SafetyVerdict JSON shape; analyzer call uses the          
+  structured overload with a safety_verdict schema; loud warn on JSON→regex fallback
+- RefactorLoop.callLlm takes an optional StructuredOutputSpec; step 2 (analysis) now uses parser.parseAnalysis
+- SafeLoopRunner emits per-verdict parsedFromJson and a top-level jsonFidelity rollup; RefactorResult carries parsedFromJson
+  from the last refactor response
+
+Next up (post-task-7) per the plan: smoke tests against live LM-Studio in all 4 modes (JSON_SCHEMA / JSON_OBJECT / TOOL_CALL
+/ OFF) and the follow-up cleanup in DistributedSafeRefactorLoop.java:272.
+
+
+
+If you want to push closer to (or beat) Opus:
+
+Add planning model split (planner + executor)
+Introduce failure memory (what didn’t work)
+Use static analysis + tests as feedback loop
+Add uncertainty scoring before applying diffs
+
+🚀 If you want near-Opus-level performance
+
+Add these on top of your planner/coder split:
+
+Critic loop (cheap model)
+→ validates plan before execution
+Execution verifier
+→ runs static analysis/tests after each diff
+Memory of failed plans
+→ prevents repeating bad strategies
+
+⚠️ The hidden weakness in your setup
+
+Right now:
+
+Planner (DeepSeek) → makes plan
+Critic (Qwen) → checks after
+
+But you’re missing:
+
+👉 strong pre-execution plan validation
+
+So:
+
+bad plans still get executed
+you waste cycles fixing them later
+🚀 If you want to reach / surpass Opus
+
+These will move the needle a lot:
+
+1. Add a “pre-critic” on the plan
+
+Before coding:
+
+validate plan feasibility
+detect missing steps
+2. Add plan scoring + branching
+
+Instead of 1 plan:
+
+generate 2–3
+pick best (or explore top 2)
+3. Track failure patterns
+
+Store:
+
+failed plans
+bad diffs
+rejected strategies
+
+👉 This alone can give +10–15% performance
+
+4. Add uncertainty gating
+
+If:
+
+planner confidence low
+→ escalate or refine before coding
+
+
+
+
+
 The useful refactor, if anything, is to extract SafeLoopMain's wiring (config load → reader/retriever/agent/analyzer/loop    
 construction) into a reusable builder so EvalMain can instantiate the same loop per-fixture without duplicating setup. But   
 SafeLoopMain itself shouldn't pull in eval scoring.
@@ -17,6 +108,16 @@ SafeLoopMain itself shouldn't pull in eval scoring.
 Extract SafeLoopMain's wiring (config load → reader/retriever/agent/analyzer/loop    
 construction) into a reusable builder so EvalMain can instantiate the same loop per-fixture without duplicating setup.
 
+
+Plan how to replace `refactor/LlmResponseParser.java` and
+`safeloop/SafetyVerdict.java` with JSON-schema-constrained output
+(LM-Studio supports `response_format`; for models that do not, fall
+back to a single tool-call whose arguments are the structured
+verdict)
+The regex parser is the single
+most fragile link — a malformed `MISSING:` silently exits the
+refinement loop, a missing `BREAKING:` produces empty risk lists.
+JSON-mode is supported by LM-Studio.
 
 Ultraplan approved in browser. Here is the plan:
 

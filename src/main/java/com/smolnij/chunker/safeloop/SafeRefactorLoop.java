@@ -1,8 +1,12 @@
 package com.smolnij.chunker.safeloop;
 
+import com.google.gson.JsonObject;
 import com.smolnij.chunker.refactor.ChatService;
+import com.smolnij.chunker.refactor.PromptBuilder;
 import com.smolnij.chunker.refactor.RefactorAgent;
+import com.smolnij.chunker.refactor.RefactorConfig;
 import com.smolnij.chunker.refactor.RefactorTools;
+import com.smolnij.chunker.refactor.StructuredOutputSpec;
 import com.smolnij.chunker.refactor.diff.AstDiffEngine;
 import com.smolnij.chunker.refactor.diff.DiffScorer;
 import com.smolnij.chunker.refactor.diff.MethodDiff;
@@ -101,32 +105,30 @@ public class SafeRefactorLoop {
         5. Behavioral changes that weren't requested
         6. Error handling gaps
 
-        Your output MUST follow this exact format:
-
-        CONFIDENCE: <0.0 to 1.0>
-        VERDICT: SAFE    (if all checks pass)
-        VERDICT: UNSAFE  (if any check fails)
-
-        RISKS:
-        - RISK: <description> | SEVERITY: HIGH | MITIGATION: <fix>
-        - RISK: <description> | SEVERITY: MEDIUM | MITIGATION: <fix>
-        - RISK: <description> | SEVERITY: LOW | MITIGATION: <fix>
-
-        NEEDS:
-        - <ClassName#methodName that you need to see to be more confident>
-        - <another method>
-
-        FEEDBACK:
-        <General assessment of the refactoring quality>
+        Reply ONLY with a single JSON object matching this shape (no prose outside the JSON,
+        no markdown fences):
+        {
+          "confidence": <number in 0.0..1.0 — your actual certainty>,
+          "verdict": "SAFE" | "UNSAFE",
+          "risks": [
+            {"description": "<what could break>",
+             "severity": "HIGH" | "MEDIUM" | "LOW",
+             "mitigation": "<what to do about it>"}
+          ],
+          "needs": ["<ClassName#methodName you need to see to be more confident>"],
+          "feedback": "<general assessment of the refactoring quality>"
+        }
 
         Rules:
-        - Be conservative — default to UNSAFE if uncertain
-        - CONFIDENCE must reflect your actual certainty, not optimism
-        - If you don't have enough context to judge, set CONFIDENCE low and list NEEDS
-        - Each RISK must have a SEVERITY and MITIGATION
-        - If there are no risks, write: RISKS: none
-        - If you don't need more context, write: NEEDS: none
+        - Be conservative — default to verdict "UNSAFE" if uncertain.
+        - confidence must reflect your actual certainty, not optimism.
+        - If you don't have enough context to judge, set confidence low and list items in needs.
+        - Each risk entry must include description, severity, and mitigation.
+        - Use [] for empty risks/needs; use "" for empty feedback.
         """;
+
+    /** Name used for the analyzer JSON schema / forced tool call. */
+    private static final String ANALYZER_SCHEMA_NAME = PromptBuilder.SAFETY_VERDICT_SCHEMA_NAME;
 
     // ═══════════════════════════════════════════════════════════════
     // Fields
@@ -268,6 +270,9 @@ public class SafeRefactorLoop {
                 }
 
                 System.out.println("  Agent responded (" + agentTools.getToolCallCount() + " tool calls)");
+                System.out.println("  ┌─ Refactoring Proposal ────────────────────────────");
+                System.out.println("  │ " + lastAgentResponse.replace("\n", "\n  │ "));
+                System.out.println("  └───────────────────────────────────────────────────");
                 System.out.println();
 
                 // ── Phase 4: VALIDATE ──
@@ -305,11 +310,34 @@ public class SafeRefactorLoop {
                 // Phase 4b: LLM analyzer evaluation (with AST diff injected)
                 String analyzerPrompt = buildAnalyzerPrompt(userQuery, lastAgentResponse, iteration, astDiffReport);
                 System.out.println("  ┌─ Analyzer ─────────────────────────────────────");
-                String analyzerResponse = analyzerChat.chat(ANALYZER_SYSTEM_PROMPT, analyzerPrompt);
+                StructuredOutputSpec analyzerSpec = analyzerSpec(config.getStructuredOutput());
+                String analyzerResponse = analyzerSpec != null
+                    ? analyzerChat.chat(ANALYZER_SYSTEM_PROMPT, analyzerPrompt, analyzerSpec)
+                    : analyzerChat.chat(ANALYZER_SYSTEM_PROMPT, analyzerPrompt);
                 System.out.println("  │ " + truncateForLog(analyzerResponse, 300).replace("\n", "\n  │ "));
                 System.out.println("  └───────────────────────────────────────────────────");
 
                 SafetyVerdict verdict = SafetyVerdict.parse(analyzerResponse);
+                if (analyzerSpec != null) {
+                    System.out.println();
+                    if (verdict.isParsedFromJson()) {
+                        System.out.println("  ╔══════════════════════════════════════════════════════════╗");
+                        System.out.println("  ║  ✓  STRUCTURED OUTPUT ACTIVE                            ║");
+                        System.out.println("  ╠══════════════════════════════════════════════════════════╣");
+                        System.out.println("  ║  [Analyzer] Response parsed from JSON successfully (" + analyzerSpec.preferredMode() + ").");
+                        System.out.println("  ╚══════════════════════════════════════════════════════════╝");
+                    } else {
+                        String _prev = truncateForLog(analyzerResponse, 200).replace("\n", " ");
+                        System.out.println("  ╔══════════════════════════════════════════════════════════╗");
+                        System.out.println("  ║  ⚠  WARNING: STRUCTURED OUTPUT FALLBACK                 ║");
+                        System.out.println("  ╠══════════════════════════════════════════════════════════╣");
+                        System.out.println("  ║  [Analyzer] LLM ignored response_format — using regex fallback.");
+                        System.out.println("  ║  Results may be incomplete or misparse. Check model support.");
+                        System.out.println("  ║  Preview: " + _prev);
+                        System.out.println("  ╚══════════════════════════════════════════════════════════╝");
+                    }
+                    System.out.println();
+                }
                 verdictHistory.add(verdict);
 
                 System.out.println();
@@ -772,6 +800,30 @@ public class SafeRefactorLoop {
      * <p>Looks for common Java method declaration patterns:
      * {@code (public|private|protected|static|...) ReturnType methodName(}
      */
+    // ═══════════════════════════════════════════════════════════════
+    // Analyzer schema (SafetyVerdict JSON)
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Build the {@link StructuredOutputSpec} that constrains the analyzer
+     * reply to the SafetyVerdict JSON shape, or {@code null} when mode is
+     * {@link RefactorConfig.StructuredOutputMode#OFF}.
+     */
+    private static StructuredOutputSpec analyzerSpec(RefactorConfig.StructuredOutputMode mode) {
+        if (mode == RefactorConfig.StructuredOutputMode.OFF) return null;
+        StructuredOutputSpec.Mode wireMode = switch (mode) {
+            case JSON_SCHEMA -> StructuredOutputSpec.Mode.JSON_SCHEMA;
+            case JSON_OBJECT -> StructuredOutputSpec.Mode.JSON_OBJECT;
+            case TOOL_CALL -> StructuredOutputSpec.Mode.TOOL_CALL;
+            case OFF -> throw new IllegalStateException("unreachable");
+        };
+        return new StructuredOutputSpec(ANALYZER_SCHEMA_NAME, safetyVerdictSchema(), wireMode);
+    }
+
+    private static JsonObject safetyVerdictSchema() {
+        return PromptBuilder.safetyVerdictSchema();
+    }
+
     private static String extractMethodNameFromCode(String code) {
         // Look for method declaration pattern
         java.util.regex.Pattern methodPattern = java.util.regex.Pattern.compile(

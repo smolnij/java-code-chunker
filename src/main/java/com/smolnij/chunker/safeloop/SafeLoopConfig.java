@@ -1,5 +1,7 @@
 package com.smolnij.chunker.safeloop;
 
+import com.smolnij.chunker.refactor.RefactorConfig;
+
 /**
  * Configuration for the self-improving safe refactoring loop.
  *
@@ -71,6 +73,10 @@ public class SafeLoopConfig {
     // ── Streaming ──
     private boolean stream = true;
 
+    // ── Structured output (response_format / tool-call) ──
+    private RefactorConfig.StructuredOutputMode structuredOutput =
+        RefactorConfig.StructuredOutputMode.JSON_SCHEMA;
+
     // ═══════════════════════════════════════════════════════════════
     // Factory
     // ═══════════════════════════════════════════════════════════════
@@ -101,6 +107,10 @@ public class SafeLoopConfig {
         cfg.stopOnStagnation = boolVal("SAFELOOP_STOP_ON_STAGNATION", "safeloop.stopOnStagnation", cfg.stopOnStagnation);
         cfg.stream = boolVal("SAFELOOP_STREAM", "safeloop.stream", cfg.stream);
 
+        cfg.structuredOutput = enumVal(
+            "LLM_STRUCTURED_OUTPUT", "llm.structuredOutput",
+            RefactorConfig.StructuredOutputMode.class, cfg.structuredOutput);
+
         return cfg;
     }
 
@@ -125,6 +135,7 @@ public class SafeLoopConfig {
     public boolean isStopOnNoNewNodes() { return stopOnNoNewNodes; }
     public boolean isStopOnStagnation() { return stopOnStagnation; }
     public boolean isStream() { return stream; }
+    public RefactorConfig.StructuredOutputMode getStructuredOutput() { return structuredOutput; }
 
     // ═══════════════════════════════════════════════════════════════
     // Builder-style setters
@@ -147,19 +158,22 @@ public class SafeLoopConfig {
     public SafeLoopConfig withStopOnNoNewNodes(boolean v) { this.stopOnNoNewNodes = v; return this; }
     public SafeLoopConfig withStopOnStagnation(boolean v) { this.stopOnStagnation = v; return this; }
     public SafeLoopConfig withStream(boolean v) { this.stream = v; return this; }
+    public SafeLoopConfig withStructuredOutput(RefactorConfig.StructuredOutputMode v) {
+        this.structuredOutput = v; return this;
+    }
 
     @Override
     public String toString() {
         return String.format(
             "SafeLoopConfig { url=%s, refactor=[model=%s, temp=%.2f], analyzer=[model=%s, temp=%.2f], " +
             "topP=%.2f, maxTokens=%d, safetyThreshold=%.2f, maxIter=%d, maxChunks=%d, " +
-            "memory=%d, maxTools=%d, callerDepth=%d, calleeDepth=%d, stopNoNew=%s, stopStagnant=%s, stream=%s }",
+            "memory=%d, maxTools=%d, callerDepth=%d, calleeDepth=%d, stopNoNew=%s, stopStagnant=%s, stream=%s, structuredOutput=%s }",
             chatUrl,
             refactorModel.isEmpty() ? "(default)" : refactorModel, refactorTemperature,
             analyzerModel.isEmpty() ? "(default)" : analyzerModel, analyzerTemperature,
             topP, maxTokens, safetyThreshold, maxIterations, maxChunks,
             chatMemorySize, maxToolCalls, minCallerDepth, minCalleeDepth,
-            stopOnNoNewNodes, stopOnStagnation, stream
+            stopOnNoNewNodes, stopOnStagnation, stream, structuredOutput
         );
     }
 
@@ -189,6 +203,14 @@ public class SafeLoopConfig {
         String v = strVal(envKey, sysPropKey, null);
         if (v == null) return defaultValue;
         return Boolean.parseBoolean(v);
+    }
+
+    private static <E extends Enum<E>> E enumVal(String envKey, String sysPropKey,
+                                                 Class<E> enumType, E defaultValue) {
+        String v = strVal(envKey, sysPropKey, null);
+        if (v == null) return defaultValue;
+        try { return Enum.valueOf(enumType, v.trim().toUpperCase()); }
+        catch (IllegalArgumentException e) { return defaultValue; }
     }
 }
 

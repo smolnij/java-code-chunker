@@ -170,7 +170,7 @@ public class ChunkerMain {
         String neo4jUri = getConfigValue("NEO4J_URI", "neo4j.uri", NEO4J_DEFAULT_URL);
         String neo4jUser = getConfigValue("NEO4J_USER", "neo4j.user", NEO4J_DEFAULT_USER);
         String neo4jPassword = getConfigValue("NEO4J_PASSWORD", "neo4j.password", NEO4J_DEFAULT_PASSWORD);
-        boolean neo4jClean = "true".equalsIgnoreCase(getConfigValue("NEO4J_CLEAN", "neo4j.clean", "false"));
+        boolean neo4jClean = "true".equalsIgnoreCase(getConfigValue("NEO4J_CLEAN", "neo4j.clean", "true"));
 
         if (neo4jUri != null && neo4jPassword != null) {
             System.out.println();
@@ -182,6 +182,7 @@ public class ChunkerMain {
 
             try (Neo4jGraphStore store = new Neo4jGraphStore(neo4jUri, neo4jUser, neo4jPassword)) {
                 store.initSchema();
+                System.out.println("⚠ WARNING: Wiping Neo4j database before import (always-clean policy).");
                 if (neo4jClean) {
                     store.cleanAll();
                 }
