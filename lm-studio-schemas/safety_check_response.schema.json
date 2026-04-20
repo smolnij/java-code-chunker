@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "name": "safety_check_response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["explanation", "breaking_changes"],
+  "properties": {
+    "explanation": { "type": "string" },
+    "breaking_changes": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

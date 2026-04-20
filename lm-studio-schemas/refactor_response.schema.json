@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "name": "refactor_response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["code_blocks", "explanation", "breaking_changes", "missing_references"],
+  "properties": {
+    "code_blocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["class", "method", "code"],
+        "properties": {
+          "class": { "type": "string" },
+          "method": { "type": "string" },
+          "code": { "type": "string" }
+        }
+      }
+    },
+    "explanation": { "type": "string" },
+    "breaking_changes": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "missing_references": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

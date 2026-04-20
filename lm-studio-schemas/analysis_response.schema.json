@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "name": "analysis_response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["dependencies", "impact", "missing_references"],
+  "properties": {
+    "dependencies": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "impact": { "type": "string" },
+    "missing_references": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}
