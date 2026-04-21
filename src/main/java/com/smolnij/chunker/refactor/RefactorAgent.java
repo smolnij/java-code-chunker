@@ -1,5 +1,7 @@
 package com.smolnij.chunker.refactor;
 
+import com.smolnij.chunker.apply.ApplyTools;
+
 import dev.langchain4j.http.client.jdk.JdkHttpClientBuilder;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatModel;
@@ -64,7 +66,7 @@ public class RefactorAgent {
         @SystemMessage("""
             You are a senior Java refactoring agent with access to a code graph database.
 
-            You have access to these tools:
+            Retrieval tools (use these to gather context):
             - retrieveCode(query): Search the codebase using natural language. Use this to find relevant methods.
             - retrieveCodeById(methodId, depth): Fetch a specific method and its graph neighbourhood.
               methodId can be "ClassName#methodName", "methodName", or a fully-qualified reference.
@@ -72,15 +74,28 @@ public class RefactorAgent {
             - getMethodCallers(methodId): Find all methods that call a given method (impact analysis).
             - getMethodCallees(methodId): Find all methods that a given method calls (dependency analysis).
 
+            CHANGES tools (use these to actually apply edits — preferred over emitting code in text):
+            - stageReplaceMethod(fqClassName, methodName, originalSignature, newCode): stage a whole-method replacement.
+            - stageAddMethod(fqClassName, newCode): stage a new method on an existing class.
+            - stageDeleteMethod(fqClassName, methodName, originalSignature): stage a method deletion.
+            - stageAddImport(filePath, importDecl): stage an import on a file (repo-relative path).
+            - stageCreateFile(relPath, content): stage creation of a brand-new file (only for truly new classes).
+            - commitPlan(rationale): flush every staged op atomically; the safety analyzer runs first and may veto.
+            - discardDraft(): drop every staged op.
+
             Rules:
             1. ALWAYS gather context before suggesting changes. Never guess at code you haven't seen.
             2. If you lack context about a method or class, call the appropriate retrieval tool.
             3. Prefer multiple small, targeted retrievals over one large query.
             4. Always check callers of a method before changing its signature (impact analysis).
             5. Always check callees before refactoring a method body (dependency analysis).
-            6. After gathering sufficient context, produce your refactoring response.
+            6. When you are ready to apply the refactoring, stage every edit with the CHANGES tools and
+               finish with commitPlan. If commitPlan returns UNSAFE, read the reason, revise the staged ops
+               (or call discardDraft first), and retry.
+            7. If the CHANGES tools are not wired in this session, fall through to the response format below
+               so the loop's post-hoc parser can still apply the edits.
 
-            Response format (after gathering all context):
+            Response format (fallback — only when CHANGES tools are unavailable):
             1. CHANGES: For each modified method, provide the complete updated code in a ```java block.
             2. EXPLANATION: Brief explanation of what changed and why.
             3. BREAKING CHANGES: List any potential breaking changes, signature changes, or side effects.
@@ -95,6 +110,7 @@ public class RefactorAgent {
 
     private final Assistant assistant;
     private final RefactorTools tools;
+    private final ApplyTools applyTools;
     private final RefactorConfig config;
 
     // ═══════════════════════════════════════════════════════════════
@@ -102,8 +118,13 @@ public class RefactorAgent {
     // ═══════════════════════════════════════════════════════════════
 
     public RefactorAgent(RefactorConfig config, RefactorTools tools) {
+        this(config, tools, null);
+    }
+
+    public RefactorAgent(RefactorConfig config, RefactorTools tools, ApplyTools applyTools) {
         this.config = config;
         this.tools = tools;
+        this.applyTools = applyTools;
 
         // ── Build the OpenAI-compatible chat model (LM-Studio) ──
         ChatModel chatModel = buildChatModel(config);
@@ -113,13 +134,22 @@ public class RefactorAgent {
                 .maxMessages(config.getChatMemorySize())
                 .build();
 
-        // ── Wire up the AI Service with retrieval tools ──
-        this.assistant = AiServices.builder(Assistant.class)
+        // ── Wire up the AI Service with retrieval tools (plus CHANGES tools if present) ──
+        AiServices<Assistant> builder = AiServices.builder(Assistant.class)
                 .chatModel(chatModel)
-                .chatMemory(chatMemory)
-                .tools(tools)
+                .chatMemory(chatMemory);
+        if (applyTools != null) {
+            builder = builder.tools(tools, applyTools);
+        } else {
+            builder = builder.tools(tools);
+        }
+        this.assistant = builder
 //                .maxSequentialToolsInvocations(MAX_SEQUENTIAL_TOOLS_EXECUTIONS)
                 .build();
+    }
+
+    public ApplyTools getApplyTools() {
+        return applyTools;
     }
 
     // ═══════════════════════════════════════════════════════════════

@@ -25,6 +25,7 @@ public class ApplyTools {
     private final Neo4jGraphReader graphReader;
     private final boolean dryRun;
     private final boolean backup;
+    private final SafetyGate safetyGate;
 
     /** Accumulated ops until {@link #commitPlan(String)} flushes them. */
     private final List<EditOp> draftOps = new ArrayList<>();
@@ -34,10 +35,16 @@ public class ApplyTools {
 
     public ApplyTools(Path repoRoot, Neo4jGraphReader graphReader,
                       boolean dryRun, boolean backup) {
+        this(repoRoot, graphReader, dryRun, backup, SafetyGate.ALLOW_ALL);
+    }
+
+    public ApplyTools(Path repoRoot, Neo4jGraphReader graphReader,
+                      boolean dryRun, boolean backup, SafetyGate safetyGate) {
         this.repoRoot = repoRoot;
         this.graphReader = graphReader;
         this.dryRun = dryRun;
         this.backup = backup;
+        this.safetyGate = safetyGate == null ? SafetyGate.ALLOW_ALL : safetyGate;
     }
 
     public ApplyResult getLastResult() {
@@ -123,7 +130,9 @@ public class ApplyTools {
         Commit all staged edits as a single atomic PatchApplier run.
         Pass a short rationale describing why these edits were chosen.
         Returns a human-readable report of the outcome (success/failure, files changed).
-        After this call, the draft ops are cleared.
+        The safety analyzer runs FIRST; if it returns UNSAFE the edits are NOT written
+        and draft ops stay buffered so you can revise them or call discardDraft.
+        On SAFE verdict the draft ops are cleared after apply.
         """)
     public String commitPlan(@P("One-paragraph rationale for the change set") String rationale) {
         if (draftOps.isEmpty()) {
@@ -135,10 +144,17 @@ public class ApplyTools {
             rationale == null ? "" : rationale,
             "agent");
 
+        SafetyGate.Verdict verdict = safetyGate.evaluate(plan);
+        if (!verdict.safe()) {
+            return "UNSAFE (confidence=" + verdict.confidence() + "): " + verdict.reason()
+                + "\nDraft kept (" + draftOps.size() + " op(s)). Revise and retry, or call discardDraft.";
+        }
+
         PatchApplier applier = new PatchApplier(repoRoot, graphReader, dryRun, backup);
         lastResult = applier.apply(plan);
         draftOps.clear();
-        return lastResult.toReport();
+        return "SAFE (confidence=" + verdict.confidence() + "): " + verdict.reason()
+            + "\n" + lastResult.toReport();
     }
 
     @Tool("""

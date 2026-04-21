@@ -1,5 +1,7 @@
 package com.smolnij.chunker.safeloop.distributed;
 
+import com.smolnij.chunker.apply.ApplyTools;
+
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
@@ -67,6 +69,10 @@ import static com.smolnij.chunker.util.Util.lmStudioHttpClientBuilder;
  * </pre>
  */
 public class PlannerAgent {
+
+    // ApplyTools is imported here so the 3-arg constructor can accept it; the
+    // distributed loop does not enable apply today (config has no repoRoot), so
+    // DistributedSafeLoopMain passes null. Ready for a future flip-the-flag.
     public static final int MAX_SEQUENTIAL_TOOLS_EXECUTIONS = 200;
     // ═══════════════════════════════════════════════════════════════
     // Planner AI Service interface
@@ -89,6 +95,16 @@ public class PlannerAgent {
             - getMethodCallers(methodId): Find all callers of a method (impact analysis)
             - getMethodCallees(methodId): Find all callees of a method (dependency analysis)
             - refactorCode(prompt): Delegate refactoring to the Generator. YOU MUST include ALL code context in the prompt.
+
+            CHANGES tools (only wired when apply mode is enabled; when available, prefer these over
+            emitting the final JSON):
+            - stageReplaceMethod(fqClassName, methodName, originalSignature, newCode)
+            - stageAddMethod(fqClassName, newCode)
+            - stageDeleteMethod(fqClassName, methodName, originalSignature)
+            - stageAddImport(filePath, importDecl)
+            - stageCreateFile(relPath, content)
+            - commitPlan(rationale): flush staged ops atomically; safety is gated per the run's configuration.
+            - discardDraft(): drop every staged op.
 
             Your responsibilities:
             1. Plan refactoring steps
@@ -143,6 +159,7 @@ public class PlannerAgent {
 
     private final PlannerAssistant assistant;
     private final PlannerTools tools;
+    private final ApplyTools applyTools;
     private final DistributedSafeLoopConfig config;
 
     // ═══════════════════════════════════════════════════════════════
@@ -150,8 +167,13 @@ public class PlannerAgent {
     // ═══════════════════════════════════════════════════════════════
 
     public PlannerAgent(DistributedSafeLoopConfig config, PlannerTools tools) {
+        this(config, tools, null);
+    }
+
+    public PlannerAgent(DistributedSafeLoopConfig config, PlannerTools tools, ApplyTools applyTools) {
         this.config = config;
         this.tools = tools;
+        this.applyTools = applyTools;
 
         // Build the OpenAI-compatible chat model for the Planner (S_ANALYZE_MACHINE)
         ChatModel chatModel = buildChatModel(config);
@@ -161,13 +183,22 @@ public class PlannerAgent {
             .maxMessages(config.getChatMemorySize())
             .build();
 
-        // Wire up the AI Service with planner tools
-        this.assistant = AiServices.builder(PlannerAssistant.class)
+        // Wire up the AI Service with planner tools (plus CHANGES tools if present)
+        AiServices<PlannerAssistant> builder = AiServices.builder(PlannerAssistant.class)
             .chatModel(chatModel)
-            .chatMemory(chatMemory)
-            .tools(tools)
+            .chatMemory(chatMemory);
+        if (applyTools != null) {
+            builder = builder.tools(tools, applyTools);
+        } else {
+            builder = builder.tools(tools);
+        }
+        this.assistant = builder
 //            .maxSequentialToolsInvocations(MAX_SEQUENTIAL_TOOLS_EXECUTIONS)
             .build();
+    }
+
+    public ApplyTools getApplyTools() {
+        return applyTools;
     }
 
     // ═══════════════════════════════════════════════════════════════

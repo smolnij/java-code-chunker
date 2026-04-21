@@ -2,6 +2,7 @@ package com.smolnij.chunker.safeloop;
 
 import com.google.gson.JsonObject;
 import com.smolnij.chunker.apply.ApplyResult;
+import com.smolnij.chunker.apply.ApplyTools;
 import com.smolnij.chunker.apply.PatchApplier;
 import com.smolnij.chunker.apply.PatchPlan;
 import com.smolnij.chunker.refactor.ChatService;
@@ -436,7 +437,15 @@ public class SafeRefactorLoop {
             // ══════════════════════════════════════════════════════
             // Phase 6: APPLY (optional) — write SAFE changes to disk
             // ══════════════════════════════════════════════════════
-            if (config.isApply() && isSafe) {
+            ApplyTools agentApply = agent.getApplyTools();
+            ApplyResult toolResult = agentApply == null ? null : agentApply.getLastResult();
+            if (toolResult != null) {
+                System.out.println("━━━ Phase 6: Apply ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                System.out.println("  → Agent applied via CHANGES tools (analyzer-gated).");
+                System.out.println(toolResult.toReport().replace("\n", "\n  "));
+                System.out.println();
+                result.withApplyResult(toolResult.getChangedFiles(), toolResult.toReport());
+            } else if (config.isApply() && isSafe) {
                 applyPatch(result, lastAgentResponse);
             } else if (config.isApply()) {
                 System.out.println("━━━ Phase 6: Apply ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");

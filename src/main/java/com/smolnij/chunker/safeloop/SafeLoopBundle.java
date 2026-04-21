@@ -1,5 +1,6 @@
 package com.smolnij.chunker.safeloop;
 
+import com.smolnij.chunker.apply.ApplyTools;
 import com.smolnij.chunker.refactor.ChatService;
 import com.smolnij.chunker.refactor.LmStudioChatService;
 import com.smolnij.chunker.refactor.RefactorAgent;
@@ -9,6 +10,8 @@ import com.smolnij.chunker.refactor.diff.AstDiffEngine;
 import com.smolnij.chunker.refactor.diff.DiffScorer;
 import com.smolnij.chunker.retrieval.HybridRetriever;
 import com.smolnij.chunker.retrieval.Neo4jGraphReader;
+
+import java.nio.file.Paths;
 
 /**
  * Holds a fully wired {@link SafeRefactorLoop} and its analyzer {@link ChatService},
@@ -47,7 +50,6 @@ public final class SafeLoopBundle implements AutoCloseable {
         RefactorTools agentTools = new RefactorTools(retriever, reader, config.getMaxChunks());
         AstDiffEngine diffEngine = new AstDiffEngine();
         DiffScorer diffScorer = new DiffScorer(reader);
-        RefactorAgent agent = new RefactorAgent(refactorConfig, agentTools);
 
         ChatService analyzerChat = new LmStudioChatService(
                 config.getChatUrl(),
@@ -55,6 +57,19 @@ public final class SafeLoopBundle implements AutoCloseable {
                 config.getAnalyzerTemperature(),
                 config.getTopP(),
                 config.getMaxTokens());
+
+        ApplyTools applyTools = null;
+        if (config.isApply() && config.getRepoRoot() != null && !config.getRepoRoot().isEmpty()) {
+            SafeLoopApplyGate gate = new SafeLoopApplyGate(analyzerChat, config);
+            applyTools = new ApplyTools(
+                Paths.get(config.getRepoRoot()),
+                reader,
+                config.isDryRun(),
+                config.isBackup(),
+                gate);
+        }
+
+        RefactorAgent agent = new RefactorAgent(refactorConfig, agentTools, applyTools);
 
         SafeLoopTools loopTools = new SafeLoopTools(retriever, reader, config);
         SafeRefactorLoop loop = new SafeRefactorLoop(
