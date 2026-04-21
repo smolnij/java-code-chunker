@@ -1,5 +1,8 @@
 package com.smolnij.chunker.refactor;
 
+import com.smolnij.chunker.apply.ApplyResult;
+import com.smolnij.chunker.apply.PatchApplier;
+import com.smolnij.chunker.apply.PatchPlan;
 import com.smolnij.chunker.model.CodeChunk;
 import com.smolnij.chunker.refactor.diff.AstDiffEngine;
 import com.smolnij.chunker.refactor.diff.CrossMethodDiff;
@@ -10,6 +13,8 @@ import com.smolnij.chunker.retrieval.HybridRetriever;
 import com.smolnij.chunker.retrieval.Neo4jGraphReader;
 import com.smolnij.chunker.retrieval.RetrievalResult;
 
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.function.Consumer;
 
@@ -183,7 +188,7 @@ public class RefactorLoop {
         System.out.println();
 
         // ── Build final result ──
-        return new RefactorResult(
+        RefactorResult result = new RefactorResult(
             userQuery,
             lastResponse != null ? lastResponse.getCode() : "",
             lastResponse != null ? lastResponse.getExplanation() : "",
@@ -194,6 +199,62 @@ public class RefactorLoop {
             lastResponse != null ? lastResponse.getRawResponse() : "",
             lastResponse != null && lastResponse.isParsedFromJson()
         );
+
+        // ── Step 5: Apply (optional) — deterministic file edits ──
+        if (config.isApply() && lastResponse != null && lastResponse.hasCode()) {
+            applyPatch(result, lastResponse.getRawResponse());
+        } else if (config.isApply()) {
+            System.out.println("━━━ Step 5: Apply ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            System.out.println("  → Skipped — no code produced");
+            System.out.println();
+        }
+
+        return result;
+    }
+
+    /**
+     * Translate the LLM response into a {@link PatchPlan} and run {@link PatchApplier}.
+     * Outcome is recorded on {@link RefactorResult} via {@code withApplyResult}.
+     */
+    private void applyPatch(RefactorResult result, String rawLlmResponse) {
+        System.out.println("━━━ Step 5: Apply ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+        String repoRootStr = config.getRepoRoot();
+        if (repoRootStr == null || repoRootStr.isEmpty()) {
+            String msg = "Apply requested but repoRoot is empty — set refactor.repoRoot / REFACTOR_REPO_ROOT.";
+            System.out.println("  ✗ " + msg);
+            System.out.println();
+            result.withApplyResult(List.of(), msg);
+            return;
+        }
+
+        try {
+            PatchPlan plan = parser.parsePatchPlan(rawLlmResponse, graphReader, "refactor");
+            if (plan.isEmpty()) {
+                String msg = "No applicable edits found in refactor response.";
+                System.out.println("  ⚠ " + msg);
+                System.out.println();
+                result.withApplyResult(List.of(), msg);
+                return;
+            }
+
+            Path repoRoot = Paths.get(repoRootStr);
+            PatchApplier applier = new PatchApplier(
+                repoRoot, graphReader, config.isDryRun(), config.isBackup());
+
+            System.out.println("  Plan: " + plan.ops().size() + " op(s), dryRun=" + config.isDryRun()
+                + ", backup=" + config.isBackup());
+            ApplyResult ar = applier.apply(plan);
+            System.out.println(ar.toReport().replace("\n", "\n  "));
+            System.out.println();
+            result.withApplyResult(ar.getChangedFiles(), ar.toReport());
+        } catch (Exception e) {
+            String msg = "Apply failed: " + e.getClass().getSimpleName() + " — " + e.getMessage();
+            System.out.println("  ✗ " + msg);
+            e.printStackTrace();
+            System.out.println();
+            result.withApplyResult(List.of(), msg);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -388,6 +449,8 @@ public class RefactorLoop {
         private final int chunksUsed;
         private final String rawLlmResponse;
         private final boolean parsedFromJson;
+        private List<Path> appliedFiles = List.of();
+        private String applyReport = "";
 
         public RefactorResult(String query, String code, String explanation,
                                List<String> breakingChanges, String safetyAnalysis,
@@ -413,6 +476,15 @@ public class RefactorLoop {
         public int getChunksUsed() { return chunksUsed; }
         public String getRawLlmResponse() { return rawLlmResponse; }
         public boolean isParsedFromJson() { return parsedFromJson; }
+        public List<Path> getAppliedFiles() { return appliedFiles; }
+        public String getApplyReport() { return applyReport; }
+
+        /** Populate apply-phase fields after PatchApplier runs. */
+        public RefactorResult withApplyResult(List<Path> files, String report) {
+            this.appliedFiles = files == null ? List.of() : List.copyOf(files);
+            this.applyReport = report == null ? "" : report;
+            return this;
+        }
 
         public boolean hasCode() {
             return code != null && !code.isBlank();

@@ -56,6 +56,12 @@ public class RefactorConfig {
     // ── Structured output (response_format / tool-call) ──
     private StructuredOutputMode structuredOutput = StructuredOutputMode.JSON_SCHEMA;
 
+    // ── Patch apply (deterministic file edits after SAFE verdict) ──
+    private String repoRoot = "";
+    private boolean apply = false;
+    private boolean dryRun = true;
+    private boolean backup = true;
+
     // ═══════════════════════════════════════════════════════════════
     // Factory
     // ═══════════════════════════════════════════════════════════════
@@ -82,6 +88,11 @@ public class RefactorConfig {
             "LLM_STRUCTURED_OUTPUT", "llm.structuredOutput",
             StructuredOutputMode.class, cfg.structuredOutput);
 
+        cfg.repoRoot = strVal("REFACTOR_REPO_ROOT", "refactor.repoRoot", cfg.repoRoot);
+        cfg.apply = boolVal("REFACTOR_APPLY", "refactor.apply", cfg.apply);
+        cfg.dryRun = boolVal("REFACTOR_DRY_RUN", "refactor.dryRun", cfg.dryRun);
+        cfg.backup = boolVal("REFACTOR_BACKUP", "refactor.backup", cfg.backup);
+
         return cfg;
     }
 
@@ -101,6 +112,10 @@ public class RefactorConfig {
     public int getMaxToolCalls() { return maxToolCalls; }
     public int getChatMemorySize() { return chatMemorySize; }
     public StructuredOutputMode getStructuredOutput() { return structuredOutput; }
+    public String getRepoRoot() { return repoRoot; }
+    public boolean isApply() { return apply; }
+    public boolean isDryRun() { return dryRun; }
+    public boolean isBackup() { return backup; }
 
     // ═══════════════════════════════════════════════════════════════
     // Builder-style setters
@@ -118,6 +133,10 @@ public class RefactorConfig {
     public RefactorConfig withMaxToolCalls(int v) { this.maxToolCalls = v; return this; }
     public RefactorConfig withChatMemorySize(int v) { this.chatMemorySize = v; return this; }
     public RefactorConfig withStructuredOutput(StructuredOutputMode v) { this.structuredOutput = v; return this; }
+    public RefactorConfig withRepoRoot(String v) { this.repoRoot = v; return this; }
+    public RefactorConfig withApply(boolean v) { this.apply = v; return this; }
+    public RefactorConfig withDryRun(boolean v) { this.dryRun = v; return this; }
+    public RefactorConfig withBackup(boolean v) { this.backup = v; return this; }
 
     @Override
     public String toString() {

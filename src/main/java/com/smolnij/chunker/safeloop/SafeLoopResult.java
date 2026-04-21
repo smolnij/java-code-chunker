@@ -1,5 +1,6 @@
 package com.smolnij.chunker.safeloop;
 
+import java.nio.file.Path;
 import java.util.List;
 
 /**
@@ -45,6 +46,10 @@ public class SafeLoopResult {
     private final List<SafetyVerdict.Risk> finalRisks;
     private final String rawAgentResponse;
 
+    // Apply-phase results (populated by SafeRefactorLoop when cfg.apply=true).
+    private List<Path> appliedFiles = List.of();
+    private String applyReport = "";
+
     public SafeLoopResult(String query, String finalCode, String explanation,
                           boolean safe, double finalConfidence,
                           TerminalReason terminalReason, int iterationsUsed,
@@ -82,6 +87,15 @@ public class SafeLoopResult {
     public int getTotalNodesRetrieved() { return totalNodesRetrieved; }
     public List<SafetyVerdict.Risk> getFinalRisks() { return finalRisks; }
     public String getRawAgentResponse() { return rawAgentResponse; }
+    public List<Path> getAppliedFiles() { return appliedFiles; }
+    public String getApplyReport() { return applyReport; }
+
+    /** Populate the apply-phase fields. Called by SafeRefactorLoop after PatchApplier runs. */
+    public SafeLoopResult withApplyResult(List<Path> files, String report) {
+        this.appliedFiles = files == null ? List.of() : List.copyOf(files);
+        this.applyReport = report == null ? "" : report;
+        return this;
+    }
 
     /**
      * Get the last safety verdict (the one that ended the loop).

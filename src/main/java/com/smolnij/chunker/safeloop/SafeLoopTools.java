@@ -57,6 +57,11 @@ public class SafeLoopTools {
         this.config = config;
     }
 
+    /** Expose the graph reader so apply-time components can resolve FQNs to files. */
+    public Neo4jGraphReader getGraphReader() {
+        return graphReader;
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // Initial retrieval
     // ═══════════════════════════════════════════════════════════════

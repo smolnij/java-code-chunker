@@ -28,7 +28,7 @@ import java.util.List;
 public class PromptBuilder {
 
     /** Identifies which prompt (and schema) is being built. */
-    public enum PromptKind { REFACTOR, ANALYSIS, SAFETY_CHECK }
+    public enum PromptKind { REFACTOR, ANALYSIS, SAFETY_CHECK, PATCH }
 
     private static final String SYSTEM_PROMPT =
         "You are a senior Java engineer with deep expertise in refactoring, " +
@@ -132,6 +132,63 @@ public class PromptBuilder {
         sb.append("}\n");
         sb.append("Rules: use [] for empty arrays; use \"\" for empty strings; do NOT wrap the JSON in markdown fences; ");
         sb.append("each code_blocks[].code must contain the complete method source as a single string.\n");
+
+        return sb.toString();
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Patch-plan prompt (for the deterministic applier)
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Build a prompt that asks the LLM for a structured {@code PatchPlan}
+     * instead of free-form {@code code_blocks}. The header (TASK / CONTEXT /
+     * RELATIONSHIPS / INSTRUCTIONS) mirrors {@link #buildRefactorPrompt}; only
+     * the OUTPUT FORMAT section differs so the reply can be fed directly to
+     * {@link com.smolnij.chunker.apply.PatchApplier} with no free-form parsing.
+     */
+    public String buildPatchPrompt(String task, List<RetrievalResult> results) {
+        List<RetrievalResult> chunks = results.subList(0, Math.min(results.size(), maxChunks));
+
+        StringBuilder sb = new StringBuilder();
+
+        sb.append("TASK:\n").append(task).append("\n\n");
+
+        sb.append("CONTEXT:\n\n");
+        for (RetrievalResult r : chunks) {
+            CodeChunk c = r.getChunk();
+            sb.append("[Method: ").append(c.getFullyQualifiedClassName()).append("#").append(c.getMethodName());
+            if (r.isAnchor()) sb.append(" (PRIMARY TARGET)");
+            sb.append("]\n");
+            sb.append("File: ").append(c.getFilePath()).append("\n");
+            sb.append("Signature: ").append(c.getMethodSignature()).append("\n");
+            if (!c.getMethodAnnotations().isEmpty()) {
+                sb.append("Annotations: ").append(String.join(", ", c.getMethodAnnotations())).append("\n");
+            }
+            sb.append("```java\n").append(c.getCode()).append("\n```\n\n");
+        }
+
+        sb.append("INSTRUCTIONS:\n");
+        sb.append("- Return a PatchPlan: a list of typed edit operations the applier will execute deterministically.\n");
+        sb.append("- Use the FULLY QUALIFIED class name (e.g. com.example.UserService) in fq_class_name.\n");
+        sb.append("- For replace_method: include the ORIGINAL signature string exactly as shown above, so overloads are disambiguated.\n");
+        sb.append("- new_code must be the complete method source (modifiers + signature + body) as a single string.\n");
+        sb.append("- Keep behaviour identical unless the task explicitly asks to change it.\n\n");
+
+        sb.append("OUTPUT FORMAT: Reply with a single JSON object (no prose outside the JSON, no markdown fences):\n");
+        sb.append("{\n");
+        sb.append("  \"ops\": [\n");
+        sb.append("    {\"kind\": \"replace_method\", \"fq_class_name\": \"com.example.UserService\",\n");
+        sb.append("     \"method_name\": \"createUser\", \"original_signature\": \"public User createUser(Request r)\",\n");
+        sb.append("     \"new_code\": \"public User createUser(Request r) { ... }\",\n");
+        sb.append("     \"file_path\": \"\", \"import_decl\": \"\", \"rel_path\": \"\", \"content\": \"\"}\n");
+        sb.append("  ],\n");
+        sb.append("  \"rationale\": \"one-paragraph explanation of the change set\"\n");
+        sb.append("}\n");
+        sb.append("Every op object MUST contain every field (kind, fq_class_name, method_name, original_signature, new_code, ");
+        sb.append("file_path, import_decl, rel_path, content). Unused fields MUST be the empty string \"\" — never omit them, never use null.\n");
+        sb.append("Valid kinds: replace_method, add_method, delete_method, add_import, create_file.\n");
+        sb.append("Use [] if no edits are needed.\n");
 
         return sb.toString();
     }
@@ -304,6 +361,7 @@ public class PromptBuilder {
             case REFACTOR -> refactorSchema();
             case ANALYSIS -> analysisSchema();
             case SAFETY_CHECK -> safetyCheckSchema();
+            case PATCH -> patchPlanSchema();
         };
     }
 
@@ -311,12 +369,14 @@ public class PromptBuilder {
     public static final String ANALYSIS_SCHEMA_NAME = "analysis_response";
     public static final String SAFETY_CHECK_SCHEMA_NAME = "safety_check_response";
     public static final String SAFETY_VERDICT_SCHEMA_NAME = "safety_verdict";
+    public static final String PATCH_PLAN_SCHEMA_NAME = "patch_plan";
 
     private static String schemaName(PromptKind kind) {
         return switch (kind) {
             case REFACTOR -> REFACTOR_SCHEMA_NAME;
             case ANALYSIS -> ANALYSIS_SCHEMA_NAME;
             case SAFETY_CHECK -> SAFETY_CHECK_SCHEMA_NAME;
+            case PATCH -> PATCH_PLAN_SCHEMA_NAME;
         };
     }
 
@@ -361,6 +421,45 @@ public class PromptBuilder {
                 "missing_references", arraySchema(stringSchema())
             ),
             "required", array("dependencies", "impact", "missing_references")
+        );
+    }
+
+    /**
+     * Schema for the {@link PromptKind#PATCH patch_plan} response used by the
+     * deterministic applier. {@code ops[]} is a tagged union discriminated by
+     * {@code kind}. The schema keeps every leaf field required so the model
+     * cannot shortcut to a minimal op — missing values fall through to the
+     * {@code code_blocks} fallback path in {@code LlmResponseParser}.
+     */
+    public static JsonObject patchPlanSchema() {
+        JsonObject opItem = object(
+            "type", "object",
+            "additionalProperties", Boolean.FALSE,
+            "properties", object(
+                "kind", enumSchema(
+                    "replace_method", "add_method", "delete_method",
+                    "add_import", "create_file"),
+                "fq_class_name", stringSchema(),
+                "method_name", stringSchema(),
+                "original_signature", stringSchema(),
+                "new_code", stringSchema(),
+                "file_path", stringSchema(),
+                "import_decl", stringSchema(),
+                "rel_path", stringSchema(),
+                "content", stringSchema()
+            ),
+            "required", array("kind", "fq_class_name", "method_name",
+                              "original_signature", "new_code",
+                              "file_path", "import_decl", "rel_path", "content")
+        );
+        return object(
+            "type", "object",
+            "additionalProperties", Boolean.FALSE,
+            "properties", object(
+                "ops", arraySchema(opItem),
+                "rationale", stringSchema()
+            ),
+            "required", array("ops", "rationale")
         );
     }
 

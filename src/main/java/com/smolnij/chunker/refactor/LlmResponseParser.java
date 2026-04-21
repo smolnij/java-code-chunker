@@ -6,9 +6,15 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonSyntaxException;
 
+import com.smolnij.chunker.apply.EditOp;
+import com.smolnij.chunker.apply.PatchPlan;
+import com.smolnij.chunker.model.CodeChunk;
+import com.smolnij.chunker.retrieval.Neo4jGraphReader;
+
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -347,6 +353,154 @@ public class LlmResponseParser {
         }
         return earliest;
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // PatchPlan parser (for deterministic applier)
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Extract a {@link PatchPlan} from an LLM response.
+     *
+     * <p>Preferred path: the model emitted a JSON object matching
+     * {@code patch_plan.schema.json} — an {@code ops[]} array of tagged
+     * union members. Fallback path: the model produced the legacy
+     * {@code code_blocks} shape; each entry is turned into a
+     * {@link EditOp.ReplaceMethod} by resolving {@code class}→FQN and
+     * {@code method}→original signature through the Neo4j graph.
+     *
+     * @param raw         the full raw LLM response (unprocessed)
+     * @param graphReader used to resolve {@code class}→FQN and pull
+     *                    original signatures for overload disambiguation;
+     *                    may be {@code null} to skip the graph-backed fallback
+     * @param proposedBy  label recorded on the returned {@link PatchPlan}
+     *                    (e.g. {@code "safeloop"})
+     */
+    public PatchPlan parsePatchPlan(String raw, Neo4jGraphReader graphReader, String proposedBy) {
+        if (raw == null || raw.isBlank()) return PatchPlan.empty(proposedBy);
+
+        JsonObject json = extractJson(raw);
+        if (json != null && json.has("ops") && json.get("ops").isJsonArray()) {
+            List<EditOp> ops = readOpsArray(json.getAsJsonArray("ops"));
+            if (!ops.isEmpty()) {
+                return new PatchPlan(ops, readStringField(json, "rationale"), proposedBy);
+            }
+        }
+
+        // Fallback: use the existing RefactorResponse machinery — parse code
+        // blocks, then resolve each (class, method) pair against the graph to
+        // recover the full FQN + original signature needed for deterministic apply.
+        if (graphReader == null) return PatchPlan.empty(proposedBy);
+
+        List<CodeBlock> blocks = extractCodeBlocksWithMeta(raw);
+        if (blocks.isEmpty()) return PatchPlan.empty(proposedBy);
+
+        List<EditOp> ops = new ArrayList<>();
+        for (CodeBlock b : blocks) {
+            if (b.code == null || b.code.isBlank()) continue;
+            ResolvedMethod resolved = resolveMethod(graphReader, b.className, b.methodName);
+            if (resolved == null) continue;
+            ops.add(new EditOp.ReplaceMethod(
+                    resolved.fqClassName,
+                    resolved.methodName,
+                    resolved.originalSignature,
+                    b.code));
+        }
+        return new PatchPlan(ops, "", proposedBy);
+    }
+
+    /** Simple no-graph variant: JSON-only extraction, no code_blocks fallback. */
+    public PatchPlan parsePatchPlan(String raw, String proposedBy) {
+        return parsePatchPlan(raw, null, proposedBy);
+    }
+
+    private List<EditOp> readOpsArray(JsonArray arr) {
+        List<EditOp> ops = new ArrayList<>();
+        for (JsonElement el : arr) {
+            if (!el.isJsonObject()) continue;
+            JsonObject o = el.getAsJsonObject();
+            String kind = readStringField(o, "kind");
+            EditOp op = switch (kind.toLowerCase()) {
+                case "replace_method" -> new EditOp.ReplaceMethod(
+                        readStringField(o, "fq_class_name"),
+                        readStringField(o, "method_name"),
+                        readStringField(o, "original_signature"),
+                        readStringField(o, "new_code"));
+                case "add_method" -> new EditOp.AddMethod(
+                        readStringField(o, "fq_class_name"),
+                        readStringField(o, "new_code"));
+                case "delete_method" -> new EditOp.DeleteMethod(
+                        readStringField(o, "fq_class_name"),
+                        readStringField(o, "method_name"),
+                        readStringField(o, "original_signature"));
+                case "add_import" -> new EditOp.AddImport(
+                        readStringField(o, "file_path"),
+                        readStringField(o, "import_decl"));
+                case "create_file" -> new EditOp.CreateFile(
+                        readStringField(o, "rel_path"),
+                        readStringField(o, "content"));
+                default -> null;
+            };
+            if (op != null) ops.add(op);
+        }
+        return ops;
+    }
+
+    /**
+     * Resolve a (simpleClassName, methodName) pair — the shape the existing
+     * {@code code_blocks} schema exposes — into a full FQN + original
+     * signature by looking the method up in the graph.
+     */
+    private ResolvedMethod resolveMethod(Neo4jGraphReader graphReader,
+                                         String className, String methodName) {
+        if (methodName == null || methodName.isBlank()) return null;
+
+        // Try "ClassName.methodName" first (Neo4jGraphReader#findMethodExact
+        // does a CONTAINS match on chunkId), then just the method name.
+        String chunkId = null;
+        if (className != null && !className.isBlank()) {
+            chunkId = graphReader.findMethodExact(className + "." + methodName);
+            if (chunkId == null) {
+                chunkId = graphReader.findMethodExact(className + "#" + methodName);
+            }
+        }
+        if (chunkId == null) {
+            chunkId = graphReader.findMethodExact(methodName);
+        }
+        if (chunkId == null) return null;
+
+        Map<String, CodeChunk> chunks = graphReader.fetchMethodChunks(List.of(chunkId));
+        CodeChunk chunk = chunks.get(chunkId);
+        if (chunk == null) return null;
+        String fqClass = chunk.getFullyQualifiedClassName();
+        if (fqClass == null || fqClass.isBlank()) return null;
+        return new ResolvedMethod(fqClass, chunk.getMethodName(), chunk.getMethodSignature());
+    }
+
+    /**
+     * Extract {@code code_blocks} entries with their {@code class} / {@code method}
+     * metadata. Re-uses {@link #extractJson} so both fenced and raw JSON replies
+     * work, and silently skips entries whose structure is wrong.
+     */
+    private List<CodeBlock> extractCodeBlocksWithMeta(String raw) {
+        List<CodeBlock> out = new ArrayList<>();
+        JsonObject json = extractJson(raw);
+        if (json == null || !json.has("code_blocks") || !json.get("code_blocks").isJsonArray()) {
+            return out;
+        }
+        for (JsonElement el : json.getAsJsonArray("code_blocks")) {
+            if (!el.isJsonObject()) continue;
+            JsonObject obj = el.getAsJsonObject();
+            String cls = readStringField(obj, "class");
+            String method = readStringField(obj, "method");
+            String code = readStringField(obj, "code");
+            if (method.isEmpty() || code.isEmpty()) continue;
+            out.add(new CodeBlock(cls, method, code));
+        }
+        return out;
+    }
+
+    private record CodeBlock(String className, String methodName, String code) { }
+    private record ResolvedMethod(String fqClassName, String methodName, String originalSignature) { }
 
     // ═══════════════════════════════════════════════════════════════
     // Response records

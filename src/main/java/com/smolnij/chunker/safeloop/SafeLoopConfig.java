@@ -77,6 +77,12 @@ public class SafeLoopConfig {
     private RefactorConfig.StructuredOutputMode structuredOutput =
         RefactorConfig.StructuredOutputMode.JSON_SCHEMA;
 
+    // ── Patch apply (deterministic file edits after SAFE verdict) ──
+    private String repoRoot = "";
+    private boolean apply = false;
+    private boolean dryRun = true;
+    private boolean backup = true;
+
     // ═══════════════════════════════════════════════════════════════
     // Factory
     // ═══════════════════════════════════════════════════════════════
@@ -111,6 +117,11 @@ public class SafeLoopConfig {
             "LLM_STRUCTURED_OUTPUT", "llm.structuredOutput",
             RefactorConfig.StructuredOutputMode.class, cfg.structuredOutput);
 
+        cfg.repoRoot = strVal("SAFELOOP_REPO_ROOT", "safeloop.repoRoot", cfg.repoRoot);
+        cfg.apply = boolVal("SAFELOOP_APPLY", "safeloop.apply", cfg.apply);
+        cfg.dryRun = boolVal("SAFELOOP_DRY_RUN", "safeloop.dryRun", cfg.dryRun);
+        cfg.backup = boolVal("SAFELOOP_BACKUP", "safeloop.backup", cfg.backup);
+
         return cfg;
     }
 
@@ -136,6 +147,10 @@ public class SafeLoopConfig {
     public boolean isStopOnStagnation() { return stopOnStagnation; }
     public boolean isStream() { return stream; }
     public RefactorConfig.StructuredOutputMode getStructuredOutput() { return structuredOutput; }
+    public String getRepoRoot() { return repoRoot; }
+    public boolean isApply() { return apply; }
+    public boolean isDryRun() { return dryRun; }
+    public boolean isBackup() { return backup; }
 
     // ═══════════════════════════════════════════════════════════════
     // Builder-style setters
@@ -161,6 +176,10 @@ public class SafeLoopConfig {
     public SafeLoopConfig withStructuredOutput(RefactorConfig.StructuredOutputMode v) {
         this.structuredOutput = v; return this;
     }
+    public SafeLoopConfig withRepoRoot(String v) { this.repoRoot = v; return this; }
+    public SafeLoopConfig withApply(boolean v) { this.apply = v; return this; }
+    public SafeLoopConfig withDryRun(boolean v) { this.dryRun = v; return this; }
+    public SafeLoopConfig withBackup(boolean v) { this.backup = v; return this; }
 
     @Override
     public String toString() {

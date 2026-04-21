@@ -1,7 +1,11 @@
 package com.smolnij.chunker.safeloop;
 
 import com.google.gson.JsonObject;
+import com.smolnij.chunker.apply.ApplyResult;
+import com.smolnij.chunker.apply.PatchApplier;
+import com.smolnij.chunker.apply.PatchPlan;
 import com.smolnij.chunker.refactor.ChatService;
+import com.smolnij.chunker.refactor.LlmResponseParser;
 import com.smolnij.chunker.refactor.PromptBuilder;
 import com.smolnij.chunker.refactor.RefactorAgent;
 import com.smolnij.chunker.refactor.RefactorConfig;
@@ -15,6 +19,8 @@ import com.smolnij.chunker.refactor.diff.ScoredDiff;
 import com.smolnij.chunker.model.CodeChunk;
 import com.smolnij.chunker.retrieval.RetrievalResult;
 
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -412,7 +418,7 @@ public class SafeRefactorLoop {
             SafetyVerdict finalVerdict = verdictHistory.isEmpty() ? null : verdictHistory.get(verdictHistory.size() - 1);
             boolean isSafe = finalVerdict != null && finalVerdict.isSafe(config.getSafetyThreshold());
 
-            return new SafeLoopResult(
+            SafeLoopResult result = new SafeLoopResult(
                 userQuery,
                 lastAgentResponse,   // The full agent response includes code blocks
                 extractExplanation(lastAgentResponse),
@@ -426,6 +432,19 @@ public class SafeRefactorLoop {
                 finalVerdict != null ? finalVerdict.getRisks() : List.of(),
                 lastAgentResponse
             );
+
+            // ══════════════════════════════════════════════════════
+            // Phase 6: APPLY (optional) — write SAFE changes to disk
+            // ══════════════════════════════════════════════════════
+            if (config.isApply() && isSafe) {
+                applyPatch(result, lastAgentResponse);
+            } else if (config.isApply()) {
+                System.out.println("━━━ Phase 6: Apply ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                System.out.println("  → Skipped — verdict not SAFE (" + terminalReason + ")");
+                System.out.println();
+            }
+
+            return result;
 
         } catch (Exception e) {
             System.err.println("  ✗ ERROR: " + e.getMessage());
@@ -881,6 +900,58 @@ public class SafeRefactorLoop {
 
     private static JsonObject safetyVerdictSchema() {
         return PromptBuilder.safetyVerdictSchema();
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Apply phase — deterministic file edits after SAFE verdict
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Parse the agent response into a {@link PatchPlan} and run
+     * {@link PatchApplier} against it. Records the outcome on the result.
+     */
+    private void applyPatch(SafeLoopResult result, String agentResponse) {
+        System.out.println("━━━ Phase 6: Apply ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+        String repoRootStr = config.getRepoRoot();
+        if (repoRootStr == null || repoRootStr.isEmpty()) {
+            String msg = "Apply requested but repoRoot is empty — set safeloop.repoRoot / SAFELOOP_REPO_ROOT.";
+            System.out.println("  ✗ " + msg);
+            System.out.println();
+            result.withApplyResult(List.of(), msg);
+            return;
+        }
+
+        try {
+            PatchPlan plan = new LlmResponseParser().parsePatchPlan(
+                agentResponse, loopTools.getGraphReader(), "safeloop");
+
+            if (plan.isEmpty()) {
+                String msg = "No applicable edits found in agent response (empty PatchPlan).";
+                System.out.println("  ⚠ " + msg);
+                System.out.println();
+                result.withApplyResult(List.of(), msg);
+                return;
+            }
+
+            Path repoRoot = Paths.get(repoRootStr);
+            PatchApplier applier = new PatchApplier(
+                repoRoot, loopTools.getGraphReader(), config.isDryRun(), config.isBackup());
+
+            System.out.println("  Plan: " + plan.ops().size() + " op(s), dryRun=" + config.isDryRun()
+                + ", backup=" + config.isBackup());
+            ApplyResult ar = applier.apply(plan);
+            System.out.println(ar.toReport().replace("\n", "\n  "));
+            System.out.println();
+
+            result.withApplyResult(ar.getChangedFiles(), ar.toReport());
+        } catch (Exception e) {
+            String msg = "Apply failed: " + e.getClass().getSimpleName() + " — " + e.getMessage();
+            System.out.println("  ✗ " + msg);
+            e.printStackTrace();
+            System.out.println();
+            result.withApplyResult(List.of(), msg);
+        }
     }
 
     private static String extractMethodNameFromCode(String code) {
