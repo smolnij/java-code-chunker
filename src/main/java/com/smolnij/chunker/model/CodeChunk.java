@@ -265,6 +265,50 @@ public class CodeChunk {
         sb.append("File: ").append(filePath).append("\n");
         sb.append("Class Signature: ").append(classSignature).append("\n");
 
+        // Render imports (deduplicated, sorted, filter out java.lang)
+        // Keep a stable, readable "import ...;" style so LMs can parse easily.
+        final int IMPORT_RENDER_LIMIT = 40;
+        if (imports != null && !imports.isEmpty()) {
+            // Dedupe and sort
+            java.util.Set<String> unique = new java.util.TreeSet<>();
+            for (String imp : imports) {
+                if (imp == null) continue;
+                String t = imp.trim();
+                if (t.isEmpty()) continue;
+                // normalize remove leading 'import ' if present
+                if (t.startsWith("import ")) {
+                    t = t.substring(7).trim();
+                }
+                // treat 'static' specially
+                if (t.startsWith("static ")) {
+                    t = "static " + t.substring(7).trim();
+                }
+                // skip java.lang implicit imports
+                if (t.startsWith("java.lang.")) continue;
+                unique.add(t);
+            }
+
+            if (!unique.isEmpty()) {
+                sb.append("\nImports:\n");
+                int rendered = 0;
+                for (String imp : unique) {
+                    if (rendered >= IMPORT_RENDER_LIMIT) break;
+                    String line = imp;
+                    if (line.startsWith("static ")) {
+                        line = "import " + line + ";";
+                    } else {
+                        line = "import " + line + ";";
+                    }
+                    sb.append("  - ").append(line).append("\n");
+                    rendered++;
+                }
+                int remaining = unique.size() - rendered;
+                if (remaining > 0) {
+                    sb.append("  ... (+").append(remaining).append(" more imports)\n");
+                }
+            }
+        }
+
         if (!classAnnotations.isEmpty()) {
             sb.append("Class Annotations: ").append(String.join(", ", classAnnotations)).append("\n");
         }

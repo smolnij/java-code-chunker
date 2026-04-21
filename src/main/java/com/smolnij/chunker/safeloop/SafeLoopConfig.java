@@ -73,6 +73,9 @@ public class SafeLoopConfig {
     // ── Streaming ──
     private boolean stream = true;
 
+    // ── Self-review sampling (low-temperature reflexion pass) ──
+    private double selfReviewTemperature = 0.05;
+
     // ── Structured output (response_format / tool-call) ──
     private RefactorConfig.StructuredOutputMode structuredOutput =
         RefactorConfig.StructuredOutputMode.JSON_SCHEMA;
@@ -113,6 +116,8 @@ public class SafeLoopConfig {
         cfg.stopOnStagnation = boolVal("SAFELOOP_STOP_ON_STAGNATION", "safeloop.stopOnStagnation", cfg.stopOnStagnation);
         cfg.stream = boolVal("SAFELOOP_STREAM", "safeloop.stream", cfg.stream);
 
+        cfg.selfReviewTemperature = doubleVal("SAFELOOP_SELF_REVIEW_TEMP", "safeloop.selfReviewTemp", cfg.selfReviewTemperature);
+
         cfg.structuredOutput = enumVal(
             "LLM_STRUCTURED_OUTPUT", "llm.structuredOutput",
             RefactorConfig.StructuredOutputMode.class, cfg.structuredOutput);
@@ -147,6 +152,7 @@ public class SafeLoopConfig {
     public boolean isStopOnStagnation() { return stopOnStagnation; }
     public boolean isStream() { return stream; }
     public RefactorConfig.StructuredOutputMode getStructuredOutput() { return structuredOutput; }
+    public double getSelfReviewTemperature() { return selfReviewTemperature; }
     public String getRepoRoot() { return repoRoot; }
     public boolean isApply() { return apply; }
     public boolean isDryRun() { return dryRun; }
@@ -176,6 +182,7 @@ public class SafeLoopConfig {
     public SafeLoopConfig withStructuredOutput(RefactorConfig.StructuredOutputMode v) {
         this.structuredOutput = v; return this;
     }
+    public SafeLoopConfig withSelfReviewTemperature(double v) { this.selfReviewTemperature = v; return this; }
     public SafeLoopConfig withRepoRoot(String v) { this.repoRoot = v; return this; }
     public SafeLoopConfig withApply(boolean v) { this.apply = v; return this; }
     public SafeLoopConfig withDryRun(boolean v) { this.dryRun = v; return this; }

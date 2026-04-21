@@ -79,6 +79,7 @@ The engine is **optional** (constructor accepts a nullable instance)
 and is scoped to a single method's AST. `RefactorLoop` and `RalphLoop`
 do not invoke it. This matters for §3.1 / N-2 below: the work is to
 finish what's started, not to build the engine.
+DONE, see in summary
 
 ### 1.7 Storage and chunking
 
@@ -104,6 +105,8 @@ Replace `refactor/LlmResponseParser.java` and
 back to a single tool-call whose arguments are the structured
 verdict). Eliminates the silent-failure modes in §1.5 and makes the
 journal (N-7) and prompt-versioning (N-9) trivially analyzable.
+DONE, see in summary
+
 
 **P-O2. Plan-then-execute enforcement**
 The `RefactorAgent` system prompt
@@ -166,6 +169,7 @@ loop. Add `getCallerCountsBatch(Collection<String>) → Map<String,
 Integer>` to `retrieval/Neo4jGraphReader.java` and call it once
 before the loop. Saves ~`topK` round-trips per retrieval; near-zero
 risk.
+DONE, see in summary
 
 **P-R2. Continuous structural-bonus gradient**
 Replace binary `fanIn ≥ threshold` with `min(fanIn / threshold, 1.0)`,
@@ -232,6 +236,8 @@ These ride the existing JavaParser AST traversal in
 `callgraph/CallGraphExtractor.java`. Schema additions land in
 `store/Neo4jGraphStore` (constraints) and edge creation in
 `createEdges`.
+DONE
+
 
 **P-G2. Javadoc & inline-comment capture**
 Add `documentation` field to `model/CodeChunk.java`; concat with code
@@ -346,6 +352,7 @@ prompt iteration is scored against:
 
 Without this, every other improvement is opinion. The project
 explicitly has "no automated tests" today (per `CLAUDE.md`).
+DONE, see in summary 
 
 **N-9. Prompt versioning**
 Move prompt strings out of `refactor/PromptBuilder.java` into
@@ -385,22 +392,28 @@ each tier the order is the recommended sequence.
 1. **N-8. Golden-task eval harness.** Every other change is
    unverifiable without metrics; the project has no automated tests
    today. Moderate effort (fixture loader + four metrics) but unlocks
-   honest comparison for everything that follows.
+   honest comparison for everything that follows. 
+   - DONE, requires improval, more tasks and better prompt 
 2. **P-O1. JSON structured output.** The regex parser is the single
    most fragile link — a malformed `MISSING:` silently exits the
    refinement loop, a missing `BREAKING:` produces empty risk lists.
    JSON-mode is supported by LM-Studio. High reliability, low effort.
+   - DONE, but must be verified, as it doesn't currently work if structuredOutput is enabled in the LM-studio.
 3. **N-2. Finish AST-diff: non-optional + cross-method.** The engine
    already exists and `SafeRefactorLoop` already integrates it
    (`safeloop/SafeRefactorLoop.java:282`); the gap is making it
    mandatory and broadening its checks. Cheapest empirical
    correctness signal — pure local computation, no extra LLM cost.
+   - DONE, but looks like AST scoring always says that refactoring is bad. Might be because LLM responds with plain text.
+   Model converges after 2 retires with BAD verdict from AST
 4. **P-R1. Batch caller counts (fix N+1).** Free latency win
    (≈`topK` round-trips per retrieval), one-method PR, near-zero
    risk.
+   - DONE
 5. **P-G6. Render imports in prompts.** Data is already collected;
    wire it through `toPromptFormat`. Imports are critical "what types
    are in scope" context. Trivial change, immediate quality lift.
+   - DONE
 
 ### Tier 2 — Reasoning quality
 
@@ -414,13 +427,15 @@ each tier the order is the recommended sequence.
    class hierarchy; most refactor reasoning needs "what types flow
    through this code" and "what tests cover it." Highest semantic
    uplift among graph changes; gates N-10 and N-11.
+   -DONE
 8. **P-O3. Self-critique pass.** One extra LLM turn typically removes
    30–50% of analyzer round-trips in published reflexion-style
    results. Cheap drop-in between existing phases.
+   -doing
 9. **P-O6. Attempt log / failure memory.** Current loops can repeat
    the same broken edit because each refinement starts fresh. A
    3-line "previously tried X, failed because Y" line in the system
-   prompt fixes most loops.
+   prompt fixes most loops. 
 10. **P-O7. Token-budget aware context assembly.** A runaway top-K
     can blow the context window or starve the actual code section.
     Budgeted assembly + topology-only fallback for overflow keeps the

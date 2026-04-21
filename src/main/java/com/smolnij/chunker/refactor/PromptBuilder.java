@@ -28,7 +28,7 @@ import java.util.List;
 public class PromptBuilder {
 
     /** Identifies which prompt (and schema) is being built. */
-    public enum PromptKind { REFACTOR, ANALYSIS, SAFETY_CHECK, PATCH }
+    public enum PromptKind { REFACTOR, ANALYSIS, SAFETY_CHECK, SELF_REVIEW, PATCH}
 
     private static final String SYSTEM_PROMPT =
         "You are a senior Java engineer with deep expertise in refactoring, " +
@@ -87,9 +87,13 @@ public class PromptBuilder {
             if (!c.getMethodAnnotations().isEmpty()) {
                 sb.append("Annotations: ").append(String.join(", ", c.getMethodAnnotations())).append("\n");
             }
-            sb.append("```java\n");
-            sb.append(c.getCode()).append("\n");
-            sb.append("```\n\n");
+            if (r.isTopologyOnly()) {
+                sb.append("(BODY OMITTED: included only as topology/signature due to token budget)\n\n");
+            } else {
+                sb.append("```java\n");
+                sb.append(c.getCode()).append("\n");
+                sb.append("```\n\n");
+            }
         }
 
         // ── RELATIONSHIPS ──
@@ -361,6 +365,7 @@ public class PromptBuilder {
             case REFACTOR -> refactorSchema();
             case ANALYSIS -> analysisSchema();
             case SAFETY_CHECK -> safetyCheckSchema();
+            case SELF_REVIEW -> selfReviewSchema();
             case PATCH -> patchPlanSchema();
         };
     }
@@ -369,6 +374,7 @@ public class PromptBuilder {
     public static final String ANALYSIS_SCHEMA_NAME = "analysis_response";
     public static final String SAFETY_CHECK_SCHEMA_NAME = "safety_check_response";
     public static final String SAFETY_VERDICT_SCHEMA_NAME = "safety_verdict";
+    public static final String SELF_REVIEW_SCHEMA_NAME = "self_review_response";
     public static final String PATCH_PLAN_SCHEMA_NAME = "patch_plan";
 
     private static String schemaName(PromptKind kind) {
@@ -376,6 +382,7 @@ public class PromptBuilder {
             case REFACTOR -> REFACTOR_SCHEMA_NAME;
             case ANALYSIS -> ANALYSIS_SCHEMA_NAME;
             case SAFETY_CHECK -> SAFETY_CHECK_SCHEMA_NAME;
+            case SELF_REVIEW -> SELF_REVIEW_SCHEMA_NAME;
             case PATCH -> PATCH_PLAN_SCHEMA_NAME;
         };
     }
@@ -473,6 +480,31 @@ public class PromptBuilder {
                 "breaking_changes", arraySchema(stringSchema())
             ),
             "required", array("explanation", "breaking_changes")
+        );
+    }
+
+    /** Schema for the self-review step. */
+    public static JsonObject selfReviewSchema() {
+        JsonObject assumptionItem = object(
+            "type", "object",
+            "additionalProperties", Boolean.FALSE,
+            "properties", object(
+                "assumption", stringSchema(),
+                "why", stringSchema(),
+                "risk", enumSchema("HIGH", "MEDIUM", "LOW"),
+                "needs", arraySchema(stringSchema())
+            ),
+            "required", array("assumption", "why", "risk", "needs")
+        );
+
+        return object(
+            "type", "object",
+            "additionalProperties", Boolean.FALSE,
+            "properties", object(
+                "assumptions", arraySchema(assumptionItem),
+                "summary", stringSchema()
+            ),
+            "required", array("assumptions", "summary")
         );
     }
 

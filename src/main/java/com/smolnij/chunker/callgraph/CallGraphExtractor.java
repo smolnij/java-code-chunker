@@ -1,7 +1,15 @@
 package com.smolnij.chunker.callgraph;
 
+import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.ImportDeclaration;
+import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
+import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.github.javaparser.ast.expr.NameExpr;
+import com.github.javaparser.ast.expr.AssignExpr;
+import com.github.javaparser.ast.stmt.ThrowStmt;
+import com.github.javaparser.ast.stmt.CatchClause;
 import com.github.javaparser.resolution.declarations.ResolvedMethodDeclaration;
 
 import java.util.*;
@@ -27,6 +35,12 @@ public class CallGraphExtractor {
     private final Map<String, Set<String>> forwardEdges = new ConcurrentHashMap<>();
     // Reverse: calleeFQN → Set<callerFQN>
     private final Map<String, Set<String>> reverseEdges = new ConcurrentHashMap<>();
+    // Additional relational maps for P-G1
+    private final Map<String, Set<String>> usesType = new ConcurrentHashMap<>();      // methodFqn -> set(typeFqn)
+    private final Map<String, Set<String>> returnsType = new ConcurrentHashMap<>();   // methodFqn -> set(typeFqn)
+    private final Map<String, Set<String>> throwsType = new ConcurrentHashMap<>();    // methodFqn -> set(exceptionFqn)
+    private final Map<String, Set<String>> importsByClass = new ConcurrentHashMap<>(); // classFqn -> set(importedFqn)
+    private final Map<String, Set<String>> testFor = new ConcurrentHashMap<>();       // testMethodFqn -> set(targetMethodFqn)
 
     /**
      * Extract all method calls from a method declaration and record them
@@ -48,6 +62,93 @@ public class CallGraphExtractor {
                 .computeIfAbsent(calleeFqn, k -> Collections.synchronizedSet(new LinkedHashSet<>()))
                 .add(callerFqn);
         }
+    }
+
+    /**
+     * Extract parameter/return/throws/import/test heuristics and record lightweight
+     * type edges. This is intentionally best-effort: we prefer resilient string
+     * representations when symbol resolution is not available.
+     *
+     * @param method    the method AST node
+     * @param callerFqn fully-qualified method id (same format used elsewhere)
+     * @param cu        compilation unit (to gather imports and detect test classes)
+     */
+    public void extractTypeInfo(MethodDeclaration method, String callerFqn, CompilationUnit cu) {
+        // Parameters -> USES_TYPE
+        for (var p : method.getParameters()) {
+            String typeName;
+            try {
+                typeName = p.getType().resolve().describe();
+            } catch (Exception e) {
+                typeName = p.getType().toString();
+            }
+            usesType.computeIfAbsent(callerFqn, k -> Collections.synchronizedSet(new LinkedHashSet<>())).add(typeName);
+        }
+
+        // Return type -> RETURNS_TYPE
+        try {
+            String ret = method.getType().resolve().describe();
+            returnsType.computeIfAbsent(callerFqn, k -> Collections.synchronizedSet(new LinkedHashSet<>())).add(ret);
+        } catch (Exception e) {
+            String ret = method.getType().toString();
+            if (ret != null && !ret.isBlank()) {
+                returnsType.computeIfAbsent(callerFqn, k -> Collections.synchronizedSet(new LinkedHashSet<>())).add(ret);
+            }
+        }
+
+        // Thrown exceptions -> THROWS
+        method.getThrownExceptions().forEach(t -> {
+            String thrown;
+            try {
+                thrown = t.resolve().describe();
+            } catch (Exception ex) {
+                thrown = t.toString();
+            }
+            throwsType.computeIfAbsent(callerFqn, k -> Collections.synchronizedSet(new LinkedHashSet<>())).add(thrown);
+        });
+
+        // Imports (record at class level)
+        String classFqn = callerFqn.split("#")[0];
+        if (cu != null) {
+            for (ImportDeclaration id : cu.getImports()) {
+                String imp = id.getNameAsString();
+                importsByClass.computeIfAbsent(classFqn, k -> Collections.synchronizedSet(new LinkedHashSet<>())).add(imp);
+            }
+        }
+
+        // TEST_FOR heuristic: if the enclosing class looks like a test class
+        method.findAncestor(ClassOrInterfaceDeclaration.class).ifPresent(cd -> {
+            String className = cd.getNameAsString();
+            boolean isTestClass = className.endsWith("Test") || className.endsWith("Tests");
+            if (isTestClass) {
+                // For now, map test method -> all callees (best-effort)
+                Set<String> callees = forwardEdges.getOrDefault(callerFqn, Collections.emptySet());
+                if (!callees.isEmpty()) {
+                    testFor.computeIfAbsent(callerFqn, k -> Collections.synchronizedSet(new LinkedHashSet<>())).addAll(callees);
+                }
+            }
+        });
+    }
+
+    // Accessors for the new maps
+    public Set<String> getUsesTypesFrom(String methodFqn) {
+        return usesType.getOrDefault(methodFqn, Collections.emptySet());
+    }
+
+    public Set<String> getReturnsTypesFrom(String methodFqn) {
+        return returnsType.getOrDefault(methodFqn, Collections.emptySet());
+    }
+
+    public Set<String> getThrowsTypesFrom(String methodFqn) {
+        return throwsType.getOrDefault(methodFqn, Collections.emptySet());
+    }
+
+    public Set<String> getImportsForClass(String classFqn) {
+        return importsByClass.getOrDefault(classFqn, Collections.emptySet());
+    }
+
+    public Set<String> getTestForTargets(String methodFqn) {
+        return testFor.getOrDefault(methodFqn, Collections.emptySet());
     }
 
     /**

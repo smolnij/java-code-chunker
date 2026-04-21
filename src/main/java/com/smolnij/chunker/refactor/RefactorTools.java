@@ -42,12 +42,52 @@ public class RefactorTools {
     /** Track how many tool calls have been made (for logging / safety caps). */
     private int toolCallCount = 0;
 
+    // In-memory storage for last ingested structured self-review (JSON) and hydrated context
+    private volatile String lastSelfReviewJson = "{}";
+    private volatile String lastSelfReviewContext = "";
+
     public RefactorTools(HybridRetriever retriever,
                          Neo4jGraphReader graphReader,
                          int maxChunksPerCall) {
         this.retriever = retriever;
         this.graphReader = graphReader;
         this.maxChunksPerCall = maxChunksPerCall;
+    }
+
+    /**
+     * Ingest a structured self-review JSON produced by a low-temperature reviewer.
+     * This method is intended to be called by the harness (SafeRefactorLoop) to
+     * store a machine-readable review for later retrieval by the agent via
+     * {@link #fetchSelfReview()} and {@link #fetchSelfReviewContext()}.
+     *
+     * Note: deliberately NOT annotated with @Tool to prevent the agent from
+     * overwriting the stored payload.
+     */
+    public String ingestSelfReview(String selfReviewJson) {
+        if (selfReviewJson == null) selfReviewJson = "{}";
+        this.lastSelfReviewJson = selfReviewJson;
+        return "INGESTED";
+    }
+
+    /** Store hydrated context text associated with the last self-review. */
+    public void storeSelfReviewContext(String ctx) {
+        this.lastSelfReviewContext = ctx == null ? "" : ctx;
+    }
+
+    /** Return the last ingested self-review JSON (tool available to the agent). */
+    @Tool("Fetch the last structured self-review the harness stored. Returns a JSON string matching the self_review_response schema.")
+    public String fetchSelfReview() {
+        toolCallCount++;
+        System.out.println("  🔧 Tool call #" + toolCallCount + ": fetchSelfReview()");
+        return lastSelfReviewJson == null ? "{}" : lastSelfReviewJson;
+    }
+
+    /** Return the hydrated context (code bodies) associated with the last self-review, if any. */
+    @Tool("Fetch additional context that was retrieved by the harness for the last self-review (code snippets).")
+    public String fetchSelfReviewContext() {
+        toolCallCount++;
+        System.out.println("  🔧 Tool call #" + toolCallCount + ": fetchSelfReviewContext()");
+        return lastSelfReviewContext == null ? "" : lastSelfReviewContext;
     }
 
     public RefactorTools(HybridRetriever retriever,

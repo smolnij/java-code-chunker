@@ -261,6 +261,35 @@ public class Neo4jGraphReader implements AutoCloseable {
         }
     }
 
+    /**
+     * Batch-fetch caller counts for multiple methods in a single query.
+     *
+     * <p>Returns a map of chunkId -> caller count. Methods with zero callers
+     * will be present with a count of 0. If the provided collection is empty
+     * an empty map is returned.
+     */
+    public Map<String, Integer> getCallerCountsBatch(Collection<String> chunkIds) {
+        if (chunkIds == null || chunkIds.isEmpty()) return Map.of();
+
+        try (Session session = driver.session()) {
+            return session.executeRead(tx -> {
+                Result r = tx.run(
+                    "UNWIND $ids AS id " +
+                    "OPTIONAL MATCH (m:Method {chunkId:id})<-[:CALLS]-(caller:Method) " +
+                    "RETURN id AS id, count(caller) AS cnt",
+                    Map.of("ids", new ArrayList<>(chunkIds))
+                );
+
+                Map<String, Integer> out = new LinkedHashMap<>();
+                while (r.hasNext()) {
+                    Record rec = r.next();
+                    out.put(rec.get("id").asString(), rec.get("cnt").asInt());
+                }
+                return out;
+            });
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // Step 3 — Hydrate Method nodes into CodeChunk objects
     // ═══════════════════════════════════════════════════════════════

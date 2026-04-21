@@ -73,6 +73,8 @@ public class RefactorAgent {
               depth controls how many hops of dependencies to include (1-3).
             - getMethodCallers(methodId): Find all methods that call a given method (impact analysis).
             - getMethodCallees(methodId): Find all methods that a given method calls (dependency analysis).
+            - fetchSelfReview(): Retrieve the last structured self-review JSON that the harness stored (useful to see the reviewer's assumptions and NEEDS).
+            - fetchSelfReviewContext(): Retrieve hydrated code context associated with the last self-review (code snippets the harness fetched in response to NEEDS).
 
             CHANGES tools (use these to actually apply edits — preferred over emitting code in text):
             - stageReplaceMethod(fqClassName, methodName, originalSignature, newCode): stage a whole-method replacement.
