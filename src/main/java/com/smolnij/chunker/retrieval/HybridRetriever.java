@@ -326,12 +326,14 @@ public class HybridRetriever {
         }
 
         // ── Score each candidate ──
-        // Batch-fetch caller counts to avoid N+1 round-trips to Neo4j
+        // Batch-fetch caller/callee counts to avoid N+1 round-trips to Neo4j
         Map<String, Integer> callerCounts = Map.of();
+        Map<String, Integer> calleeCounts = Map.of();
         try {
             callerCounts = graphReader.getCallerCountsBatch(candidates.keySet());
+            calleeCounts = graphReader.getCalleeCountsBatch(candidates.keySet());
         } catch (Exception e) {
-            System.err.println("WARN: Batched caller-count query failed: " + e.getMessage());
+            System.err.println("WARN: Batched fan-count query failed: " + e.getMessage());
         }
 
         List<RetrievalResult> results = new ArrayList<>();
@@ -361,11 +363,12 @@ public class HybridRetriever {
             boolean sameClass = chunk.getFullyQualifiedClassName().equals(anchorClass);
             boolean samePackage = chunk.getPackageName().equals(anchorPackage);
             int callerCount = callerCounts.getOrDefault(chunkId, 0);
-            boolean highFanIn = callerCount >= config.getFanInThreshold();
+            int calleeCount = calleeCounts.getOrDefault(chunkId, 0);
 
             result.computeStructuralBonus(
-                sameClass, samePackage, highFanIn,
-                config.getSameClassBonus(), config.getSamePackageBonus(), config.getHighFanInBonus()
+                sameClass, samePackage, callerCount, calleeCount, config.getFanInThreshold(),
+                config.getSameClassBonus(), config.getSamePackageBonus(),
+                config.getFanInBonus(), config.getFanOutBonus()
             );
 
             // Final blended score

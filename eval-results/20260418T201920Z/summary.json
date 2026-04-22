@@ -1,0 +1,115 @@
+{
+  "fixtureCount": 5,
+  "byMode": {
+    "retrieval": {
+      "fixtures": 3,
+      "errors": 0
+    },
+    "safeloop": {
+      "fixtures": 2,
+      "errors": 0
+    }
+  },
+  "byMetric": {
+    "retrieval.precision@3": {
+      "pass": 1,
+      "fail": 0,
+      "error": 0,
+      "notRun": 0,
+      "passRate": 1.0,
+      "meanValue": 1.0
+    },
+    "retrieval.recall@3": {
+      "pass": 1,
+      "fail": 0,
+      "error": 0,
+      "notRun": 0,
+      "passRate": 1.0,
+      "meanValue": 1.0
+    },
+    "retrieval.anchor.hit": {
+      "pass": 5,
+      "fail": 0,
+      "error": 0,
+      "notRun": 0,
+      "passRate": 1.0,
+      "meanValue": 1.0
+    },
+    "retrieval.mrr": {
+      "pass": 5,
+      "fail": 0,
+      "error": 0,
+      "notRun": 0,
+      "passRate": 1.0,
+      "meanValue": 1.0
+    },
+    "analyzer.verdict": {
+      "pass": 2,
+      "fail": 0,
+      "error": 0,
+      "notRun": 3,
+      "passRate": 1.0,
+      "meanValue": 1.0
+    },
+    "compile.pass": {
+      "pass": 0,
+      "fail": 0,
+      "error": 0,
+      "notRun": 5
+    },
+    "tests.pass": {
+      "pass": 0,
+      "fail": 0,
+      "error": 0,
+      "notRun": 5
+    },
+    "retrieval.precision@2": {
+      "pass": 2,
+      "fail": 0,
+      "error": 0,
+      "notRun": 0,
+      "passRate": 1.0,
+      "meanValue": 1.0
+    },
+    "retrieval.recall@2": {
+      "pass": 2,
+      "fail": 0,
+      "error": 0,
+      "notRun": 0,
+      "passRate": 1.0,
+      "meanValue": 1.0
+    },
+    "retrieval.precision@4": {
+      "pass": 1,
+      "fail": 0,
+      "error": 0,
+      "notRun": 0,
+      "passRate": 1.0,
+      "meanValue": 1.0
+    },
+    "retrieval.recall@4": {
+      "pass": 1,
+      "fail": 0,
+      "error": 0,
+      "notRun": 0,
+      "passRate": 1.0,
+      "meanValue": 1.0
+    },
+    "retrieval.precision@1": {
+      "pass": 1,
+      "fail": 0,
+      "error": 0,
+      "notRun": 0,
+      "passRate": 1.0,
+      "meanValue": 1.0
+    },
+    "retrieval.recall@1": {
+      "pass": 1,
+      "fail": 0,
+      "error": 0,
+      "notRun": 0,
+      "passRate": 1.0,
+      "meanValue": 1.0
+    }
+  }
+}

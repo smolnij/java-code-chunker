@@ -123,6 +123,7 @@ single self-review turn at lower temperature: "list the three weakest
 assumptions in your previous edit; if any are unverified, request the
 missing context." One extra LLM call typically halves analyzer
 round-trips.
+DONE
 
 **P-O4. Few-shot exemplars in `PromptBuilder`**
 Add a small bank of canonical examples (rename, extract method,
@@ -153,6 +154,7 @@ neighbors, with overflow demoted to topology-only (signature +
 calls/calledBy, no body). Files:
 `retrieval/HybridRetriever.java:386-424`,
 `refactor/PromptBuilder.java`.
+DONE
 
 **P-O8. Differentiated termination signals**
 `safeloop/SafeRefactorLoop` exits today on
@@ -175,6 +177,7 @@ DONE, see in summary
 Replace binary `fanIn ≥ threshold` with `min(fanIn / threshold, 1.0)`,
 and add `min(fanOut / threshold, 1.0)`. File:
 `retrieval/RetrievalResult.java:66-75`.
+DONE
 
 **P-R3. MMR diversity rerank**
 After scoring, apply maximal marginal relevance with λ≈0.7 over the
@@ -217,6 +220,11 @@ The recent `GraphPath` / `SubgraphView` work feeds anchor→result paths
 to the LLM. Extend to render *why* each chunk was selected — "called
 by anchor; same package; cosine 0.71." Helps the model judge how much
 to trust each chunk.
+
+**P-R10 🔧 Tool call #19: retrieveCode("any config file patterns or properties files in the project")
+We need LLM-generated summary of a class.
+
+**P-R11 We need to keep diffs in memory, because now LLM looks in neo4j and cannot see the changes done.
 
 ### 2.3 Graph & indexing
 

@@ -1,3 +1,4 @@
+
 package com.smolnij.chunker.retrieval;
 
 import com.smolnij.chunker.model.CodeChunk;
@@ -57,21 +58,27 @@ public class RetrievalResult implements Comparable<RetrievalResult> {
     /**
      * Compute the structural bonus from individual signals.
      *
-     * @param sameClass       true if chunk belongs to the same class as the anchor
-     * @param samePackage     true if chunk is in the same package as the anchor
-     * @param highFanIn       true if this method has many callers (≥ threshold)
-     * @param sameClassBonus  config weight for same-class signal
+     * @param sameClass        true if chunk belongs to the same class as the anchor
+     * @param samePackage      true if chunk is in the same package as the anchor
+     * @param fanIn            number of callers of this method
+     * @param fanOut           number of callees of this method
+     * @param threshold        divisor for the continuous fan gradient
+     * @param sameClassBonus   config weight for same-class signal
      * @param samePackageBonus config weight for same-package signal
-     * @param highFanInBonus  config weight for high-fan-in signal
+     * @param fanInBonus       config weight for fan-in signal
+     * @param fanOutBonus      config weight for fan-out signal
      */
-    public void computeStructuralBonus(boolean sameClass, boolean samePackage, boolean highFanIn,
-                                        double sameClassBonus, double samePackageBonus, double highFanInBonus) {
+    public void computeStructuralBonus(boolean sameClass, boolean samePackage,
+                                        int fanIn, int fanOut, int threshold,
+                                        double sameClassBonus, double samePackageBonus,
+                                        double fanInBonus, double fanOutBonus) {
         double bonus = 0.0;
         if (sameClass) bonus += sameClassBonus;
         if (samePackage) bonus += samePackageBonus;
-        if (highFanIn) bonus += highFanInBonus;
-        // Normalize to [0, 1] — max possible is sum of all three
-        double maxPossible = sameClassBonus + samePackageBonus + highFanInBonus;
+        bonus += Math.min(fanIn / (double) threshold, 1.0) * fanInBonus;
+        bonus += Math.min(fanOut / (double) threshold, 1.0) * fanOutBonus;
+        // Normalize to [0, 1] — max possible is sum of all four weights
+        double maxPossible = sameClassBonus + samePackageBonus + fanInBonus + fanOutBonus;
         this.structuralBonus = maxPossible > 0 ? bonus / maxPossible : 0.0;
     }
 

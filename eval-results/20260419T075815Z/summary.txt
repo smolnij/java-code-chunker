@@ -1,0 +1,20 @@
+════════════════════════════════════════════════════════════════════════
+  EVALUATION SUMMARY — 5 fixture(s)
+════════════════════════════════════════════════════════════════════════
+
+── By mode ─────────────────────────────────────────────
+  retrieval     fixtures=3  errors=2
+  safeloop      fixtures=2  errors=0
+
+── By metric (NOT_RUN excluded from rates) ─────────────
+  metric                              pass    fail   error   n/run   pass-rt      mean
+  retrieval.precision@K                  0       0       2       0      0.00         -
+  retrieval.recall@K                     0       0       2       0      0.00         -
+  retrieval.anchor.hit                   0       3       2       0      0.00    0.0000
+  retrieval.mrr                          0       3       2       0      0.00    0.0000
+  analyzer.verdict                       0       2       2       1      0.00    0.0000
+  compile.pass                           0       0       0       5         -         -
+  tests.pass                             0       0       0       5         -         -
+  retrieval.precision@0                  0       3       0       0      0.00    0.0000
+  retrieval.recall@0                     0       3       0       0      0.00    0.0000
+

@@ -290,6 +290,31 @@ public class Neo4jGraphReader implements AutoCloseable {
         }
     }
 
+    /**
+     * Batch-fetch callee counts (fan-out) for multiple methods in a single query.
+     */
+    public Map<String, Integer> getCalleeCountsBatch(Collection<String> chunkIds) {
+        if (chunkIds == null || chunkIds.isEmpty()) return Map.of();
+
+        try (Session session = driver.session()) {
+            return session.executeRead(tx -> {
+                Result r = tx.run(
+                    "UNWIND $ids AS id " +
+                    "OPTIONAL MATCH (m:Method {chunkId:id})-[:CALLS]->(callee:Method) " +
+                    "RETURN id AS id, count(callee) AS cnt",
+                    Map.of("ids", new ArrayList<>(chunkIds))
+                );
+
+                Map<String, Integer> out = new LinkedHashMap<>();
+                while (r.hasNext()) {
+                    Record rec = r.next();
+                    out.put(rec.get("id").asString(), rec.get("cnt").asInt());
+                }
+                return out;
+            });
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // Step 3 — Hydrate Method nodes into CodeChunk objects
     // ═══════════════════════════════════════════════════════════════

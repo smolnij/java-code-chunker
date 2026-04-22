@@ -17,7 +17,8 @@ package com.smolnij.chunker.retrieval;
  * <pre>
  *   sameClass  → 1.0
  *   samePackage → 0.5
- *   highFanIn  → 0.3  (calledBy count ≥ fanInThreshold)
+ *   fanIn      → 0.3  (min(calledBy / fanInThreshold, 1.0))
+ *   fanOut     → 0.2  (min(calls / fanInThreshold, 1.0))
  * </pre>
  */
 public class RetrievalConfig {
@@ -34,7 +35,8 @@ public class RetrievalConfig {
     // ── Structural bonus factors ──
     private double sameClassBonus = 1.0;
     private double samePackageBonus = 0.5;
-    private double highFanInBonus = 0.3;
+    private double fanInBonus = 0.3;
+    private double fanOutBonus = 0.2;
     private int fanInThreshold = 3;
 
     // ── Embedding endpoint ──
@@ -77,7 +79,8 @@ public class RetrievalConfig {
 
         cfg.sameClassBonus = doubleVal("RETRIEVAL_SAME_CLASS_BONUS", "retrieval.sameClassBonus", cfg.sameClassBonus);
         cfg.samePackageBonus = doubleVal("RETRIEVAL_SAME_PACKAGE_BONUS", "retrieval.samePackageBonus", cfg.samePackageBonus);
-        cfg.highFanInBonus = doubleVal("RETRIEVAL_HIGH_FAN_IN_BONUS", "retrieval.highFanInBonus", cfg.highFanInBonus);
+        cfg.fanInBonus = doubleVal("RETRIEVAL_FAN_IN_BONUS", "retrieval.fanInBonus", cfg.fanInBonus);
+        cfg.fanOutBonus = doubleVal("RETRIEVAL_FAN_OUT_BONUS", "retrieval.fanOutBonus", cfg.fanOutBonus);
         cfg.fanInThreshold = intVal("RETRIEVAL_FAN_IN_THRESHOLD", "retrieval.fanInThreshold", cfg.fanInThreshold);
 
         cfg.embeddingUrl = strVal("EMBEDDING_URL", "embedding.url", cfg.embeddingUrl);
@@ -122,7 +125,8 @@ public class RetrievalConfig {
 
     public double getSameClassBonus() { return sameClassBonus; }
     public double getSamePackageBonus() { return samePackageBonus; }
-    public double getHighFanInBonus() { return highFanInBonus; }
+    public double getFanInBonus() { return fanInBonus; }
+    public double getFanOutBonus() { return fanOutBonus; }
     public int getFanInThreshold() { return fanInThreshold; }
 
     public String getEmbeddingUrl() { return embeddingUrl; }

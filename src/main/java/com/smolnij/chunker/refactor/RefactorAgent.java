@@ -146,7 +146,7 @@ public class RefactorAgent {
             builder = builder.tools(tools);
         }
         this.assistant = builder
-//                .maxSequentialToolsInvocations(MAX_SEQUENTIAL_TOOLS_EXECUTIONS)
+                .maxSequentialToolsInvocations(MAX_SEQUENTIAL_TOOLS_EXECUTIONS)
                 .build();
     }
 

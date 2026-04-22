@@ -1,0 +1,15 @@
+{
+  "startedAt": "2026-04-18T20:19:20.650103007Z",
+  "totalFixtures": 5,
+  "runFixtures": 5,
+  "dryRun": true,
+  "selfCheck": true,
+  "retrievalOnly": false,
+  "failFast": false,
+  "limit": 0,
+  "diffEpsilon": 0.05,
+  "tags": [],
+  "args": [
+    "--self-check"
+  ]
+}

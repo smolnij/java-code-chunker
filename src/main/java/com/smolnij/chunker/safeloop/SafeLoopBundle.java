@@ -58,16 +58,17 @@ public final class SafeLoopBundle implements AutoCloseable {
                 config.getTopP(),
                 config.getMaxTokens());
 
-        ApplyTools applyTools = null;
-        if (config.isApply() && config.getRepoRoot() != null && !config.getRepoRoot().isEmpty()) {
-            SafeLoopApplyGate gate = new SafeLoopApplyGate(analyzerChat, config);
-            applyTools = new ApplyTools(
+        if (config.isApply() && config.getRepoRoot() == null || config.getRepoRoot().isEmpty()) {
+            throw new IllegalStateException("No repo root configured");
+        }
+
+        SafeLoopApplyGate gate = new SafeLoopApplyGate(analyzerChat, config);
+        ApplyTools applyTools = new ApplyTools(
                 Paths.get(config.getRepoRoot()),
                 reader,
                 config.isDryRun(),
                 config.isBackup(),
                 gate);
-        }
 
         RefactorAgent agent = new RefactorAgent(refactorConfig, agentTools, applyTools);
 

@@ -81,9 +81,9 @@ public class SafeLoopConfig {
         RefactorConfig.StructuredOutputMode.JSON_SCHEMA;
 
     // ── Patch apply (deterministic file edits after SAFE verdict) ──
-    private String repoRoot = "";
-    private boolean apply = false;
-    private boolean dryRun = true;
+    private String repoRoot = "/home/smola/dev/src/AI_tools/java-code-chunker/";
+    private boolean apply = true;
+    private boolean dryRun = false;
     private boolean backup = true;
 
     // ═══════════════════════════════════════════════════════════════
