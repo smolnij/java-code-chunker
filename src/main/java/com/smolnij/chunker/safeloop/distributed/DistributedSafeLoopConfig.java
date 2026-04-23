@@ -65,7 +65,7 @@ public class DistributedSafeLoopConfig {
 
     // ── Shared sampling ──
     private double topP = 0.9;
-    private int maxTokens = 4096;
+    private int maxTokens = 66000;
 
     // ── Safety loop control ──
     private double safetyThreshold = 0.9;
@@ -91,6 +91,9 @@ public class DistributedSafeLoopConfig {
 
     // ── Streaming ──
     private boolean stream = true;
+
+    // ── Trace ──
+    private boolean trace = false;
 
     // ═══════════════════════════════════════════════════════════════
     // Factory
@@ -125,6 +128,7 @@ public class DistributedSafeLoopConfig {
         cfg.stopOnNoNewNodes = boolVal("DIST_STOP_NO_NEW_NODES", "dist.stopOnNoNewNodes", cfg.stopOnNoNewNodes);
         cfg.stopOnStagnation = boolVal("DIST_STOP_ON_STAGNATION", "dist.stopOnStagnation", cfg.stopOnStagnation);
         cfg.stream = boolVal("DIST_STREAM", "dist.stream", cfg.stream);
+        cfg.trace = boolVal("DIST_TRACE", "dist.trace", cfg.trace);
 
         return cfg;
     }
@@ -156,6 +160,7 @@ public class DistributedSafeLoopConfig {
     public boolean isStopOnNoNewNodes() { return stopOnNoNewNodes; }
     public boolean isStopOnStagnation() { return stopOnStagnation; }
     public boolean isStream() { return stream; }
+    public boolean isTrace() { return trace; }
 
     // ═══════════════════════════════════════════════════════════════
     // Builder-style setters
@@ -182,6 +187,7 @@ public class DistributedSafeLoopConfig {
     public DistributedSafeLoopConfig withStopOnNoNewNodes(boolean v) { this.stopOnNoNewNodes = v; return this; }
     public DistributedSafeLoopConfig withStopOnStagnation(boolean v) { this.stopOnStagnation = v; return this; }
     public DistributedSafeLoopConfig withStream(boolean v) { this.stream = v; return this; }
+    public DistributedSafeLoopConfig withTrace(boolean v) { this.trace = v; return this; }
 
     @Override
     public String toString() {
@@ -192,7 +198,7 @@ public class DistributedSafeLoopConfig {
             "  Shared: topP=%.2f, maxTokens=%d, threshold=%.2f, maxIter=%d,\n" +
             "          maxChunks=%d, memory=%d, maxTools=%d,\n" +
             "          callerDepth=%d, calleeDepth=%d, stopNoNew=%s, stopStagnant=%s, stream=%s,\n" +
-            "          plannerSteps=%d, chunksPerRetrieval=%d, retrievalDepth=%d\n" +
+            "          plannerSteps=%d, chunksPerRetrieval=%d, retrievalDepth=%d, trace=%s\n" +
             "}",
             refactorUrl,
             refactorModel.isEmpty() ? "(default)" : refactorModel, refactorTemperature,
@@ -201,7 +207,7 @@ public class DistributedSafeLoopConfig {
             topP, maxTokens, safetyThreshold, maxIterations, maxChunks,
             chatMemorySize, maxToolCalls, minCallerDepth, minCalleeDepth,
             stopOnNoNewNodes, stopOnStagnation, stream,
-            maxPlannerSteps, maxChunksPerRetrieval, maxRetrievalDepth
+            maxPlannerSteps, maxChunksPerRetrieval, maxRetrievalDepth, trace
         );
     }
 

@@ -1,0 +1,385 @@
+## Dell:
+
+* Qwen2.5-Coder 32B Q5_K_M
+* роли:
+
+  * refactorer
+  * validator
+
+---
+
+## HP:
+
+* Qwen2.5 32B
+* роли:
+
+  * critic
+  * planner
+
+
+
+У тебя есть:
+
+* Refactor от Dell (основной)
+* Critique от HP
+
+👉 Задача: превратить это в **число уверенности (confidence score)** и решение:
+
+* accept
+* revise
+* reject
+
+Planner → Refactorer (N candidates)
+        → Self-review (filter)
+        → Critic (score + compare)
+        → Decision
+
+IF ACCEPT → done
+IF REVISE → loop (max 3)
+IF REJECT → replan
+
+
+1. Что именно скорить
+
+Не «код в целом», а **разложить на оси**:
+
+### Минимальный набор:
+
+* correctness (не сломал ли)
+* behavioral equivalence
+* readability / maintainability
+* architectural improvement
+
+👉 Каждую ось оцениваешь отдельно → потом агрегируешь
+
+
+
+1. Dell генерит **2–3 варианта рефакторинга** (conservative/balanced/aggressive)
+2. Dell self-check (validator)
+**P-O3. Self-critique pass (Reflexion-style)**
+Between Phase 3 (refactor) and Phase 4 (analyze) of
+`safeloop/SafeRefactorLoop.java` (around lines 245-371), insert a
+single self-review turn at lower temperature: "list the three weakest
+assumptions in your previous edit; if any are unverified, request the
+missing context." One extra LLM call typically halves analyzer
+round-trips.
+
+
+4. HP оценивает все, выбираешь лучший
+## 👉 Пусть HP объясняет, *почему* снижает оценку
+
+Пример:
+
+```json
+{
+  "score": 0.6,
+  "critical_issues": [
+    {
+      "type": "behavior_change",
+      "confidence": 0.8,
+      "explanation": "loop condition changed semantics"
+    }
+  ]
+}
+
+# ⚠️ Где всё ломается
+
+* если HP даёт “размытые” ответы
+* если нет строгого формата
+* если нет penalty за disagreement
+* если даёшь слабым моделям большой вес
+
+6. Оркестратор считает score
+
+
+Planner → Refactorer (N candidates)
+        → Self-review (filter)
+        → Critic (score + compare)
+        → Decision
+
+IF ACCEPT → done
+IF REVISE → loop (max 3)
+IF REJECT → replan
+
+
+
+
+
+2. Формат, который должны возвращать модели
+
+Жёстко структурируй. Например:
+
+```json
+{
+  "correctness": 0.85,
+  "behavior_preserved": 0.9,
+  "readability": 0.8,
+  "architecture": 0.75,
+  "issues": [
+    "possible null edge case",
+    "method grew too large"
+  ],
+  "confidence": 0.82
+}
+```
+
+👉 Без этого всё развалится.
+
+---
+
+## 👉 Пусть HP объясняет, *почему* снижает оценку
+
+Пример:
+
+```json
+{
+  "score": 0.6,
+  "critical_issues": [
+    {
+      "type": "behavior_change",
+      "confidence": 0.8,
+      "explanation": "loop condition changed semantics"
+    }
+  ]
+}
+```
+
+---
+
+## 👉 Тогда ты делаешь rule-based override:
+
+```text
+if critical_issue.confidence > 0.7:
+    reject
+```
+
+👉 Это намного сильнее, чем просто averaging
+
+# 🔁 6. Итерационный цикл
+
+1. Dell делает refactor
+2. Dell self-check (validator)
+3. HP критикует
+4. Оркестратор считает score
+
+---
+
+### Решения:
+
+#### ✅ ACCEPT
+
+* высокий score
+* низкий disagreement
+
+#### 🔁 REVISE
+
+* средний score
+* есть конкретные issues
+
+👉 Передаёшь HP-issues обратно Dell
+
+---
+
+#### ❌ REJECT
+
+* критические issues
+* сильное расхождение
+
+
+
+
+
+# 💡 8. Продвинутый трюк (очень советую)
+
+## Self-consistency от Dell
+
+Пусть Dell генерит **2–3 варианта рефакторинга**
+
+→ HP оценивает все
+→ выбираешь лучший
+
+Это даёт буст качества больше, чем добавление слабых моделей.
+
+---
+
+# ⚠️ Где всё ломается
+
+* если HP даёт “размытые” ответы
+* если нет строгого формата
+* если нет penalty за disagreement
+* если даёшь слабым моделям большой вес
+
+
+**N-6. Multi-shot worker with critic ensemble**
+Run the worker with `n=3` at temperature 0.5; have the analyzer rank
+the three; submit the winner. Trades compute for quality on hard
+refactors. Wire into `ralph/RalphLoop` and `safeloop/SafeRefactorLoop`
+behind a flag.
+
+
+## Multi-candidate refactoring
+
+На Dell:
+
+```text
+Generate 3 different refactoring approaches:
+- conservative
+- balanced
+- aggressive
+```
+
+👉 потом HP выбирает
+
+📌 Это даёт прирост качества больше, чем смена модели.
+
+---
+
+# ⚠️ 5. Где обычно ломается система
+
+* слишком длинный контекст без структуры
+* validator “слишком мягкий”
+* critic без формата (начинает болтать)
+* нет penalty за disagreement
+
+
+
+
+
+ User query
+      │
+      ▼
+  Phase 1: PLANNING — initial retrieval + target identification
+      │
+      ▼
+  Phase 2: GRAPH PRE-FETCH — ensure caller/callee coverage
+      │
+      ▼
+  ┌─────────────────────────────────────────────────────┐
+  │  LOOP (max N iterations)                             │
+  │                                                      │
+  │  Phase 3: REFACTOR  ← Agent produces code            │
+  │      │                                               │
+  │      ▼                                               │
+  │  Phase 4: VALIDATE  ← Analyzer checks safety         │
+  │      │                                               │
+  │      ▼                                               │
+  │  Phase 5: DECIDE                                     │
+  │    SAFE      → return ✓                              │
+  │    UNSAFE    → expand graph → agent refines → loop   │
+  │    CONVERGED → return (no new graph nodes)            │
+  │    STAGNANT  → return (same risks repeated)           │
+  └─────────────────────────────────────────────────────┘
+
+
+
+--------MIND STREAM----------------------------
+
+Dell (главный узел) — пересобранная стратегия
+
+👉 Роли остаются:
+
+* Refactorer
+* Self-Validator (та же модель, другой режим)
+
+## 🔥 Tier 1 (лучшее, что имеет смысл пробовать)
+
+### 1. Qwen2.5-Coder 32B
+
+👉 **Сейчас это, пожалуй, самый сбалансированный выбор**
+
+Почему:
+
+* реально сильный в коде (лучше большинства 34B классов)
+* хорошо держит длинный контекст (важно для твоего AST + graph retrieval)
+* стабилен в рефакторинге (меньше “креативного бреда”)
+
+👉 С твоим сетапом:
+
+* 4-bit / 5-bit → спокойно через RAM + частично VRAM
+* будет медленно, но качественно
+
+---
+
+### 2. DeepSeek-Coder 33B
+
+👉 **очень сильный именно как refactorer**
+
+Плюсы:
+
+* агрессивно улучшает код
+* хорошо понимает структуру
+
+Минусы:
+
+* иногда “перепридумывает” лишнее → validator обязателен
+
+---
+
+## 🧠 Tier 2 (если хочешь максимум reasoning)
+
+### 3. Qwen2.5 32B / 72B
+
+👉 Это неожиданный, но мощный ход
+
+Почему:
+
+* лучше reasoning
+* лучше architectural thinking
+
+👉 Как использовать:
+
+* либо как основной refactorer (если код сложный, архитектурный)
+* либо как **второй проход** после coder-модели
+
+---
+
+## 💡 Очень сильная комбинация (рекомендую)
+
+На Dell:
+
+### Вариант A (практичный максимум качества):
+
+* **Qwen2.5-Coder 32B → основной refactor**
+* тот же → validator
+
+---
+
+### Вариант B (ещё сильнее, но сложнее):
+
+* DeepSeek-Coder 33B → refactor
+* Qwen2.5 32B → validator
+
+👉 Это уже “две головы в одном узле”
+
+---
+
+# ⚖️ HP — тоже можно апгрейдить
+
+С 64GB RAM ты можешь там держать:
+
+### 🔥 Qwen2.5 32B
+
+👉 идеальный critic / planner
+
+или
+
+### 🔥 Mixtral 8x7B
+
+👉 даёт разнообразие мышления
+
+---
+
+# 🧠 Важный архитектурный апгрейд (теперь он имеет смысл)
+
+С такими моделями ты уже можешь делать:
+
+## 👉 Dual-pass refactoring
+
+1. Model A (coder) → делает рефактор
+2. Model B (general) →
+
+   * объясняет изменения
+   * ищет semantic issues
+   * даёт score
+
+👉 Это сильно лучше, чем одна модель

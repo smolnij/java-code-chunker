@@ -91,6 +91,7 @@ public class PatchApplier {
                     return result.error("aborting — op failed, no files written").failure();
                 }
             } catch (Exception e) {
+                logOpFailure(op, e);
                 result.op(new ApplyResult.OpStatus(
                     opKind(op), describe(op), false, e.getClass().getSimpleName() + ": " + e.getMessage()));
                 return result
@@ -428,5 +429,31 @@ public class PatchApplier {
         if (op instanceof EditOp.AddImport i) return i.filePath() + " (+import " + i.importDecl() + ")";
         if (op instanceof EditOp.CreateFile c) return c.relPath() + " (new)";
         return op.toString();
+    }
+
+    /**
+     * Print diagnostic detail for a failing op: target, file, and first lines of the
+     * offending code payload. The summary printed elsewhere only carries the exception
+     * type and message, which is often insufficient to debug malformed snippets (e.g.
+     * "Token without node owning it" when the LLM omitted the class context).
+     */
+    private void logOpFailure(EditOp op, Exception e) {
+        System.err.println("  [patch-fail] " + opKind(op) + " — " + e.getClass().getSimpleName() + ": " + e.getMessage());
+        System.err.println("  [patch-fail] target: " + describe(op));
+        String payload = null;
+        if (op instanceof EditOp.AddMethod a) payload = a.newCode();
+        else if (op instanceof EditOp.ReplaceMethod r) payload = r.newCode();
+        else if (op instanceof EditOp.CreateFile c) payload = c.content();
+        else if (op instanceof EditOp.AddImport i) payload = i.importDecl();
+        if (payload != null) {
+            String[] lines = payload.split("\\R", 4);
+            int show = Math.min(2, lines.length);
+            for (int j = 0; j < show; j++) {
+                System.err.println("  [patch-fail] payload[" + j + "]: " + lines[j]);
+            }
+            if (lines.length > show) {
+                System.err.println("  [patch-fail] payload: (… " + (payload.length()) + " chars total)");
+            }
+        }
     }
 }

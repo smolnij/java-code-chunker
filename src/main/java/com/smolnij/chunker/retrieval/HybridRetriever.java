@@ -67,8 +67,16 @@ public class HybridRetriever {
         System.out.println("Config: " + config);
         System.out.println();
 
+        // ── Embed query once; reused by anchor resolution, vector supplement, and rerank ──
+        float[] queryEmbedding = null;
+        try {
+            queryEmbedding = embeddingService.embed(userQuery);
+        } catch (Exception e) {
+            System.err.println("WARN: Query embedding failed: " + e.getMessage());
+        }
+
         // ── Step 1: Resolve entry point ──
-        String anchorId = resolveEntryPoint(userQuery);
+        String anchorId = resolveEntryPoint(userQuery, queryEmbedding);
         System.out.println("Step 1 — Anchor: " + (anchorId != null ? anchorId : "(none, using vector-only)"));
 
         // ── Step 2: Graph expansion ──
@@ -76,11 +84,11 @@ public class HybridRetriever {
         System.out.println("Step 2 — Subgraph: " + subgraph.size() + " nodes");
 
         // ── Step 3: Collect candidate chunks ──
-        Map<String, CodeChunk> candidates = collectCandidates(subgraph, userQuery, anchorId);
+        Map<String, CodeChunk> candidates = collectCandidates(subgraph, userQuery, anchorId, queryEmbedding);
         System.out.println("Step 3 — Candidates: " + candidates.size() + " chunks");
 
         // ── Step 4: Re-rank with vector similarity ──
-        List<RetrievalResult> ranked = rerank(userQuery, candidates, subgraph, anchorId);
+        List<RetrievalResult> ranked = rerank(userQuery, candidates, subgraph, anchorId, queryEmbedding);
         System.out.println("Step 4 — Ranked " + ranked.size() + " results");
 
         // ── Step 5: Final context selection ──
@@ -143,7 +151,7 @@ public class HybridRetriever {
      * 2. Try exact match against Neo4j
      * 3. If no hit, fall back to vector search to find the closest method
      */
-    private String resolveEntryPoint(String userQuery) {
+    private String resolveEntryPoint(String userQuery, float[] queryEmbedding) {
         // Extract candidate identifiers from the query
         List<String> candidates = extractIdentifiers(userQuery);
 
@@ -151,21 +159,26 @@ public class HybridRetriever {
         for (String candidate : candidates) {
             String found = graphReader.findMethodExact(candidate);
             if (found != null) {
+                System.out.println("  [anchor] '" + found + "' source=identifier('" + candidate + "')");
                 return found;
             }
         }
 
         // Fallback: vector search
-        try {
-            float[] queryEmbedding = embeddingService.embed(userQuery);
-            List<String> vectorHits = graphReader.vectorSearch(queryEmbedding, 1);
-            if (!vectorHits.isEmpty()) {
-                return vectorHits.get(0);
+        if (queryEmbedding != null) {
+            try {
+                List<String> vectorHits = graphReader.vectorSearch(queryEmbedding, 1);
+                if (!vectorHits.isEmpty()) {
+                    String hit = vectorHits.get(0);
+                    System.out.println("  [anchor] '" + hit + "' source=vector-fallback (extracted candidates=" + candidates + ")");
+                    return hit;
+                }
+            } catch (Exception e) {
+                System.err.println("WARN: Vector search failed (index may not exist yet): " + e.getMessage());
             }
-        } catch (Exception e) {
-            System.err.println("WARN: Vector search failed (index may not exist yet): " + e.getMessage());
         }
 
+        System.out.println("  [anchor] none (extracted candidates=" + candidates + ")");
         return null;
     }
 
@@ -218,6 +231,11 @@ public class HybridRetriever {
 
         Map<String, Integer> subgraph = graphReader.expandSubgraph(anchorId, config.getMaxDepth());
 
+        long neighborCount = subgraph.values().stream().filter(d -> d > 0).count();
+        if (neighborCount < config.getTopK() / 2) {
+            subgraph = graphReader.expandSubgraph(anchorId, config.getMaxDepth() + 1);
+        }
+
         // Also include same-class siblings (even if not directly connected via call edges)
         List<String> siblings = graphReader.getSameClassMethods(anchorId);
         for (String sibling : siblings) {
@@ -232,12 +250,14 @@ public class HybridRetriever {
     // ═══════════════════════════════════════════════════════════════
 
     /**
-     * Hydrate all Method nodes in the subgraph into CodeChunk objects.
-     * If no anchor was found, fall back to pure vector search.
+     * Hydrate all Method nodes in the subgraph into CodeChunk objects,
+     * then always supplement with vector search to capture semantically similar
+     * but structurally distant code.
      */
     private Map<String, CodeChunk> collectCandidates(Map<String, Integer> subgraph,
                                                       String userQuery,
-                                                      String anchorId) {
+                                                      String anchorId,
+                                                      float[] queryEmbedding) {
         Map<String, CodeChunk> candidates = new LinkedHashMap<>();
 
         // Hydrate graph-discovered nodes
@@ -245,22 +265,16 @@ public class HybridRetriever {
             candidates.putAll(graphReader.fetchMethodChunks(subgraph.keySet()));
         }
 
-        // If we have no anchor (or very few graph results), supplement with vector search
-        if (anchorId == null || candidates.size() < config.getTopK()) {
+        // Always supplement with vector search — captures semantically similar but structurally distant code
+        if (queryEmbedding != null) {
             try {
-                float[] queryEmbedding = embeddingService.embed(userQuery);
-                int needed = config.getVectorSearchK();
-                List<String> vectorHits = graphReader.vectorSearch(queryEmbedding, needed);
-
-                // Fetch any new nodes not already in the candidate set
+                List<String> vectorHits = graphReader.vectorSearch(queryEmbedding, config.getVectorSearchK());
                 Set<String> newIds = new LinkedHashSet<>(vectorHits);
                 newIds.removeAll(candidates.keySet());
                 if (!newIds.isEmpty()) {
-                    Map<String, CodeChunk> vectorChunks = graphReader.fetchMethodChunks(newIds);
-                    candidates.putAll(vectorChunks);
+                    candidates.putAll(graphReader.fetchMethodChunks(newIds));
                 }
             } catch (Exception e) {
-//                There is no such vector schema index: method_embeddings
                 e.printStackTrace();
                 System.err.println("WARN: Vector supplement failed: " + e.getMessage());
             }
@@ -282,8 +296,13 @@ public class HybridRetriever {
     private List<RetrievalResult> rerank(String userQuery,
                                           Map<String, CodeChunk> candidates,
                                           Map<String, Integer> subgraph,
-                                          String anchorId) {
+                                          String anchorId,
+                                          float[] queryEmbedding) {
         if (candidates.isEmpty()) return List.of();
+//        if (queryEmbedding == null) return List.of();
+        if (queryEmbedding == null) {
+            throw new IllegalStateException("query embedding is null");
+        }
 
         // ── Get anchor context for structural scoring ──
         String anchorClass = "";
@@ -295,9 +314,6 @@ public class HybridRetriever {
                 anchorPackage = ctx[1];
             }
         }
-
-        // ── Embed the user query ──
-        float[] queryEmbedding = embeddingService.embed(userQuery);
 
         // ── Try to get stored embeddings for all candidates ──
         Map<String, float[]> storedEmbeddings = graphReader.getStoredEmbeddings(candidates.keySet());

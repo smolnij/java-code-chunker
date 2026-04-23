@@ -190,6 +190,7 @@ Make `maxDepth` query-dependent: start at 2; if the anchor has fewer
 than `K/2` neighbors at depth 2, escalate to 3. Files:
 `retrieval/RetrievalConfig.java`,
 `retrieval/HybridRetriever.java:214-228`.
+DONE
 
 **P-R5. Smarter keyword extraction**
 Add Snowball stemming and a Java-domain synonym map
@@ -209,6 +210,7 @@ Today vector search runs only when graph yields fewer than topK
 (`retrieval/HybridRetriever.java:249`). Run it unconditionally and
 merge before rerank — graph-only retrieval misses semantically
 similar but structurally distant code.
+DONE
 
 **P-R8. Query-rewriting pre-step**
 A cheap LLM call (or template) rewrites natural-language queries into
@@ -256,6 +258,7 @@ embeddings a strong intent signal in well-documented codebases.
 Today line-greedy splitting can break mid-block. Switch to "split at
 the nearest statement boundary at-or-before the budget" with line
 boundary as fallback. File: `tokenizer/TokenCounter.java`.
+DONE
 
 **P-G4. Code-quality features as Method node properties**
 Compute and store: cyclomatic complexity, statement count, max

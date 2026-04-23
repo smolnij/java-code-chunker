@@ -50,6 +50,9 @@ public class PlannerTools {
     /** Maximum graph depth for retrieval. */
     private final int maxRetrievalDepth;
 
+    /** Print full prompts and responses when true. */
+    private final boolean trace;
+
     /** Track tool calls for logging / safety caps. */
     private int toolCallCount = 0;
 
@@ -100,11 +103,21 @@ public class PlannerTools {
                         ChatService generatorChat,
                         int maxChunksPerRetrieval,
                         int maxRetrievalDepth) {
+        this(retriever, graphReader, generatorChat, maxChunksPerRetrieval, maxRetrievalDepth, false);
+    }
+
+    public PlannerTools(HybridRetriever retriever,
+                        Neo4jGraphReader graphReader,
+                        ChatService generatorChat,
+                        int maxChunksPerRetrieval,
+                        int maxRetrievalDepth,
+                        boolean trace) {
         this.retriever = retriever;
         this.graphReader = graphReader;
         this.generatorChat = generatorChat;
         this.maxChunksPerRetrieval = maxChunksPerRetrieval;
         this.maxRetrievalDepth = maxRetrievalDepth;
+        this.trace = trace;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -361,8 +374,18 @@ public class PlannerTools {
             + ": refactorCode(prompt=" + prompt.length() + " chars) [refactor #" + refactorCallCount + "]");
 
         try {
+            if (trace) {
+                System.out.println("  │ [TRACE:Generator] SYSTEM PROMPT (" + GENERATOR_SYSTEM_PROMPT.length() + " chars):");
+                System.out.println(GENERATOR_SYSTEM_PROMPT.replace("\n", "\n  │   "));
+                System.out.println("  │ [TRACE:Generator] USER PROMPT (" + prompt.length() + " chars):");
+                System.out.println(prompt.replace("\n", "\n  │   "));
+            }
             lastRefactoringResult = generatorChat.chat(GENERATOR_SYSTEM_PROMPT, prompt);
             System.out.println("  ← Generator responded (" + lastRefactoringResult.length() + " chars)");
+            if (trace) {
+                System.out.println("  │ [TRACE:Generator] FULL RESPONSE (" + lastRefactoringResult.length() + " chars):");
+                System.out.println(lastRefactoringResult.replace("\n", "\n  │   "));
+            }
             return lastRefactoringResult;
         } catch (Exception e) {
             return "Error calling generator: " + e.getMessage();

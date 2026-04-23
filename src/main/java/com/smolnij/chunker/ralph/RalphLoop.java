@@ -100,6 +100,9 @@ public class RalphLoop {
         System.out.println("Task: " + task.getTaskLabel());
         System.out.println("Config: " + config);
         System.out.println("Max iterations: " + config.getMaxIterations());
+        if (config.isTrace()) {
+            System.out.println("[TRACE] Trace logging enabled — full prompts and responses will be printed");
+        }
         System.out.println();
 
         List<JudgeVerdict> verdictHistory = new ArrayList<>();
@@ -182,6 +185,13 @@ public class RalphLoop {
                            ChatService chat, boolean allowStream) {
         System.out.println("  ┌─ LLM [" + label + "] ─────────────────────────────");
 
+        if (config.isTrace()) {
+            System.out.println("  │ [TRACE] SYSTEM PROMPT (" + systemPrompt.length() + " chars):");
+            System.out.println(systemPrompt.replace("\n", "\n  │   "));
+            System.out.println("  │ [TRACE] USER PROMPT (" + userPrompt.length() + " chars):");
+            System.out.println(userPrompt.replace("\n", "\n  │   "));
+        }
+
         String response;
         if (allowStream && config.isStream() && streamCallback != null) {
             System.out.println("  │ (streaming) ");
@@ -190,13 +200,20 @@ public class RalphLoop {
         } else {
             System.out.println("  │ (waiting for response...) ");
             response = chat.chat(systemPrompt, userPrompt);
-            // Print a truncated version for non-streamed responses
-            String preview = response.length() > 500
-                ? response.substring(0, 500) + "\n  │ ... (" + response.length() + " chars total)"
-                : response;
-            System.out.println("  │ " + preview.replace("\n", "\n  │ "));
+            if (config.isTrace()) {
+                System.out.println("  │ [TRACE] FULL RESPONSE (" + response.length() + " chars):");
+                System.out.println(response.replace("\n", "\n  │   "));
+            } else {
+                String preview = response.length() > 500
+                    ? response.substring(0, 500) + "\n  │ ... (" + response.length() + " chars total)"
+                    : response;
+                System.out.println("  │ " + preview.replace("\n", "\n  │ "));
+            }
         }
 
+        if (config.isTrace()) {
+            System.out.println("  │ [TRACE] response length: " + response.length() + " chars");
+        }
         System.out.println("  └───────────────────────────────────────────────────");
         return response;
     }

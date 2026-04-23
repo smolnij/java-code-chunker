@@ -24,6 +24,7 @@ package com.smolnij.chunker.retrieval;
 public class RetrievalConfig {
 
     // ── Graph expansion ──
+    // Base BFS depth; escalates to maxDepth+1 when the anchor has fewer than topK/2 neighbors.
     private int maxDepth = 2;
     private int topK = 10;
 

@@ -94,7 +94,11 @@ public class Neo4jGraphReader implements AutoCloseable {
                 );
                 return r.hasNext() ? r.next() : null;
             });
-            if (rec != null) return rec.get("id").asString();
+            if (rec != null) {
+                String id = rec.get("id").asString();
+                System.out.println("    [resolver] '" + identifier + "' → '" + id + "' (exact chunkId)");
+                return id;
+            }
 
             // Try matching by methodName (e.g. "createUser")
             rec = session.executeRead(tx -> {
@@ -104,18 +108,37 @@ public class Neo4jGraphReader implements AutoCloseable {
                 );
                 return r.hasNext() ? r.next() : null;
             });
-            if (rec != null) return rec.get("id").asString();
+            if (rec != null) {
+                String id = rec.get("id").asString();
+                System.out.println("    [resolver] '" + identifier + "' → '" + id + "' (methodName match)");
+                return id;
+            }
 
             // Try contains match on chunkId (e.g. "UserService.createUser" matches "com.example.UserService#createUser(...)")
-            rec = session.executeRead(tx -> {
+            // Also count ambiguity so callers can see how fuzzy the hit was.
+            Record containsRec = session.executeRead(tx -> {
                 Result r = tx.run(
-                    "MATCH (m:Method) WHERE m.chunkId CONTAINS $fragment RETURN m.chunkId AS id LIMIT 1",
+                    "MATCH (m:Method) WHERE m.chunkId CONTAINS $fragment " +
+                        "RETURN m.chunkId AS id, count(*) AS total LIMIT 1",
                     Map.of("fragment", identifier)
                 );
                 return r.hasNext() ? r.next() : null;
             });
-            if (rec != null) return rec.get("id").asString();
+            if (containsRec != null) {
+                long total = session.executeRead(tx -> {
+                    Result r = tx.run(
+                        "MATCH (m:Method) WHERE m.chunkId CONTAINS $fragment RETURN count(m) AS c",
+                        Map.of("fragment", identifier)
+                    );
+                    return r.hasNext() ? r.next().get("c").asLong() : 1L;
+                });
+                String id = containsRec.get("id").asString();
+                System.out.println("    [resolver] '" + identifier + "' → '" + id
+                        + "' (CONTAINS fallback, " + total + " candidate" + (total == 1 ? "" : "s") + ")");
+                return id;
+            }
 
+            System.out.println("    [resolver] '" + identifier + "' unresolved");
             return null;
         }
     }

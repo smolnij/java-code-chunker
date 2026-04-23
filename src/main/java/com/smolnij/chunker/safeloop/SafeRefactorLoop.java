@@ -206,6 +206,9 @@ public class SafeRefactorLoop {
         printBanner();
         System.out.println("Query: " + userQuery);
         System.out.println("Config: " + config);
+        if (config.isTrace()) {
+            System.out.println("[TRACE] Trace logging enabled — full prompts and responses will be printed");
+        }
         System.out.println();
 
         List<SafetyVerdict> verdictHistory = new ArrayList<>();
@@ -299,9 +302,10 @@ public class SafeRefactorLoop {
                         String selfReviewPrompt = buildSelfReviewPrompt(lastAgentResponse);
                         StructuredOutputSpec selfSpec = PromptBuilder.specFor(PromptBuilder.PromptKind.SELF_REVIEW, config.getStructuredOutput());
 
+                        String selfReviewSystemPrompt = "You are a careful, low-temperature self-reviewer. Be concise and conservative.";
                         String selfReviewRaw = selfSpec != null
-                            ? reviewer.chat("You are a careful, low-temperature self-reviewer. Be concise and conservative.", selfReviewPrompt, selfSpec)
-                            : reviewer.chat("You are a careful, low-temperature self-reviewer. Be concise and conservative.", selfReviewPrompt);
+                            ? traceChat("Self-review", reviewer, selfReviewSystemPrompt, selfReviewPrompt, selfSpec)
+                            : traceChat("Self-review", reviewer, selfReviewSystemPrompt, selfReviewPrompt);
 
                         System.out.println("  ┌─ Self-review ─────────────────────────────────────");
                         System.out.println("  │ " + selfReviewRaw.replace("\n", "\n  │ "));
@@ -336,8 +340,8 @@ public class SafeRefactorLoop {
                                     System.out.println("  ┌─ Quick Analyzer (from self-review MISSING) ────────");
                                     StructuredOutputSpec quickSpec = analyzerSpec(config.getStructuredOutput());
                                     String quickResp = quickSpec != null
-                                            ? analyzerChat.chat(ANALYZER_SYSTEM_PROMPT, quickPrompt, quickSpec)
-                                            : analyzerChat.chat(ANALYZER_SYSTEM_PROMPT, quickPrompt);
+                                            ? traceChat("Quick-analyzer", analyzerChat, ANALYZER_SYSTEM_PROMPT, quickPrompt, quickSpec)
+                                            : traceChat("Quick-analyzer", analyzerChat, ANALYZER_SYSTEM_PROMPT, quickPrompt);
                                     System.out.println("  │ " + truncateForLog(quickResp, 300).replace("\n", "\n  │ "));
                                     System.out.println("  └───────────────────────────────────────────────────");
 
@@ -486,8 +490,8 @@ public class SafeRefactorLoop {
                 System.out.println("  ┌─ Analyzer ─────────────────────────────────────");
                 StructuredOutputSpec analyzerSpec = analyzerSpec(config.getStructuredOutput());
                 String analyzerResponse = analyzerSpec != null
-                    ? analyzerChat.chat(ANALYZER_SYSTEM_PROMPT, analyzerPrompt, analyzerSpec)
-                    : analyzerChat.chat(ANALYZER_SYSTEM_PROMPT, analyzerPrompt);
+                    ? traceChat("Analyzer", analyzerChat, ANALYZER_SYSTEM_PROMPT, analyzerPrompt, analyzerSpec)
+                    : traceChat("Analyzer", analyzerChat, ANALYZER_SYSTEM_PROMPT, analyzerPrompt);
                 System.out.println("  │ " + truncateForLog(analyzerResponse, 300).replace("\n", "\n  │ "));
                 System.out.println("  └───────────────────────────────────────────────────");
 
@@ -1052,6 +1056,28 @@ public class SafeRefactorLoop {
     private static String truncateForLog(String text, int maxLen) {
         if (text.length() <= maxLen) return text;
         return text.substring(0, maxLen) + "\n... (" + text.length() + " chars total)";
+    }
+
+    private String traceChat(String label, ChatService chat, String systemPrompt, String userPrompt) {
+        return traceChat(label, chat, systemPrompt, userPrompt, null);
+    }
+
+    private String traceChat(String label, ChatService chat, String systemPrompt, String userPrompt,
+                             StructuredOutputSpec spec) {
+        if (config.isTrace()) {
+            System.out.println("  │ [TRACE:" + label + "] SYSTEM PROMPT (" + systemPrompt.length() + " chars):");
+            System.out.println(systemPrompt.replace("\n", "\n  │   "));
+            System.out.println("  │ [TRACE:" + label + "] USER PROMPT (" + userPrompt.length() + " chars):");
+            System.out.println(userPrompt.replace("\n", "\n  │   "));
+        }
+        String response = spec != null
+            ? chat.chat(systemPrompt, userPrompt, spec)
+            : chat.chat(systemPrompt, userPrompt);
+        if (config.isTrace()) {
+            System.out.println("  │ [TRACE:" + label + "] FULL RESPONSE (" + response);
+            System.out.println(response.replace("\n", "\n  │   "));
+        }
+        return response;
     }
 
     // ═══════════════════════════════════════════════════════════════

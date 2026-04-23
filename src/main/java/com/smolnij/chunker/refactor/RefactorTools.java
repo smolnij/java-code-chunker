@@ -79,7 +79,7 @@ public class RefactorTools {
     public String fetchSelfReview() {
         toolCallCount++;
         System.out.println("  🔧 Tool call #" + toolCallCount + ": fetchSelfReview()");
-        return lastSelfReviewJson == null ? "{}" : lastSelfReviewJson;
+        return logToolReturn(lastSelfReviewJson == null ? "{}" : lastSelfReviewJson);
     }
 
     /** Return the hydrated context (code bodies) associated with the last self-review, if any. */
@@ -87,7 +87,7 @@ public class RefactorTools {
     public String fetchSelfReviewContext() {
         toolCallCount++;
         System.out.println("  🔧 Tool call #" + toolCallCount + ": fetchSelfReviewContext()");
-        return lastSelfReviewContext == null ? "" : lastSelfReviewContext;
+        return logToolReturn(lastSelfReviewContext == null ? "" : lastSelfReviewContext);
     }
 
     public RefactorTools(HybridRetriever retriever,
@@ -101,6 +101,32 @@ public class RefactorTools {
 
     public void resetToolCallCount() {
         this.toolCallCount = 0;
+    }
+
+    /**
+     * Log the size and terse status of a tool result, then return it unchanged.
+     * Called right before each @Tool return so worklogs show what the LLM saw,
+     * not just which tool was invoked.
+     */
+    private String logToolReturn(String result) {
+        int chars = result == null ? 0 : result.length();
+        String status;
+        if (result == null || result.isEmpty()) {
+            status = "[empty]";
+        } else if (result.startsWith("Method not found")
+                || result.startsWith("Source method not found")
+                || result.startsWith("Target method not found")
+                || result.startsWith("No results found")
+                || result.startsWith("Invalid direction")
+                || result.startsWith("Could not load")) {
+            status = "[not-found]";
+        } else if (result.startsWith("Error ")) {
+            status = "[error]";
+        } else {
+            status = "[ok]";
+        }
+        System.out.println("    └─ " + status + " (" + chars + " chars)");
+        return result;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -126,14 +152,14 @@ public class RefactorTools {
             List<RetrievalResult> results = response.getResults();
 
             if (results.isEmpty()) {
-                return "No results found for query: " + query;
+                return logToolReturn("No results found for query: " + query);
             }
 
             // Cap results to avoid blowing up context
             int limit = Math.min(results.size(), maxChunksPerCall);
-            return formatResults(results.subList(0, limit), query);
+            return logToolReturn(formatResults(results.subList(0, limit), query));
         } catch (Exception e) {
-            return "Error retrieving code: " + e.getMessage();
+            return logToolReturn("Error retrieving code: " + e.getMessage());
         }
     }
 
@@ -179,8 +205,8 @@ public class RefactorTools {
             }
 
             if (resolvedId == null) {
-                return "Method not found: " + methodId
-                        + "\nTry using retrieveCode() with a descriptive query instead.";
+                return logToolReturn("Method not found: " + methodId
+                        + "\nTry using retrieveCode() with a descriptive query instead.");
             }
 
             // Make effectively final for use in lambda
@@ -211,12 +237,14 @@ public class RefactorTools {
             Map<String, CodeChunk> chunks = graphReader.fetchMethodChunks(idsToFetch);
 
             if (chunks.isEmpty()) {
-                return "Method found (" + anchorId + ") but could not load code.";
+                return logToolReturn("Method found (" + anchorId + ") but could not load code.");
             }
 
-            return formatChunks(chunks, subgraph, anchorId);
+            System.out.println("    [retrieveCodeById] anchor='" + anchorId
+                    + "' subgraphSize=" + subgraph.size() + " hydrated=" + chunks.size());
+            return logToolReturn(formatChunks(chunks, subgraph, anchorId));
         } catch (Exception e) {
-            return "Error retrieving method: " + e.getMessage();
+            return logToolReturn("Error retrieving method: " + e.getMessage());
         }
     }
 
@@ -244,7 +272,7 @@ public class RefactorTools {
                 resolvedId = graphReader.findMethodExact(simpleName);
             }
             if (resolvedId == null) {
-                return "Method not found: " + methodId;
+                return logToolReturn("Method not found: " + methodId);
             }
 
             // Expand 1 hop to get direct callers
@@ -256,7 +284,7 @@ public class RefactorTools {
             // Filter to only callers (methods that have the target in their calls list)
             CodeChunk targetChunk = chunks.get(resolvedId);
             if (targetChunk == null) {
-                return "Could not load method code for: " + resolvedId;
+                return logToolReturn("Could not load method code for: " + resolvedId);
             }
 
             StringBuilder sb = new StringBuilder();
@@ -294,9 +322,9 @@ public class RefactorTools {
                 sb.append("(No caller code available in the graph — callers may be outside indexed scope)\n");
             }
 
-            return sb.toString();
+            return logToolReturn(sb.toString());
         } catch (Exception e) {
-            return "Error finding callers: " + e.getMessage();
+            return logToolReturn("Error finding callers: " + e.getMessage());
         }
     }
 
@@ -324,14 +352,14 @@ public class RefactorTools {
                 resolvedId = graphReader.findMethodExact(simpleName);
             }
             if (resolvedId == null) {
-                return "Method not found: " + methodId;
+                return logToolReturn("Method not found: " + methodId);
             }
 
             // Fetch the target method
             Map<String, CodeChunk> targetMap = graphReader.fetchMethodChunks(Set.of(resolvedId));
             CodeChunk targetChunk = targetMap.get(resolvedId);
             if (targetChunk == null) {
-                return "Could not load method code for: " + resolvedId;
+                return logToolReturn("Could not load method code for: " + resolvedId);
             }
 
             StringBuilder sb = new StringBuilder();
@@ -342,7 +370,7 @@ public class RefactorTools {
 
             if (targetChunk.getCalls().isEmpty()) {
                 sb.append("This method does not call any other indexed methods.\n");
-                return sb.toString();
+                return logToolReturn(sb.toString());
             }
 
             sb.append("Calls:\n");
@@ -373,9 +401,9 @@ public class RefactorTools {
                 }
             }
 
-            return sb.toString();
+            return logToolReturn(sb.toString());
         } catch (Exception e) {
-            return "Error finding callees: " + e.getMessage();
+            return logToolReturn("Error finding callees: " + e.getMessage());
         }
     }
 
@@ -404,9 +432,9 @@ public class RefactorTools {
 
         try {
             String fromId = resolveMethodId(fromMethod);
-            if (fromId == null) return "Source method not found: " + fromMethod;
+            if (fromId == null) return logToolReturn("Source method not found: " + fromMethod);
             String toId = resolveMethodId(toMethod);
-            if (toId == null) return "Target method not found: " + toMethod;
+            if (toId == null) return logToolReturn("Target method not found: " + toMethod);
 
             int clamped = Math.max(1, Math.min(maxDepth, 6));
 
@@ -422,7 +450,7 @@ public class RefactorTools {
 
             if (paths.isEmpty()) {
                 sb.append("No path found within ").append(clamped).append(" hops (directed or undirected).\n");
-                return sb.toString();
+                return logToolReturn(sb.toString());
             }
             if (undirectedFallback) {
                 sb.append("(no directed path within ").append(clamped)
@@ -454,9 +482,9 @@ public class RefactorTools {
             if (nodeIds.size() > bodyLimit) {
                 sb.append("(").append(nodeIds.size() - bodyLimit).append(" further nodes on the path; code omitted)\n");
             }
-            return sb.toString();
+            return logToolReturn(sb.toString());
         } catch (Exception e) {
-            return "Error finding call path: " + e.getMessage();
+            return logToolReturn("Error finding call path: " + e.getMessage());
         }
     }
 
@@ -483,12 +511,12 @@ public class RefactorTools {
 
         try {
             String resolvedId = resolveMethodId(methodId);
-            if (resolvedId == null) return "Method not found: " + methodId;
+            if (resolvedId == null) return logToolReturn("Method not found: " + methodId);
 
             boolean callers;
             if ("callers".equalsIgnoreCase(direction)) callers = true;
             else if ("callees".equalsIgnoreCase(direction)) callers = false;
-            else return "Invalid direction '" + direction + "'. Use 'callers' or 'callees'.";
+            else return logToolReturn("Invalid direction '" + direction + "'. Use 'callers' or 'callees'.");
 
             int clamped = Math.max(1, Math.min(maxDepth, 4));
 
@@ -503,9 +531,9 @@ public class RefactorTools {
             if (printed == 0) {
                 sb.append("  (no ").append(callers ? "callers" : "callees").append(" found)\n");
             }
-            return sb.toString();
+            return logToolReturn(sb.toString());
         } catch (Exception e) {
-            return "Error tracing call chain: " + e.getMessage();
+            return logToolReturn("Error tracing call chain: " + e.getMessage());
         }
     }
 
@@ -548,7 +576,7 @@ public class RefactorTools {
 
         try {
             String resolvedId = resolveMethodId(anchorMethodId);
-            if (resolvedId == null) return "Method not found: " + anchorMethodId;
+            if (resolvedId == null) return logToolReturn("Method not found: " + anchorMethodId);
 
             int clamped = Math.max(1, Math.min(depth, 3));
             Map<String, Integer> subgraph = graphReader.expandSubgraph(resolvedId, clamped);
@@ -563,9 +591,9 @@ public class RefactorTools {
             sb.append("=== Subgraph topology around ").append(resolvedId)
                     .append(" (depth ").append(clamped).append(") ===\n");
             sb.append(view.renderTopology(resolvedId, cap)).append("\n");
-            return sb.toString();
+            return logToolReturn(sb.toString());
         } catch (Exception e) {
-            return "Error computing subgraph topology: " + e.getMessage();
+            return logToolReturn("Error computing subgraph topology: " + e.getMessage());
         }
     }
 
@@ -587,7 +615,7 @@ public class RefactorTools {
 
         try {
             String resolvedId = resolveMethodId(methodId);
-            if (resolvedId == null) return "Method not found: " + methodId;
+            if (resolvedId == null) return logToolReturn("Method not found: " + methodId);
 
             List<PathEdge> edges = graphReader.getImmediateNeighbors(resolvedId);
             List<PathEdge> out = new ArrayList<>();
@@ -621,9 +649,9 @@ public class RefactorTools {
                             .append(e.getTargetId()).append("\n");
                 }
             }
-            return sb.toString();
+            return logToolReturn(sb.toString());
         } catch (Exception e) {
-            return "Error expanding node: " + e.getMessage();
+            return logToolReturn("Error expanding node: " + e.getMessage());
         }
     }
 

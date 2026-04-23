@@ -236,7 +236,8 @@ public class DistributedSafeLoopMain {
                     reader,
                     generatorChat,
                     distConfig.getMaxChunksPerRetrieval(),
-                    distConfig.getMaxRetrievalDepth()
+                    distConfig.getMaxRetrievalDepth(),
+                    distConfig.isTrace()
                 );
 
                 // 🟩 Planner–Analyzer agent (S_ANALYZE_MACHINE with tool calling)

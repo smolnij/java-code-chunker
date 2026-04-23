@@ -99,6 +99,9 @@ public class RefactorLoop {
         System.out.println();
         System.out.println("Query: " + userQuery);
         System.out.println("Config: " + config);
+        if (config.isTrace()) {
+            System.out.println("[TRACE] Trace logging enabled — full prompts and responses will be printed");
+        }
         System.out.println();
 
         // ── Step 1: Hybrid retrieval ──
@@ -275,6 +278,13 @@ public class RefactorLoop {
                            StructuredOutputSpec spec) {
         System.out.println("  ┌─ LLM [" + label + "] ─────────────────────────────");
 
+        if (config.isTrace()) {
+            System.out.println("  │ [TRACE] SYSTEM PROMPT (" + systemPrompt.length() + " chars):");
+            System.out.println(systemPrompt.replace("\n", "\n  │   "));
+            System.out.println("  │ [TRACE] USER PROMPT (" + userPrompt.length() + " chars):");
+            System.out.println(userPrompt.replace("\n", "\n  │   "));
+        }
+
         String response;
         boolean canStream = spec == null && config.isStream() && streamCallback != null;
         if (canStream) {
@@ -290,9 +300,17 @@ public class RefactorLoop {
             response = spec != null
                 ? chatService.chat(systemPrompt, userPrompt, spec)
                 : chatService.chat(systemPrompt, userPrompt);
-            System.out.println(response);
+            if (config.isTrace()) {
+                System.out.println("  │ [TRACE] FULL RESPONSE (" + response);
+                System.out.println(response.replace("\n", "\n  │   "));
+            } else {
+                System.out.println(response);
+            }
         }
 
+        if (config.isTrace()) {
+            System.out.println("  │ [TRACE] response length: " + response);
+        }
         System.out.println("  └───────────────────────────────────────────────────");
         return response;
     }

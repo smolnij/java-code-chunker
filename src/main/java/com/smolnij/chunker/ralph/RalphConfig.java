@@ -50,6 +50,9 @@ public class RalphConfig {
     // ── Context ──
     private int maxChunks = 6;
 
+    // ── Trace ──
+    private boolean trace = false;
+
     // ═══════════════════════════════════════════════════════════════
     // Factory
     // ═══════════════════════════════════════════════════════════════
@@ -69,6 +72,7 @@ public class RalphConfig {
         cfg.maxIterations = intVal("RALPH_MAX_ITERATIONS", "ralph.maxIterations", cfg.maxIterations);
         cfg.maxChunks = intVal("RALPH_MAX_CHUNKS", "ralph.maxChunks", cfg.maxChunks);
         cfg.stream = boolVal("RALPH_STREAM", "ralph.stream", cfg.stream);
+        cfg.trace = boolVal("RALPH_TRACE", "ralph.trace", cfg.trace);
 
         return cfg;
     }
@@ -87,6 +91,7 @@ public class RalphConfig {
     public int getMaxIterations() { return maxIterations; }
     public int getMaxChunks() { return maxChunks; }
     public boolean isStream() { return stream; }
+    public boolean isTrace() { return trace; }
 
     // ═══════════════════════════════════════════════════════════════
     // Builder-style setters
@@ -102,16 +107,17 @@ public class RalphConfig {
     public RalphConfig withMaxIterations(int v) { this.maxIterations = v; return this; }
     public RalphConfig withMaxChunks(int v) { this.maxChunks = v; return this; }
     public RalphConfig withStream(boolean v) { this.stream = v; return this; }
+    public RalphConfig withTrace(boolean v) { this.trace = v; return this; }
 
     @Override
     public String toString() {
         return String.format(
             "RalphConfig { url=%s, worker=[model=%s, temp=%.2f], judge=[model=%s, temp=%.2f], " +
-            "topP=%.2f, maxTokens=%d, maxIter=%d, maxChunks=%d, stream=%s }",
+            "topP=%.2f, maxTokens=%d, maxIter=%d, maxChunks=%d, stream=%s, trace=%s }",
             chatUrl,
             workerModel.isEmpty() ? "(default)" : workerModel, workerTemperature,
             judgeModel.isEmpty() ? "(default)" : judgeModel, judgeTemperature,
-            topP, maxTokens, maxIterations, maxChunks, stream
+            topP, maxTokens, maxIterations, maxChunks, stream, trace
         );
     }
 

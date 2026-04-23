@@ -37,7 +37,7 @@ public class RefactorConfig {
     // ── Sampling ──
     private double temperature = 0.1;
     private double topP = 0.9;
-    private int maxTokens = 4096;
+    private int maxTokens = 66000;
 
     // ── Context window ──
     private int maxChunks = 6;
@@ -61,6 +61,9 @@ public class RefactorConfig {
     private boolean apply = false;
     private boolean dryRun = true;
     private boolean backup = true;
+
+    // ── Trace ──
+    private boolean trace = true;
 
     // ═══════════════════════════════════════════════════════════════
     // Factory
@@ -92,6 +95,7 @@ public class RefactorConfig {
         cfg.apply = boolVal("REFACTOR_APPLY", "refactor.apply", cfg.apply);
         cfg.dryRun = boolVal("REFACTOR_DRY_RUN", "refactor.dryRun", cfg.dryRun);
         cfg.backup = boolVal("REFACTOR_BACKUP", "refactor.backup", cfg.backup);
+        cfg.trace = boolVal("REFACTOR_TRACE", "refactor.trace", cfg.trace);
 
         return cfg;
     }
@@ -116,6 +120,7 @@ public class RefactorConfig {
     public boolean isApply() { return apply; }
     public boolean isDryRun() { return dryRun; }
     public boolean isBackup() { return backup; }
+    public boolean isTrace() { return trace; }
 
     // ═══════════════════════════════════════════════════════════════
     // Builder-style setters
@@ -137,15 +142,16 @@ public class RefactorConfig {
     public RefactorConfig withApply(boolean v) { this.apply = v; return this; }
     public RefactorConfig withDryRun(boolean v) { this.dryRun = v; return this; }
     public RefactorConfig withBackup(boolean v) { this.backup = v; return this; }
+    public RefactorConfig withTrace(boolean v) { this.trace = v; return this; }
 
     @Override
     public String toString() {
         return String.format(
             "RefactorConfig { chatUrl=%s, model=%s, temp=%.2f, topP=%.2f, maxTokens=%d, " +
-            "maxChunks=%d, maxRefinements=%d, stream=%s, agentMode=%s, maxToolCalls=%d, chatMemorySize=%d, structuredOutput=%s }",
+            "maxChunks=%d, maxRefinements=%d, stream=%s, agentMode=%s, maxToolCalls=%d, chatMemorySize=%d, structuredOutput=%s, trace=%s }",
             chatUrl, chatModel.isEmpty() ? "(default)" : chatModel,
             temperature, topP, maxTokens, maxChunks, maxRefinements, stream,
-            agentMode, maxToolCalls, chatMemorySize, structuredOutput
+            agentMode, maxToolCalls, chatMemorySize, structuredOutput, trace
         );
     }
 

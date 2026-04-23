@@ -165,11 +165,17 @@ public class SafeLoopTools {
         lastExpansionHadNewNodes = false;
 
         Set<String> newIds = new LinkedHashSet<>();
+        List<String> unresolved = new ArrayList<>();
+        List<String> alreadyPresent = new ArrayList<>();
 
         for (String requestedId : requestedIds) {
             // Try to resolve the method ID
             String resolved = resolveMethodId(requestedId);
-            if (resolved != null && !retrievedNodeIds.contains(resolved)) {
+            if (resolved == null) {
+                unresolved.add(requestedId);
+            } else if (retrievedNodeIds.contains(resolved)) {
+                alreadyPresent.add(requestedId + "→" + resolved);
+            } else {
                 newIds.add(resolved);
 
                 // Also expand 1 hop from the resolved method to get its neighbourhood
@@ -183,6 +189,16 @@ public class SafeLoopTools {
 
             // Cap total new IDs
             if (newIds.size() >= config.getMaxChunks()) break;
+        }
+
+        if (!unresolved.isEmpty()) {
+            System.out.println("  [analyzer-expand] unresolved (not in graph): " + unresolved);
+        }
+        if (!alreadyPresent.isEmpty()) {
+            System.out.println("  [analyzer-expand] already in context (not counted as new): " + alreadyPresent);
+        }
+        if (newIds.isEmpty() && unresolved.isEmpty() && alreadyPresent.isEmpty()) {
+            System.out.println("  [analyzer-expand] caller passed no IDs");
         }
 
         return hydrateAndTrack(newIds, "Analyzer-requested expansion");
@@ -310,12 +326,20 @@ public class SafeLoopTools {
      */
     private String hydrateAndTrack(Set<String> newIds, String label) {
         if (newIds.isEmpty()) {
+            System.out.println("  [hydrate] '" + label + "' — no new IDs to hydrate");
             return "";
         }
 
         Map<String, CodeChunk> chunks = graphReader.fetchMethodChunks(newIds);
         if (chunks.isEmpty()) {
+            System.out.println("  [hydrate] '" + label + "' — fetch returned nothing for IDs: " + newIds);
             return "";
+        }
+        if (chunks.size() < newIds.size()) {
+            Set<String> missing = new LinkedHashSet<>(newIds);
+            missing.removeAll(chunks.keySet());
+            System.out.println("  [hydrate] '" + label + "' — partial: " + chunks.size()
+                    + "/" + newIds.size() + " hydrated; missing: " + missing);
         }
 
         // Track all fetched IDs

@@ -28,9 +28,9 @@ import com.smolnij.chunker.refactor.RefactorConfig;
  *   maxTokens             = 4096
  *   safetyThreshold       = 0.9    (confidence ≥ this → SAFE)
  *   maxIterations         = 5      (hard cap on refine loops)
- *   maxChunks             = 8      (context chunks per retrieval)
- *   chatMemorySize        = 60     (sliding window for agent memory)
- *   maxToolCalls          = 30     (safety cap on tool invocations)
+ *   maxChunks             = 8      (CodeChunk objects returned per retrieval tool call)
+ *   chatMemorySize        = 60     (message count for LangChain4j MessageWindowChatMemory sliding window)
+ *   maxToolCalls          = 30     (soft cap on tool invocations — logged only; LangChain4j hard cap is 200)
  *   minCallerDepth        = 1      (ensure at least this many hops of callers)
  *   minCalleeDepth        = 1      (ensure at least this many hops of callees)
  *   stopOnNoNewNodes      = true   (stop loop if graph expansion yields nothing new)
@@ -48,19 +48,20 @@ public class SafeLoopConfig {
     // ── Refactorer sampling ──
     private double refactorTemperature = 0.3;
     private double topP = 0.9;
-    private int maxTokens = 4096;
+    private int maxTokens = 66000;
 
     // ── Analyzer sampling ──
     private double analyzerTemperature = 0.1;
 
     // ── Safety loop control ──
     private double safetyThreshold = 0.9;
+//    private double safetyThreshold = 0.5; //FIXME set to 0.5 for testing
     private int maxIterations = 5;
 
     // ── Context ──
-    private int maxChunks = 8;
-    private int chatMemorySize = 60;
-    private int maxToolCalls = 30;
+    private int maxChunks = 8;          // max code chunks returned per retrieval tool call (count of CodeChunk objects)
+    private int chatMemorySize = 60;    // sliding window size in messages (LangChain4j MessageWindowChatMemory); one message = one user/assistant/tool turn
+    private int maxToolCalls = 30;      // soft cap on tool invocations per agent run (application counter, logged only — LangChain4j hard cap is RefactorAgent.MAX_SEQUENTIAL_TOOLS_EXECUTIONS=200)
 
     // ── Graph coverage requirements ──
     private int minCallerDepth = 1;
@@ -85,6 +86,9 @@ public class SafeLoopConfig {
     private boolean apply = true;
     private boolean dryRun = false;
     private boolean backup = true;
+
+    // ── Trace ──
+    private boolean trace = true;
 
     // ═══════════════════════════════════════════════════════════════
     // Factory
@@ -126,6 +130,7 @@ public class SafeLoopConfig {
         cfg.apply = boolVal("SAFELOOP_APPLY", "safeloop.apply", cfg.apply);
         cfg.dryRun = boolVal("SAFELOOP_DRY_RUN", "safeloop.dryRun", cfg.dryRun);
         cfg.backup = boolVal("SAFELOOP_BACKUP", "safeloop.backup", cfg.backup);
+        cfg.trace = boolVal("SAFELOOP_TRACE", "safeloop.trace", cfg.trace);
 
         return cfg;
     }
@@ -157,6 +162,7 @@ public class SafeLoopConfig {
     public boolean isApply() { return apply; }
     public boolean isDryRun() { return dryRun; }
     public boolean isBackup() { return backup; }
+    public boolean isTrace() { return trace; }
 
     // ═══════════════════════════════════════════════════════════════
     // Builder-style setters
@@ -187,19 +193,20 @@ public class SafeLoopConfig {
     public SafeLoopConfig withApply(boolean v) { this.apply = v; return this; }
     public SafeLoopConfig withDryRun(boolean v) { this.dryRun = v; return this; }
     public SafeLoopConfig withBackup(boolean v) { this.backup = v; return this; }
+    public SafeLoopConfig withTrace(boolean v) { this.trace = v; return this; }
 
     @Override
     public String toString() {
         return String.format(
             "SafeLoopConfig { url=%s, refactor=[model=%s, temp=%.2f], analyzer=[model=%s, temp=%.2f], " +
             "topP=%.2f, maxTokens=%d, safetyThreshold=%.2f, maxIter=%d, maxChunks=%d, " +
-            "memory=%d, maxTools=%d, callerDepth=%d, calleeDepth=%d, stopNoNew=%s, stopStagnant=%s, stream=%s, structuredOutput=%s }",
+            "memory=%d, maxTools=%d, callerDepth=%d, calleeDepth=%d, stopNoNew=%s, stopStagnant=%s, stream=%s, structuredOutput=%s, trace=%s }",
             chatUrl,
             refactorModel.isEmpty() ? "(default)" : refactorModel, refactorTemperature,
             analyzerModel.isEmpty() ? "(default)" : analyzerModel, analyzerTemperature,
             topP, maxTokens, safetyThreshold, maxIterations, maxChunks,
             chatMemorySize, maxToolCalls, minCallerDepth, minCalleeDepth,
-            stopOnNoNewNodes, stopOnStagnation, stream, structuredOutput
+            stopOnNoNewNodes, stopOnStagnation, stream, structuredOutput, trace
         );
     }
 
