@@ -142,10 +142,45 @@ public class JavaCodeChunker {
 
         System.out.println("Found " + javaFiles.size() + " Java files to process.");
 
+        // processFilesInternal already strips boilerplate before populating
+        // GraphModel.methodNodes — no need to filter again here.
+        return new ArrayList<>(processFilesInternal(javaFiles, /*reportSummary=*/true).getMethodNodes());
+    }
+
+    /**
+     * Re-run the chunking pipeline (phases 2–5) over an explicit list of
+     * {@code .java} files only, returning a {@link GraphModel} that contains
+     * exactly the nodes and edges discovered in those files. Used by the
+     * post-apply Neo4j delta re-indexer so the graph stays consistent with
+     * disk after {@link com.smolnij.chunker.apply.PatchApplier} commits.
+     *
+     * <p>Internal state (allChunks, chunkIndex, graphModel, callGraph) is
+     * reset on entry so the returned model is bounded by the input files.
+     * Files not ending in {@code .java} are silently skipped.
+     *
+     * @param javaFiles absolute paths of .java files to (re-)process
+     * @return a fresh GraphModel for the given files; never null
+     */
+    public GraphModel processFiles(Collection<Path> javaFiles) throws IOException {
+        return processFilesInternal(new ArrayList<>(javaFiles), /*reportSummary=*/false);
+    }
+
+    /**
+     * Shared phase 2–5 driver. Resets internal state, parses each file,
+     * back-patches calledBy edges, and assembles the GraphModel.
+     */
+    private GraphModel processFilesInternal(List<Path> javaFiles, boolean reportSummary) {
+        // Reset state so repeated calls produce independent models.
+        allChunks.clear();
+        chunkIndex.clear();
+        graphModel.reset();
+        callGraph.reset();
+
         // ── Phase 2: Parse & extract method chunks + class/field nodes + call graph ──
         int successCount = 0;
         int failCount = 0;
         for (Path javaFile : javaFiles) {
+            if (!javaFile.toString().endsWith(".java")) continue;
             try {
                 processFile(javaFile);
                 successCount++;
@@ -154,7 +189,9 @@ public class JavaCodeChunker {
                 System.err.println("ERROR processing " + javaFile + ": " + e.getMessage());
             }
         }
-        System.out.println("Parsed " + successCount + " files successfully, " + failCount + " failures.");
+        if (reportSummary) {
+            System.out.println("Parsed " + successCount + " files successfully, " + failCount + " failures.");
+        }
 
         // ── Phase 3: Back-patch "calledBy" edges from the call graph ──
         for (CodeChunk chunk : allChunks) {
@@ -169,9 +206,11 @@ public class JavaCodeChunker {
             .filter(c -> !c.isBoilerplate())
             .collect(Collectors.toList());
 
-        System.out.println("Total chunks: " + allChunks.size()
-            + " | Non-boilerplate: " + result.size()
-            + " | Filtered: " + (allChunks.size() - result.size()));
+        if (reportSummary) {
+            System.out.println("Total chunks: " + allChunks.size()
+                + " | Non-boilerplate: " + result.size()
+                + " | Filtered: " + (allChunks.size() - result.size()));
+        }
 
         // ── Phase 5: Assemble the GraphModel ──
         // Add method nodes
@@ -220,9 +259,11 @@ public class JavaCodeChunker {
             }
         }
 
-        System.out.println(graphModel.getSummary());
+        if (reportSummary) {
+            System.out.println(graphModel.getSummary());
+        }
 
-        return result;
+        return graphModel;
     }
 
     /**

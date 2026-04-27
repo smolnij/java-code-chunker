@@ -52,6 +52,19 @@ public class GraphModel {
         edges.addAll(edgeBatch);
     }
 
+    /**
+     * Clear every node and edge collection. Used by {@link com.smolnij.chunker.JavaCodeChunker}
+     * when re-running the per-file extraction for a delta re-index — the model
+     * must contain only the nodes/edges discovered in the current invocation.
+     */
+    public void reset() {
+        methodNodes.clear();
+        classNodes.clear();
+        fieldNodes.clear();
+        packageNodes.clear();
+        edges.clear();
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // Accessors
     // ═══════════════════════════════════════════════════════════════

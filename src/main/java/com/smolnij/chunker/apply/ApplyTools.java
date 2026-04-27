@@ -26,6 +26,8 @@ public class ApplyTools {
     private final boolean dryRun;
     private final boolean backup;
     private final SafetyGate safetyGate;
+    /** Optional. When set, runs a Neo4j delta re-index after a successful commit so subsequent retrievals see fresh code. */
+    private final GraphReindexer reindexer;
 
     /** Accumulated ops until {@link #commitPlan(String)} flushes them. */
     private final List<EditOp> draftOps = new ArrayList<>();
@@ -66,16 +68,23 @@ public class ApplyTools {
 
     public ApplyTools(Path repoRoot, Neo4jGraphReader graphReader,
                       boolean dryRun, boolean backup) {
-        this(repoRoot, graphReader, dryRun, backup, SafetyGate.ALLOW_ALL);
+        this(repoRoot, graphReader, dryRun, backup, SafetyGate.ALLOW_ALL, null);
     }
 
     public ApplyTools(Path repoRoot, Neo4jGraphReader graphReader,
                       boolean dryRun, boolean backup, SafetyGate safetyGate) {
+        this(repoRoot, graphReader, dryRun, backup, safetyGate, null);
+    }
+
+    public ApplyTools(Path repoRoot, Neo4jGraphReader graphReader,
+                      boolean dryRun, boolean backup, SafetyGate safetyGate,
+                      GraphReindexer reindexer) {
         this.repoRoot = repoRoot;
         this.graphReader = graphReader;
         this.dryRun = dryRun;
         this.backup = backup;
         this.safetyGate = safetyGate == null ? SafetyGate.ALLOW_ALL : safetyGate;
+        this.reindexer = reindexer;
     }
 
     public ApplyResult getLastResult() {
@@ -190,8 +199,21 @@ public class ApplyTools {
         PatchApplier applier = new PatchApplier(repoRoot, graphReader, dryRun, backup);
         lastResult = applier.apply(plan);
         draftOps.clear();
+
+        // Refresh Neo4j so subsequent retrievals see the just-applied code.
+        // Skipped on dry-run (no files were actually written) and on apply failure.
+        String reindexLine = "";
+        if (reindexer != null && lastResult.isSuccess() && !dryRun) {
+            try {
+                GraphReindexer.ReindexResult rr = reindexer.reindex(lastResult.getChangedFiles());
+                reindexLine = "\n" + rr.toReport();
+            } catch (Exception e) {
+                reindexLine = "\nReindex: ✗ " + e.getClass().getSimpleName() + ": " + e.getMessage();
+            }
+        }
+
         return traceReturn("SAFE (confidence=" + verdict.confidence() + "): " + verdict.reason()
-            + "\n" + lastResult.toReport());
+            + "\n" + lastResult.toReport() + reindexLine);
     }
 
     @Tool("""

@@ -45,6 +45,21 @@ public class CallGraphExtractor {
     private final Map<String, Set<String>> testFor = new ConcurrentHashMap<>();       // testMethodFqn -> set(targetMethodFqn)
 
     /**
+     * Clear every edge map. Used by {@link com.smolnij.chunker.JavaCodeChunker}
+     * when re-running per-file extraction for a delta re-index — the resulting
+     * model must reflect only the calls discovered in the current invocation.
+     */
+    public void reset() {
+        forwardEdges.clear();
+        reverseEdges.clear();
+        usesType.clear();
+        returnsType.clear();
+        throwsType.clear();
+        importsByClass.clear();
+        testFor.clear();
+    }
+
+    /**
      * Extract all method calls from a method declaration and record them
      * as edges in the call graph.
      *

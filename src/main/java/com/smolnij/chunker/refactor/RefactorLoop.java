@@ -1,6 +1,7 @@
 package com.smolnij.chunker.refactor;
 
 import com.smolnij.chunker.apply.ApplyResult;
+import com.smolnij.chunker.apply.GraphReindexer;
 import com.smolnij.chunker.apply.PatchApplier;
 import com.smolnij.chunker.apply.PatchPlan;
 import com.smolnij.chunker.model.CodeChunk;
@@ -57,6 +58,8 @@ public class RefactorLoop {
     private final LlmResponseParser parser;
     private final AstDiffEngine diffEngine;
     private final DiffScorer diffScorer;
+    /** Optional Neo4j delta re-indexer used by the apply step. */
+    private final GraphReindexer reindexer;
 
     /** Callback for streaming tokens to the console (or elsewhere). */
     private Consumer<String> streamCallback;
@@ -67,6 +70,16 @@ public class RefactorLoop {
                         RefactorConfig config,
                         AstDiffEngine diffEngine,
                         DiffScorer diffScorer) {
+        this(retriever, graphReader, chatService, config, diffEngine, diffScorer, null);
+    }
+
+    public RefactorLoop(HybridRetriever retriever,
+                        Neo4jGraphReader graphReader,
+                        ChatService chatService,
+                        RefactorConfig config,
+                        AstDiffEngine diffEngine,
+                        DiffScorer diffScorer,
+                        GraphReindexer reindexer) {
         this.retriever = retriever;
         this.graphReader = graphReader;
         this.chatService = chatService;
@@ -75,6 +88,7 @@ public class RefactorLoop {
         this.parser = new LlmResponseParser();
         this.diffEngine = Objects.requireNonNull(diffEngine, "diffEngine");
         this.diffScorer = Objects.requireNonNull(diffScorer, "diffScorer");
+        this.reindexer = reindexer;
         this.streamCallback = System.out::print; // default: print to stdout
     }
 
@@ -249,8 +263,23 @@ public class RefactorLoop {
                 + ", backup=" + config.isBackup());
             ApplyResult ar = applier.apply(plan);
             System.out.println(ar.toReport().replace("\n", "\n  "));
+
+            String reindexReport = "";
+            if (reindexer != null && ar.isSuccess() && !config.isDryRun()) {
+                try {
+                    GraphReindexer.ReindexResult rr = reindexer.reindex(ar.getChangedFiles());
+                    reindexReport = rr.toReport();
+                    System.out.println("  " + reindexReport);
+                } catch (Exception e) {
+                    reindexReport = "Reindex: ✗ " + e.getClass().getSimpleName() + ": " + e.getMessage();
+                    System.out.println("  ⚠ " + reindexReport);
+                }
+            }
             System.out.println();
-            result.withApplyResult(ar.getChangedFiles(), ar.toReport());
+            String fullReport = reindexReport.isEmpty()
+                ? ar.toReport()
+                : ar.toReport() + "\n" + reindexReport;
+            result.withApplyResult(ar.getChangedFiles(), fullReport);
         } catch (Exception e) {
             String msg = "Apply failed: " + e.getClass().getSimpleName() + " — " + e.getMessage();
             System.out.println("  ✗ " + msg);

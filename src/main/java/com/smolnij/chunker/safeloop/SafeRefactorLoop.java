@@ -6,6 +6,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.smolnij.chunker.apply.ApplyResult;
 import com.smolnij.chunker.apply.ApplyTools;
+import com.smolnij.chunker.apply.GraphReindexer;
 import com.smolnij.chunker.apply.PatchApplier;
 import com.smolnij.chunker.apply.PatchPlan;
 import com.smolnij.chunker.refactor.ChatService;
@@ -163,6 +164,9 @@ public class SafeRefactorLoop {
     /** Graph-aware diff scorer (required). */
     private final DiffScorer diffScorer;
 
+    /** Optional Neo4j delta re-indexer used by the prose-extracted apply fallback. */
+    private final GraphReindexer reindexer;
+
     /** Callback for streaming progress updates. */
     private Consumer<String> progressCallback;
 
@@ -178,6 +182,17 @@ public class SafeRefactorLoop {
                             SafeLoopConfig config,
                             AstDiffEngine diffEngine,
                             DiffScorer diffScorer) {
+        this(agent, analyzerChat, loopTools, agentTools, config, diffEngine, diffScorer, null);
+    }
+
+    public SafeRefactorLoop(RefactorAgent agent,
+                            ChatService analyzerChat,
+                            SafeLoopTools loopTools,
+                            RefactorTools agentTools,
+                            SafeLoopConfig config,
+                            AstDiffEngine diffEngine,
+                            DiffScorer diffScorer,
+                            GraphReindexer reindexer) {
         this.agent = agent;
         this.analyzerChat = analyzerChat;
         this.loopTools = loopTools;
@@ -185,6 +200,7 @@ public class SafeRefactorLoop {
         this.config = config;
         this.diffEngine = Objects.requireNonNull(diffEngine, "diffEngine");
         this.diffScorer = Objects.requireNonNull(diffScorer, "diffScorer");
+        this.reindexer = reindexer;
         this.progressCallback = System.out::print;
     }
 
@@ -1243,9 +1259,24 @@ public class SafeRefactorLoop {
                 + ", backup=" + config.isBackup());
             ApplyResult ar = applier.apply(plan);
             System.out.println(ar.toReport().replace("\n", "\n  "));
+
+            String reindexReport = "";
+            if (reindexer != null && ar.isSuccess() && !config.isDryRun()) {
+                try {
+                    GraphReindexer.ReindexResult rr = reindexer.reindex(ar.getChangedFiles());
+                    reindexReport = rr.toReport();
+                    System.out.println("  " + reindexReport);
+                } catch (Exception e) {
+                    reindexReport = "Reindex: ✗ " + e.getClass().getSimpleName() + ": " + e.getMessage();
+                    System.out.println("  ⚠ " + reindexReport);
+                }
+            }
             System.out.println();
 
-            result.withApplyResult(ar.getChangedFiles(), ar.toReport());
+            String fullReport = reindexReport.isEmpty()
+                ? ar.toReport()
+                : ar.toReport() + "\n" + reindexReport;
+            result.withApplyResult(ar.getChangedFiles(), fullReport);
         } catch (Exception e) {
             String msg = "Apply failed: " + e.getClass().getSimpleName() + " — " + e.getMessage();
             System.out.println("  ✗ " + msg);

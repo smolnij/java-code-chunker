@@ -1,6 +1,7 @@
 package com.smolnij.chunker.safeloop;
 
 import com.smolnij.chunker.apply.ApplyTools;
+import com.smolnij.chunker.apply.GraphReindexer;
 import com.smolnij.chunker.refactor.ChatService;
 import com.smolnij.chunker.refactor.LmStudioChatService;
 import com.smolnij.chunker.refactor.RefactorAgent;
@@ -35,6 +36,19 @@ public final class SafeLoopBundle implements AutoCloseable {
     public static SafeLoopBundle build(Neo4jGraphReader reader,
                                        HybridRetriever retriever,
                                        SafeLoopConfig config) {
+        return build(reader, retriever, config, null);
+    }
+
+    /**
+     * @param reindexer optional Neo4j delta re-indexer. When non-null, the agent's
+     *                  {@code commitPlan} tool and the prose-extracted apply
+     *                  fallback both refresh Neo4j after writing files so subsequent
+     *                  retrievals see the updated code (and newly created classes).
+     */
+    public static SafeLoopBundle build(Neo4jGraphReader reader,
+                                       HybridRetriever retriever,
+                                       SafeLoopConfig config,
+                                       GraphReindexer reindexer) {
         RefactorConfig refactorConfig = new RefactorConfig()
                 .withChatUrl(config.getChatUrl())
                 .withChatModel(config.getRefactorModel())
@@ -68,14 +82,15 @@ public final class SafeLoopBundle implements AutoCloseable {
                 reader,
                 config.isDryRun(),
                 config.isBackup(),
-                gate);
+                gate,
+                reindexer);
 
         RefactorAgent agent = new RefactorAgent(refactorConfig, agentTools, applyTools);
 
         SafeLoopTools loopTools = new SafeLoopTools(retriever, reader, config);
         SafeRefactorLoop loop = new SafeRefactorLoop(
                 agent, analyzerChat, loopTools, agentTools, config,
-                diffEngine, diffScorer);
+                diffEngine, diffScorer, reindexer);
 
         return new SafeLoopBundle(loop, analyzerChat);
     }

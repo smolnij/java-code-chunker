@@ -14,9 +14,11 @@ import com.smolnij.chunker.retrieval.RetrievalConfig;
 import com.smolnij.chunker.safeloop.SafeLoopBundle;
 import com.smolnij.chunker.safeloop.SafeLoopConfig;
 import com.smolnij.chunker.safeloop.SafeLoopResult;
+import com.smolnij.chunker.store.Neo4jGraphStore;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.List;
 
 /**
  * CLI entry point for apply-enabled refactoring.
@@ -41,6 +43,15 @@ public class ApplyMain {
     public static final String NEO4J_DEFAULT_PASSWORD = "12345678";
 
     enum Mode { SAFELOOP, REFACTOR }
+
+    /** Source roots fed to the post-apply Neo4j re-indexer; mirror {@code ChunkerMain}. */
+    private static final List<Path> DEFAULT_SOURCE_ROOTS = List.of(
+        Path.of("src/main/java"),
+        Path.of("src/test/java")
+    );
+
+    /** Default token budget — must match {@code ChunkerMain.DEFAULT_MAX_TOKENS_PER_CHUNK}. */
+    private static final int DEFAULT_MAX_TOKENS_PER_CHUNK = 512;
 
     public static void main(String[] args) {
         if (args.length < 2) {
@@ -96,16 +107,25 @@ public class ApplyMain {
         RetrievalConfig retrievalConfig = RetrievalConfig.fromEnvironment();
 
         try (Neo4jGraphReader reader = new Neo4jGraphReader(neo4jUri, neo4jUser, neo4jPassword, retrievalConfig);
-             EmbeddingService embeddings = new LmStudioEmbeddingService(retrievalConfig)) {
+             EmbeddingService embeddings = new LmStudioEmbeddingService(retrievalConfig);
+             Neo4jGraphStore store = new Neo4jGraphStore(neo4jUri, neo4jUser, neo4jPassword)) {
 
             reader.ensureVectorIndex();
             HybridRetriever retriever = new HybridRetriever(reader, embeddings, retrievalConfig);
 
+            // Build the post-apply re-indexer so subsequent retrievals see fresh code.
+            // The reindexer catches embedding failures and continues without vector
+            // refresh, so passing the embedding service is safe even when EMBEDDING_URL
+            // isn't configured.
+            GraphReindexer reindexer = new GraphReindexer(
+                repoRootPath, DEFAULT_SOURCE_ROOTS,
+                DEFAULT_MAX_TOKENS_PER_CHUNK, store, embeddings);
+
             int exit;
             if (mode == Mode.SAFELOOP) {
-                exit = runSafeLoop(reader, retriever, repoRootPath, query, dryRun, backup);
+                exit = runSafeLoop(reader, retriever, reindexer, repoRootPath, query, dryRun, backup);
             } else {
-                exit = runRefactor(reader, retriever, repoRootPath, query, dryRun, backup);
+                exit = runRefactor(reader, retriever, reindexer, repoRootPath, query, dryRun, backup);
             }
             System.exit(exit);
 
@@ -118,6 +138,7 @@ public class ApplyMain {
 
     private static int runSafeLoop(Neo4jGraphReader reader,
                                    HybridRetriever retriever,
+                                   GraphReindexer reindexer,
                                    Path repoRoot,
                                    String query,
                                    boolean dryRun,
@@ -128,7 +149,7 @@ public class ApplyMain {
             .withDryRun(dryRun)
             .withBackup(backup);
 
-        try (SafeLoopBundle bundle = SafeLoopBundle.build(reader, retriever, cfg)) {
+        try (SafeLoopBundle bundle = SafeLoopBundle.build(reader, retriever, cfg, reindexer)) {
             SafeLoopResult result = bundle.loop().run(query);
 
             System.out.println();
@@ -143,6 +164,7 @@ public class ApplyMain {
 
     private static int runRefactor(Neo4jGraphReader reader,
                                    HybridRetriever retriever,
+                                   GraphReindexer reindexer,
                                    Path repoRoot,
                                    String query,
                                    boolean dryRun,
@@ -159,7 +181,7 @@ public class ApplyMain {
 
             AstDiffEngine diffEngine = new AstDiffEngine();
             DiffScorer diffScorer = new DiffScorer(reader);
-            RefactorLoop loop = new RefactorLoop(retriever, reader, chat, cfg, diffEngine, diffScorer);
+            RefactorLoop loop = new RefactorLoop(retriever, reader, chat, cfg, diffEngine, diffScorer, reindexer);
             RefactorLoop.RefactorResult result = loop.run(query);
 
             System.out.println();
