@@ -185,6 +185,104 @@ public class Neo4jGraphStore implements AutoCloseable {
     }
 
     /**
+     * Delete graph elements that disappeared from a set of files between
+     * two re-indexings. Used by the post-apply delta re-indexer.
+     *
+     * <p>The caller has just rebuilt a {@link GraphModel} for {@code filePaths}
+     * (the files modified by {@link com.smolnij.chunker.apply.PatchApplier})
+     * and is about to call {@link #store(GraphModel)} to upsert the fresh
+     * nodes/edges. Before that, this method removes anything in those files
+     * that the new model no longer contains:
+     * <ul>
+     *   <li>{@code :Method} nodes whose {@code filePath} matches but whose
+     *       {@code chunkId} is not in {@code keepMethodChunkIds} (renames
+     *       and explicit deletions).</li>
+     *   <li>{@code :Field} nodes owned by classes whose {@code filePath}
+     *       matches but whose {@code fqName} is not in {@code keepFieldFqns}.</li>
+     *   <li>Outgoing relationships from kept methods (CALLS, CALLED_BY,
+     *       USES_TYPE, RETURNS_TYPE, THROWS, TEST_FOR, BELONGS_TO) — these
+     *       will be recreated by the subsequent {@code store(...)} call so
+     *       MERGE doesn't accumulate stale edges from a prior code shape.</li>
+     *   <li>Outgoing relationships from kept classes (IMPORTS, EXTENDS,
+     *       IMPLEMENTS, INNER_CLASS_OF) for the same reason.</li>
+     * </ul>
+     *
+     * <p>Inbound edges from <em>unchanged</em> files are not touched —
+     * Neo4j's {@code DETACH DELETE} on a removed method automatically drops
+     * dangling relationships. A caller in an unchanged file whose target
+     * method was renamed will keep its stale {@code calls} list in the
+     * stored {@code :Method.code} property until the caller's own file is
+     * re-indexed; this is acceptable (and documented) for v1.
+     *
+     * @param filePaths           repo-relative file paths just touched by the apply
+     * @param keepMethodChunkIds  method chunk ids that remain in the new model
+     * @param keepFieldFqns       field FQNs that remain in the new model
+     * @param keepClassFqns       class FQNs whose outgoing edges should be wiped
+     */
+    public void pruneByFile(Set<String> filePaths,
+                            Set<String> keepMethodChunkIds,
+                            Set<String> keepFieldFqns,
+                            Set<String> keepClassFqns) {
+        if (filePaths == null || filePaths.isEmpty()) return;
+
+        List<String> files = new ArrayList<>(filePaths);
+        List<String> keepMethods = new ArrayList<>(keepMethodChunkIds);
+        List<String> keepFields = new ArrayList<>(keepFieldFqns);
+        List<String> keepClasses = new ArrayList<>(keepClassFqns);
+
+        try (Session session = driver.session()) {
+            session.executeWrite(tx -> {
+                // 1. Remove :Method nodes that disappeared from these files.
+                tx.run(
+                    "MATCH (m:Method) " +
+                    "WHERE m.filePath IN $files AND NOT m.chunkId IN $keep " +
+                    "DETACH DELETE m",
+                    Map.of("files", files, "keep", keepMethods)
+                );
+
+                // 2. Remove :Field nodes whose owning class is in these files
+                //    but whose FQN no longer appears in the new model.
+                tx.run(
+                    "MATCH (c)-[:HAS_FIELD]->(f:Field) " +
+                    "WHERE (c:Class OR c:Interface) AND c.filePath IN $files " +
+                    "  AND NOT f.fqName IN $keep " +
+                    "DETACH DELETE f",
+                    Map.of("files", files, "keep", keepFields)
+                );
+
+                // 3. Wipe outgoing edges from kept methods so MERGE in the
+                //    subsequent store() doesn't leave stale CALLS/etc behind.
+                if (!keepMethods.isEmpty()) {
+                    tx.run(
+                        "MATCH (m:Method)-[r:CALLS|CALLED_BY|USES_TYPE|RETURNS_TYPE|THROWS|TEST_FOR|BELONGS_TO]->() " +
+                        "WHERE m.chunkId IN $keep " +
+                        "DELETE r",
+                        Map.of("keep", keepMethods)
+                    );
+                }
+
+                // 4. Same idea for kept classes — wipe outgoing structural
+                //    edges (IMPORTS, EXTENDS, IMPLEMENTS, INNER_CLASS_OF)
+                //    so they're authoritatively repopulated.
+                if (!keepClasses.isEmpty()) {
+                    tx.run(
+                        "MATCH (c)-[r:IMPORTS|EXTENDS|IMPLEMENTS|INNER_CLASS_OF]->() " +
+                        "WHERE (c:Class OR c:Interface) AND c.fqName IN $keep " +
+                        "DELETE r",
+                        Map.of("keep", keepClasses)
+                    );
+                }
+
+                return null;
+            });
+        }
+        System.out.printf(
+            "  ✓ pruneByFile: %d file(s), kept %d method(s), %d field(s), %d class(es)%n",
+            filePaths.size(), keepMethodChunkIds.size(), keepFieldFqns.size(), keepClassFqns.size()
+        );
+    }
+
+    /**
      * Persist the entire {@link GraphModel} — all nodes and edges — into Neo4j.
      * Uses MERGE for idempotent upserts (safe to run multiple times).
      */

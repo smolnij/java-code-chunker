@@ -116,12 +116,23 @@ public class RefactorMain {
 
         // ── Run ──
         try (Neo4jGraphReader reader = new Neo4jGraphReader(neo4jUri, neo4jUser, neo4jPassword, retrievalConfig);
-             EmbeddingService embeddings = new LmStudioEmbeddingService(retrievalConfig)) {
+             EmbeddingService embeddings = new LmStudioEmbeddingService(retrievalConfig);
+             com.smolnij.chunker.store.Neo4jGraphStore store = new com.smolnij.chunker.store.Neo4jGraphStore(neo4jUri, neo4jUser, neo4jPassword)) {
 
             // Ensure the vector index exists before any vector search
             reader.ensureVectorIndex();
 
             HybridRetriever retriever = new HybridRetriever(reader, embeddings, retrievalConfig);
+
+            // Build the post-apply Neo4j re-indexer when --apply is on so
+            // subsequent retrievals see the fresh code on disk.
+            com.smolnij.chunker.apply.GraphReindexer reindexer = null;
+            if (refactorConfig.isApply() && !refactorConfig.getRepoRoot().isEmpty()) {
+                reindexer = new com.smolnij.chunker.apply.GraphReindexer(
+                    Path.of(refactorConfig.getRepoRoot()),
+                    java.util.List.of(Path.of("src/main/java"), Path.of("src/test/java")),
+                    512, store, embeddings);
+            }
 
             String output;
 
@@ -144,7 +155,7 @@ public class RefactorMain {
                     AstDiffEngine diffEngine = new AstDiffEngine();
                     DiffScorer diffScorer = new DiffScorer(reader);
                     RefactorLoop loop = new RefactorLoop(
-                            retriever, reader, chatService, refactorConfig, diffEngine, diffScorer);
+                            retriever, reader, chatService, refactorConfig, diffEngine, diffScorer, reindexer);
                     RefactorLoop.RefactorResult result = loop.run(query);
 
                     output = result.toDisplayString();

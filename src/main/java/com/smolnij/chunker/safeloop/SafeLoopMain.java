@@ -1,9 +1,12 @@
 package com.smolnij.chunker.safeloop;
 
+import com.smolnij.chunker.apply.GraphReindexer;
 import com.smolnij.chunker.retrieval.*;
+import com.smolnij.chunker.store.Neo4jGraphStore;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 /**
  * CLI entry point for the self-improving safe refactoring loop.
@@ -64,6 +67,14 @@ public class SafeLoopMain {
     public static final String NEO4J_DEFAULT_URL = "bolt://localhost:7687";
     public static final String NEO4J_DEFAULT_USER = "neo4j";
     public static final String NEO4J_DEFAULT_PASSWORD = "12345678";
+
+    /** Source roots fed to the post-apply Neo4j re-indexer; mirror {@code ChunkerMain}. */
+    private static final List<Path> DEFAULT_SOURCE_ROOTS = List.of(
+        Path.of("src/main/java"),
+        Path.of("src/test/java")
+    );
+
+    private static final int DEFAULT_MAX_TOKENS_PER_CHUNK = 512;
 
     public static void main(String[] args) {
 
@@ -176,14 +187,26 @@ public class SafeLoopMain {
 
         // ── Build components ──
         try (Neo4jGraphReader reader = new Neo4jGraphReader(neo4jUri, neo4jUser, neo4jPassword, retrievalConfig);
-             EmbeddingService embeddings = new LmStudioEmbeddingService(retrievalConfig)) {
+             EmbeddingService embeddings = new LmStudioEmbeddingService(retrievalConfig);
+             Neo4jGraphStore store = new Neo4jGraphStore(neo4jUri, neo4jUser, neo4jPassword)) {
 
             // Ensure the vector index exists before any vector search
             reader.ensureVectorIndex();
 
             HybridRetriever retriever = new HybridRetriever(reader, embeddings, retrievalConfig);
 
-            try (SafeLoopBundle bundle = SafeLoopBundle.build(reader, retriever, safeConfig)) {
+            // Build the post-apply Neo4j re-indexer if a repo root is configured.
+            // SafeLoopBundle wires it into the agent's commitPlan path and the
+            // prose-extracted apply fallback so retrievals stay current.
+            GraphReindexer reindexer = null;
+            String repoRoot = safeConfig.getRepoRoot();
+            if (repoRoot != null && !repoRoot.isEmpty()) {
+                reindexer = new GraphReindexer(
+                    Path.of(repoRoot), DEFAULT_SOURCE_ROOTS,
+                    DEFAULT_MAX_TOKENS_PER_CHUNK, store, embeddings);
+            }
+
+            try (SafeLoopBundle bundle = SafeLoopBundle.build(reader, retriever, safeConfig, reindexer)) {
 
                 System.out.println("━━━ Starting Safe Refactoring Loop ━━━━━━━━━━━━━━━━━━━");
                 System.out.println();
