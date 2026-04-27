@@ -16,6 +16,7 @@ import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.ImportDeclaration;
 import com.github.javaparser.ast.PackageDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
+import com.github.javaparser.ast.body.ConstructorDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.VariableDeclarator;
@@ -443,6 +444,79 @@ public class JavaCodeChunker {
                 chunk.setPartIndex(i + 1);
                 chunk.setTotalParts(codeParts.size());
                 chunk.setBoilerplate(isBoilerplate);
+
+                chunk.setParentClass(fqClassName);
+                chunk.setParentPackage(packageName);
+
+                chunkIndex.put(chunkId, chunk);
+                allChunks.add(chunk);
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // ── Process each constructor (chunkId uses '<init>') ──
+        // Constructors are emitted as their own chunks (one per ctor, split
+        // into parts when long) so refactors that change DI, config wiring,
+        // or initialization can find them. Marked boilerplate only when the
+        // owning class is a DTO, to mirror existing method-level behaviour.
+        // ═══════════════════════════════════════════════════════════════
+        for (ConstructorDeclaration ctor : classDecl.getConstructors()) {
+            String methodName = "<init>";
+            String methodSig = ctor.getDeclarationAsString(true, true, true);
+
+            String methodFqn = fqClassName + "#<init>("
+                + ctor.getParameters().stream()
+                    .map(p -> p.getTypeAsString())
+                    .collect(Collectors.joining(", "))
+                + ")";
+
+            List<String> methodAnnotations = ctor.getAnnotations().stream()
+                .map(AnnotationExpr::toString)
+                .collect(Collectors.toList());
+
+            String code = ctor.toString();
+            int startLine = ctor.getBegin().map(p -> p.line).orElse(0);
+            int endLine = ctor.getEnd().map(p -> p.line).orElse(0);
+
+            callGraph.extractCalls(ctor, methodFqn);
+            callGraph.extractTypeInfo(ctor, methodFqn, cu);
+            List<String> calls = new ArrayList<>(callGraph.getCallsFrom(methodFqn));
+
+            List<String> codeParts = tokenCounter.splitIfNeeded(code);
+
+            for (int i = 0; i < codeParts.size(); i++) {
+                CodeChunk chunk = new CodeChunk();
+
+                String chunkId = methodFqn;
+                if (codeParts.size() > 1) {
+                    chunkId += "#part" + (i + 1);
+                }
+
+                chunk.setChunkId(chunkId);
+                chunk.setFilePath(relativePath);
+                chunk.setPackageName(packageName);
+                chunk.setImports(imports);
+
+                chunk.setClassName(className);
+                chunk.setFullyQualifiedClassName(fqClassName);
+                chunk.setClassSignature(classSignature);
+                chunk.setClassAnnotations(classAnnotations);
+                chunk.setFieldDeclarations(fields);
+
+                chunk.setMethodName(methodName);
+                chunk.setMethodSignature(methodSig);
+                chunk.setMethodAnnotations(methodAnnotations);
+                chunk.setStartLine(startLine);
+                chunk.setEndLine(endLine);
+
+                chunk.setCode(codeParts.get(i));
+                chunk.setTokenCount(tokenCounter.countTokens(codeParts.get(i)));
+
+                chunk.setCalls(calls);
+
+                chunk.setPartIndex(i + 1);
+                chunk.setTotalParts(codeParts.size());
+                chunk.setBoilerplate(isDto);
 
                 chunk.setParentClass(fqClassName);
                 chunk.setParentPackage(packageName);

@@ -228,7 +228,7 @@ public class RefactorAgent {
                 .temperature(config.getTemperature())
                 .topP(config.getTopP())
                 .maxTokens(config.getMaxTokens())
-                .timeout(Duration.ofMinutes(5))
+                .timeout(Duration.ofMinutes(25))
                 .httpClientBuilder(lmStudioHttpClientBuilder())
                 // Force plain-text replies on every request so a sticky server-side
                 // structured-output config in LM-Studio cannot coerce the tool-calling

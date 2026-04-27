@@ -2,7 +2,9 @@ package com.smolnij.chunker.callgraph;
 
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.ImportDeclaration;
+import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
+import com.github.javaparser.ast.body.ConstructorDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
@@ -49,7 +51,7 @@ public class CallGraphExtractor {
      * @param method    the method AST node
      * @param callerFqn the FQN of the caller, e.g. "com.example.Foo#doStuff(String)"
      */
-    public void extractCalls(MethodDeclaration method, String callerFqn) {
+    public void extractCalls(Node method, String callerFqn) {
         List<MethodCallExpr> calls = method.findAll(MethodCallExpr.class);
 
         for (MethodCallExpr call : calls) {
@@ -128,6 +130,39 @@ public class CallGraphExtractor {
                 }
             }
         });
+    }
+
+    /**
+     * Constructor variant of {@link #extractTypeInfo(MethodDeclaration, String, CompilationUnit)}.
+     * Records parameters (USES_TYPE), thrown exceptions (THROWS), and class-level imports.
+     * Constructors have no return type, so RETURNS_TYPE is omitted.
+     */
+    public void extractTypeInfo(ConstructorDeclaration ctor, String callerFqn, CompilationUnit cu) {
+        for (var p : ctor.getParameters()) {
+            String typeName;
+            try {
+                typeName = p.getType().resolve().describe();
+            } catch (Exception e) {
+                typeName = p.getType().toString();
+            }
+            usesType.computeIfAbsent(callerFqn, k -> Collections.synchronizedSet(new LinkedHashSet<>())).add(typeName);
+        }
+        ctor.getThrownExceptions().forEach(t -> {
+            String thrown;
+            try {
+                thrown = t.resolve().describe();
+            } catch (Exception ex) {
+                thrown = t.toString();
+            }
+            throwsType.computeIfAbsent(callerFqn, k -> Collections.synchronizedSet(new LinkedHashSet<>())).add(thrown);
+        });
+        String classFqn = callerFqn.split("#")[0];
+        if (cu != null) {
+            for (ImportDeclaration id : cu.getImports()) {
+                String imp = id.getNameAsString();
+                importsByClass.computeIfAbsent(classFqn, k -> Collections.synchronizedSet(new LinkedHashSet<>())).add(imp);
+            }
+        }
     }
 
     // Accessors for the new maps

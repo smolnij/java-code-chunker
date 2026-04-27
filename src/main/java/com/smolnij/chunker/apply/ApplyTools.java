@@ -33,6 +33,37 @@ public class ApplyTools {
     /** Last ApplyResult; exposed so the loop can read applied files after the agent returns. */
     private ApplyResult lastResult;
 
+    /** Per-instance counter so apply-tool calls are visible in the worklog trace. */
+    private int applyCallCount = 0;
+
+    private void traceCall(String toolName, String args) {
+        applyCallCount++;
+        System.out.println("  🔨 Apply tool #" + applyCallCount + ": " + toolName + "(" + args + ")");
+    }
+
+    private String traceReturn(String result) {
+        int chars = result == null ? 0 : result.length();
+        String status;
+        if (result == null || result.isEmpty()) {
+            status = "[empty]";
+        } else if (result.startsWith("UNSAFE")) {
+            status = "[unsafe]";
+        } else if (result.contains("✗") || result.contains("failed")) {
+            status = "[failed]";
+            System.out.println(result);
+        } else {
+            status = "[ok]";
+        }
+        System.out.println("    └─ " + status + " (" + chars + " chars)");
+        return result;
+    }
+
+    private static String shorten(String s, int max) {
+        if (s == null) return "null";
+        String collapsed = s.replaceAll("\\s+", " ").trim();
+        return collapsed.length() <= max ? collapsed : collapsed.substring(0, max) + "…";
+    }
+
     public ApplyTools(Path repoRoot, Neo4jGraphReader graphReader,
                       boolean dryRun, boolean backup) {
         this(repoRoot, graphReader, dryRun, backup, SafetyGate.ALLOW_ALL);
@@ -70,9 +101,10 @@ public class ApplyTools {
                                      @P("Method name") String methodName,
                                      @P("Original method signature") String originalSignature,
                                      @P("Full new method declaration (Java source)") String newCode) {
+        traceCall("stageReplaceMethod", fqClassName + "#" + methodName);
         draftOps.add(new EditOp.ReplaceMethod(fqClassName, methodName, originalSignature, newCode));
-        return "staged replace_method " + fqClassName + "#" + methodName
-            + " (ops so far: " + draftOps.size() + ")";
+        return traceReturn("staged replace_method " + fqClassName + "#" + methodName
+            + " (ops so far: " + draftOps.size() + ")");
     }
 
     @Tool("""
@@ -81,9 +113,10 @@ public class ApplyTools {
         """)
     public String stageAddMethod(@P("Fully-qualified class name") String fqClassName,
                                  @P("Full new method declaration (Java source)") String newCode) {
+        traceCall("stageAddMethod", fqClassName);
         draftOps.add(new EditOp.AddMethod(fqClassName, newCode));
-        return "staged add_method on " + fqClassName
-            + " (ops so far: " + draftOps.size() + ")";
+        return traceReturn("staged add_method on " + fqClassName
+            + " (ops so far: " + draftOps.size() + ")");
     }
 
     @Tool("""
@@ -93,9 +126,10 @@ public class ApplyTools {
     public String stageDeleteMethod(@P("Fully-qualified class name") String fqClassName,
                                     @P("Method name") String methodName,
                                     @P("Original method signature") String originalSignature) {
+        traceCall("stageDeleteMethod", fqClassName + "#" + methodName);
         draftOps.add(new EditOp.DeleteMethod(fqClassName, methodName, originalSignature));
-        return "staged delete_method " + fqClassName + "#" + methodName
-            + " (ops so far: " + draftOps.size() + ")";
+        return traceReturn("staged delete_method " + fqClassName + "#" + methodName
+            + " (ops so far: " + draftOps.size() + ")");
     }
 
     @Tool("""
@@ -105,9 +139,10 @@ public class ApplyTools {
         """)
     public String stageAddImport(@P("Repo-relative file path") String filePath,
                                  @P("Import declaration (full line)") String importDecl) {
+        traceCall("stageAddImport", filePath + " (+ " + shorten(importDecl, 60) + ")");
         draftOps.add(new EditOp.AddImport(filePath, importDecl));
-        return "staged add_import to " + filePath
-            + " (ops so far: " + draftOps.size() + ")";
+        return traceReturn("staged add_import to " + filePath
+            + " (ops so far: " + draftOps.size() + ")");
     }
 
     @Tool("""
@@ -117,9 +152,10 @@ public class ApplyTools {
         """)
     public String stageCreateFile(@P("Repo-relative path for the new file") String relPath,
                                   @P("Full file content") String content) {
+        traceCall("stageCreateFile", relPath + " (" + (content == null ? 0 : content.length()) + " chars)");
         draftOps.add(new EditOp.CreateFile(relPath, content));
-        return "staged create_file " + relPath
-            + " (ops so far: " + draftOps.size() + ")";
+        return traceReturn("staged create_file " + relPath
+            + " (ops so far: " + draftOps.size() + ")");
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -135,8 +171,9 @@ public class ApplyTools {
         On SAFE verdict the draft ops are cleared after apply.
         """)
     public String commitPlan(@P("One-paragraph rationale for the change set") String rationale) {
+        traceCall("commitPlan", draftOps.size() + " staged op(s)");
         if (draftOps.isEmpty()) {
-            return "commitPlan: no staged edits to apply.";
+            return traceReturn("commitPlan: no staged edits to apply.");
         }
 
         PatchPlan plan = new PatchPlan(
@@ -146,15 +183,15 @@ public class ApplyTools {
 
         SafetyGate.Verdict verdict = safetyGate.evaluate(plan);
         if (!verdict.safe()) {
-            return "UNSAFE (confidence=" + verdict.confidence() + "): " + verdict.reason()
-                + "\nDraft kept (" + draftOps.size() + " op(s)). Revise and retry, or call discardDraft.";
+            return traceReturn("UNSAFE (confidence=" + verdict.confidence() + "): " + verdict.reason()
+                + "\nDraft kept (" + draftOps.size() + " op(s)). Revise and retry, or call discardDraft.");
         }
 
         PatchApplier applier = new PatchApplier(repoRoot, graphReader, dryRun, backup);
         lastResult = applier.apply(plan);
         draftOps.clear();
-        return "SAFE (confidence=" + verdict.confidence() + "): " + verdict.reason()
-            + "\n" + lastResult.toReport();
+        return traceReturn("SAFE (confidence=" + verdict.confidence() + "): " + verdict.reason()
+            + "\n" + lastResult.toReport());
     }
 
     @Tool("""
@@ -162,8 +199,9 @@ public class ApplyTools {
         Use this to reset the draft plan when you realize the approach was wrong.
         """)
     public String discardDraft() {
+        traceCall("discardDraft", draftOps.size() + " staged op(s)");
         int n = draftOps.size();
         draftOps.clear();
-        return "discarded " + n + " staged op(s).";
+        return traceReturn("discarded " + n + " staged op(s).");
     }
 }

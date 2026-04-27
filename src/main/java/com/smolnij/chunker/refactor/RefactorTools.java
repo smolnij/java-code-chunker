@@ -598,6 +598,88 @@ public class RefactorTools {
     }
 
     // ═══════════════════════════════════════════════════════════════
+    // Tool: class-level overview (header + fields + member signatures)
+    // ═══════════════════════════════════════════════════════════════
+
+    @Tool("""
+        Return a class-level overview: class signature, fields, imports, and the
+        signatures (no bodies) of every indexed method and constructor on that class.
+        Use this BEFORE method-level retrieval when you need to see the structure of
+        a class as a whole — e.g. to pick a constructor to modify, or to enumerate
+        methods. Accepts an FQN ('com.example.UserService'), a simple class name
+        ('UserService'), or a file path ('UserService.java').
+        """)
+    public String getClassOverview(
+            @P("Class identifier: FQN, simple name, or file path (e.g. 'RalphLoop', 'com.example.RalphLoop', 'RalphLoop.java')")
+            String classIdentifier) {
+
+        toolCallCount++;
+        System.out.println("  🔧 Tool call #" + toolCallCount
+                + ": getClassOverview(\"" + classIdentifier + "\")");
+
+        try {
+            String fqName = graphReader.findClass(classIdentifier);
+            if (fqName == null) {
+                return logToolReturn("Class not found: " + classIdentifier
+                        + "\nTry a fully-qualified name or a different identifier.");
+            }
+            Neo4jGraphReader.ClassOverview ov = graphReader.getClassOverview(fqName);
+            if (ov == null) {
+                return logToolReturn("Class not found: " + fqName);
+            }
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("=== Class Overview: ").append(ov.fqName).append(" ===\n");
+            sb.append("Kind: ").append(ov.kind).append("\n");
+            sb.append("File: ").append(ov.filePath).append("\n");
+            sb.append("Package: ").append(ov.packageName).append("\n");
+            if (!ov.annotations.isEmpty()) {
+                sb.append("Annotations: ").append(String.join(", ", ov.annotations)).append("\n");
+            }
+            if (!ov.extendedTypes.isEmpty()) {
+                sb.append("Extends: ").append(String.join(", ", ov.extendedTypes)).append("\n");
+            }
+            if (!ov.implementedTypes.isEmpty()) {
+                sb.append("Implements: ").append(String.join(", ", ov.implementedTypes)).append("\n");
+            }
+            if (ov.signature != null && !ov.signature.isEmpty()) {
+                sb.append("Signature:\n  ").append(ov.signature).append("\n");
+            }
+
+            sb.append("\n── Imports (").append(ov.imports.size()).append(") ──\n");
+            if (ov.imports.isEmpty()) {
+                sb.append("  (none indexed)\n");
+            } else {
+                for (String imp : ov.imports) sb.append("  ").append(imp).append("\n");
+            }
+
+            sb.append("\n── Fields (").append(ov.fieldDeclarations.size()).append(") ──\n");
+            if (ov.fieldDeclarations.isEmpty()) {
+                sb.append("  (none)\n");
+            } else {
+                for (String decl : ov.fieldDeclarations) sb.append("  ").append(decl).append("\n");
+            }
+
+            sb.append("\n── Methods & Constructors (").append(ov.methods.size()).append(") ──\n");
+            if (ov.methods.isEmpty()) {
+                sb.append("  (none indexed — class may have only filtered/boilerplate methods)\n");
+            } else {
+                for (Neo4jGraphReader.ClassOverview.MethodSummary m : ov.methods) {
+                    sb.append("  ").append(m.signature.isEmpty() ? m.methodName : m.signature);
+                    if (m.totalParts > 1) {
+                        sb.append("    [body split into ").append(m.totalParts).append(" parts]");
+                    }
+                    sb.append("\n    id: ").append(m.chunkId).append("\n");
+                }
+                sb.append("\nUse retrieveCodeById(\"<id>\", depth=1) to fetch a specific method body.\n");
+            }
+            return logToolReturn(sb.toString());
+        } catch (Exception e) {
+            return logToolReturn("Error fetching class overview: " + e.getMessage());
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
     // Tool 8: One-hop neighbor expansion (for interactive graph walks)
     // ═══════════════════════════════════════════════════════════════
 

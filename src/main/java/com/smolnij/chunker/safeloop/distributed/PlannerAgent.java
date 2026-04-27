@@ -271,7 +271,7 @@ public class PlannerAgent {
             .temperature(config.getAnalyzerTemperature())
             .topP(config.getTopP())
             .maxTokens(config.getMaxTokens())
-            .timeout(Duration.ofMinutes(10))  // Planner may take longer due to multiple tool calls
+            .timeout(Duration.ofMinutes(25))  // Planner may take longer due to multiple tool calls
             .httpClientBuilder(lmStudioHttpClientBuilder())
             .logRequests(false)
             .logResponses(false);

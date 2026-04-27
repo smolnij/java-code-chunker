@@ -177,7 +177,6 @@ public class PatchApplier {
             return false;
         }
         existing.replace(replacement);
-        LexicalPreservingPrinter.setup(replacement);
         result.op(new ApplyResult.OpStatus("replace_method", describe(op), true));
         return true;
     }
@@ -205,7 +204,6 @@ public class PatchApplier {
             return false;
         }
         type.addMember(md);
-        LexicalPreservingPrinter.setup(md);
         result.op(new ApplyResult.OpStatus("add_method", describe(op), true));
         return true;
     }
@@ -389,21 +387,27 @@ public class PatchApplier {
         return any.orElse(null);
     }
 
+    /**
+     * Parse a single method declaration. Uses JavaParser's dedicated
+     * {@code parseMethodDeclaration} entry point rather than wrapping in a
+     * synthetic {@code class _S { … }} and cloning the result — the latter
+     * leaves the cloned subtree carrying token ranges relative to the
+     * wrapper source (e.g. "public" at line 1 col 12 because the wrapper
+     * prefix is 11 chars), which causes
+     * {@link LexicalPreservingPrinter#setup} to fail with
+     * "Token without node owning it" once the node is spliced into the
+     * destination CU. {@code setup} is called here on the standalone node
+     * so the splice site sees a properly initialised replacement.
+     */
     private MethodDeclaration parseSingleMethod(String code) {
         if (code == null || code.isBlank()) return null;
         String trimmed = code.trim();
         try {
-            ParseResult<CompilationUnit> wrapped = parser.parse("class _S { " + trimmed + " }");
-            if (wrapped.isSuccessful() && wrapped.getResult().isPresent()) {
-                List<MethodDeclaration> methods = wrapped.getResult().get().findAll(MethodDeclaration.class);
-                if (!methods.isEmpty()) return methods.get(0).clone();
-            }
-        } catch (Exception ignored) { }
-        try {
-            ParseResult<CompilationUnit> direct = parser.parse(trimmed);
+            ParseResult<MethodDeclaration> direct = parser.parseMethodDeclaration(trimmed);
             if (direct.isSuccessful() && direct.getResult().isPresent()) {
-                List<MethodDeclaration> methods = direct.getResult().get().findAll(MethodDeclaration.class);
-                if (!methods.isEmpty()) return methods.get(0).clone();
+                MethodDeclaration md = direct.getResult().get();
+                LexicalPreservingPrinter.setup(md);
+                return md;
             }
         } catch (Exception ignored) { }
         return null;

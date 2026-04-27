@@ -600,12 +600,35 @@ public class SafeRefactorLoop {
             // ══════════════════════════════════════════════════════
             ApplyTools agentApply = agent.getApplyTools();
             ApplyResult toolResult = agentApply == null ? null : agentApply.getLastResult();
-            if (toolResult != null) {
+            // A non-null toolResult only counts as "agent already applied" when its commit
+            // actually succeeded. A failed commitPlan (e.g. PatchApplier raised
+            // "Token without node owning it") would otherwise short-circuit the harness's
+            // own apply pass and leave zero files written while still reporting success —
+            // see worklog4 (RalphMain refactor). When the agent's last commit failed, fall
+            // through to the prose-extracted apply pass below if the loop is SAFE.
+            boolean agentAppliedOk = toolResult != null && toolResult.isSuccess();
+            if (agentAppliedOk) {
                 System.out.println("━━━ Phase 6: Apply ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                 System.out.println("  → Agent applied via CHANGES tools (analyzer-gated).");
                 System.out.println(toolResult.toReport().replace("\n", "\n  "));
                 System.out.println();
                 result.withApplyResult(toolResult.getChangedFiles(), toolResult.toReport());
+            } else if (toolResult != null && config.isApply() && isSafe) {
+                System.out.println("━━━ Phase 6: Apply ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                System.out.println("  → Agent's commitPlan FAILED (" + toolResult.getErrors().size()
+                    + " error(s)). Falling back to prose-extracted apply.");
+                System.out.println(toolResult.toReport().replace("\n", "\n  "));
+                System.out.println();
+                applyPatch(result, lastAgentResponse);
+            } else if (toolResult != null) {
+                // Agent attempted apply, it failed, and we either don't have isApply
+                // or verdict isn't SAFE — record the failure rather than swallowing it.
+                System.out.println("━━━ Phase 6: Apply ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                System.out.println("  → Agent's commitPlan FAILED, no fallback (apply="
+                    + config.isApply() + ", safe=" + isSafe + ").");
+                System.out.println(toolResult.toReport().replace("\n", "\n  "));
+                System.out.println();
+                result.withApplyResult(List.of(), toolResult.toReport());
             } else if (config.isApply() && isSafe) {
                 applyPatch(result, lastAgentResponse);
             } else if (config.isApply()) {

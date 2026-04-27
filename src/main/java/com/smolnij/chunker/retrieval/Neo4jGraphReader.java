@@ -100,7 +100,39 @@ public class Neo4jGraphReader implements AutoCloseable {
                 return id;
             }
 
-            // Try matching by methodName (e.g. "createUser")
+            // If the caller wrote something like "RalphLoop#main", honour the class qualifier:
+            // require both the class name (substring before #) and the method name to match.
+            // Don't fall through to the bare methodName branch — that would silently swap classes
+            // (e.g. RalphLoop#main → RalphMain.main).
+            int hashIdx = identifier.indexOf('#');
+            if (hashIdx > 0 && hashIdx < identifier.length() - 1) {
+                String classFragment = identifier.substring(0, hashIdx);
+                String methodFragment = identifier.substring(hashIdx + 1);
+                // Strip params from methodFragment if present, e.g. "main(String[])" -> "main"
+                int paren = methodFragment.indexOf('(');
+                String methodName = paren >= 0 ? methodFragment.substring(0, paren) : methodFragment;
+                Record qualified = session.executeRead(tx -> {
+                    Result r = tx.run(
+                        "MATCH (m:Method) " +
+                            "WHERE m.methodName = $name " +
+                            "  AND (m.fqClassName = $cls " +
+                            "       OR m.className = $cls " +
+                            "       OR m.fqClassName ENDS WITH ('.' + $cls)) " +
+                            "RETURN m.chunkId AS id LIMIT 1",
+                        Map.of("name", methodName, "cls", classFragment)
+                    );
+                    return r.hasNext() ? r.next() : null;
+                });
+                if (qualified != null) {
+                    String id = qualified.get("id").asString();
+                    System.out.println("    [resolver] '" + identifier + "' → '" + id + "' (qualified class#method match)");
+                    return id;
+                }
+                System.out.println("    [resolver] '" + identifier + "' unresolved");
+                return null;
+            }
+
+            // No '#' qualifier — try matching by methodName (e.g. "createUser").
             rec = session.executeRead(tx -> {
                 Result r = tx.run(
                     "MATCH (m:Method) WHERE m.methodName = $name RETURN m.chunkId AS id LIMIT 1",
@@ -114,13 +146,15 @@ public class Neo4jGraphReader implements AutoCloseable {
                 return id;
             }
 
-            // Try contains match on chunkId (e.g. "UserService.createUser" matches "com.example.UserService#createUser(...)")
-            // Also count ambiguity so callers can see how fuzzy the hit was.
+            // Boundary-anchored CONTAINS: only match the class-name segment of chunkIds,
+            // i.e. require the input to be followed by '#' (a class boundary). This prevents
+            // a substring like "Ralph" from hitting unrelated methods like RalphMain.run.
+            String boundaryFragment = identifier + "#";
             Record containsRec = session.executeRead(tx -> {
                 Result r = tx.run(
                     "MATCH (m:Method) WHERE m.chunkId CONTAINS $fragment " +
-                        "RETURN m.chunkId AS id, count(*) AS total LIMIT 1",
-                    Map.of("fragment", identifier)
+                        "RETURN m.chunkId AS id LIMIT 1",
+                    Map.of("fragment", boundaryFragment)
                 );
                 return r.hasNext() ? r.next() : null;
             });
@@ -128,19 +162,244 @@ public class Neo4jGraphReader implements AutoCloseable {
                 long total = session.executeRead(tx -> {
                     Result r = tx.run(
                         "MATCH (m:Method) WHERE m.chunkId CONTAINS $fragment RETURN count(m) AS c",
-                        Map.of("fragment", identifier)
+                        Map.of("fragment", boundaryFragment)
                     );
                     return r.hasNext() ? r.next().get("c").asLong() : 1L;
                 });
                 String id = containsRec.get("id").asString();
                 System.out.println("    [resolver] '" + identifier + "' → '" + id
-                        + "' (CONTAINS fallback, " + total + " candidate" + (total == 1 ? "" : "s") + ")");
+                        + "' (CONTAINS fallback @class boundary, " + total + " candidate" + (total == 1 ? "" : "s") + ")");
                 return id;
             }
 
             System.out.println("    [resolver] '" + identifier + "' unresolved");
             return null;
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Class-level lookup (for getClassOverview tool)
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Resolve a class identifier (FQN, simple name, or file path) to a Class
+     * node's fqName. Tries, in order:
+     * <ol>
+     *   <li>exact :Class.fqName</li>
+     *   <li>exact :Class.simpleName</li>
+     *   <li>file path ending with the input (e.g. "RalphLoop.java")</li>
+     *   <li>:Class.fqName ENDS WITH ('.' + input) — handles partial qualifiers</li>
+     * </ol>
+     * Logs the resolution branch for diagnostics. Returns {@code null} if no class
+     * (or interface) matches.
+     */
+    public String findClass(String identifier) {
+        if (identifier == null || identifier.isBlank()) return null;
+        String trimmed = identifier.trim();
+        try (Session session = driver.session()) {
+            // 1. exact fqName on Class or Interface
+            Record rec = session.executeRead(tx -> {
+                Result r = tx.run(
+                    "MATCH (c) WHERE (c:Class OR c:Interface) AND c.fqName = $id " +
+                        "RETURN c.fqName AS id LIMIT 1",
+                    Map.of("id", trimmed)
+                );
+                return r.hasNext() ? r.next() : null;
+            });
+            if (rec != null) {
+                String id = rec.get("id").asString();
+                System.out.println("    [class-resolver] '" + identifier + "' → '" + id + "' (exact fqName)");
+                return id;
+            }
+
+            // 2. exact simpleName
+            rec = session.executeRead(tx -> {
+                Result r = tx.run(
+                    "MATCH (c) WHERE (c:Class OR c:Interface) AND c.simpleName = $name " +
+                        "RETURN c.fqName AS id, count(*) AS total LIMIT 1",
+                    Map.of("name", trimmed)
+                );
+                return r.hasNext() ? r.next() : null;
+            });
+            if (rec != null) {
+                long total = session.executeRead(tx -> {
+                    Result r = tx.run(
+                        "MATCH (c) WHERE (c:Class OR c:Interface) AND c.simpleName = $name RETURN count(c) AS c",
+                        Map.of("name", trimmed)
+                    );
+                    return r.hasNext() ? r.next().get("c").asLong() : 1L;
+                });
+                String id = rec.get("id").asString();
+                System.out.println("    [class-resolver] '" + identifier + "' → '" + id
+                        + "' (simpleName match, " + total + " candidate" + (total == 1 ? "" : "s") + ")");
+                return id;
+            }
+
+            // 3. filePath ENDS WITH input (e.g. "RalphLoop.java" or "ralph/RalphLoop.java")
+            if (trimmed.endsWith(".java")) {
+                rec = session.executeRead(tx -> {
+                    Result r = tx.run(
+                        "MATCH (c) WHERE (c:Class OR c:Interface) AND c.filePath ENDS WITH $path " +
+                            "RETURN c.fqName AS id LIMIT 1",
+                        Map.of("path", trimmed)
+                    );
+                    return r.hasNext() ? r.next() : null;
+                });
+                if (rec != null) {
+                    String id = rec.get("id").asString();
+                    System.out.println("    [class-resolver] '" + identifier + "' → '" + id + "' (filePath ENDS WITH match)");
+                    return id;
+                }
+            }
+
+            // 4. fqName ends with '.<input>' — handles partial package qualifiers
+            String suffix = "." + trimmed;
+            rec = session.executeRead(tx -> {
+                Result r = tx.run(
+                    "MATCH (c) WHERE (c:Class OR c:Interface) AND c.fqName ENDS WITH $suffix " +
+                        "RETURN c.fqName AS id LIMIT 1",
+                    Map.of("suffix", suffix)
+                );
+                return r.hasNext() ? r.next() : null;
+            });
+            if (rec != null) {
+                String id = rec.get("id").asString();
+                System.out.println("    [class-resolver] '" + identifier + "' → '" + id + "' (fqName ENDS WITH match)");
+                return id;
+            }
+
+            System.out.println("    [class-resolver] '" + identifier + "' unresolved");
+            return null;
+        }
+    }
+
+    /** Holder for class-level metadata returned by {@link #getClassOverview(String)}. */
+    public static class ClassOverview {
+        public String fqName;
+        public String simpleName;
+        public String signature;
+        public String filePath;
+        public String packageName;
+        public String kind; // "Class" or "Interface"
+        public List<String> annotations = new ArrayList<>();
+        public List<String> extendedTypes = new ArrayList<>();
+        public List<String> implementedTypes = new ArrayList<>();
+        public List<String> imports = new ArrayList<>();
+        public List<String> fieldDeclarations = new ArrayList<>();
+        /** Method/constructor signatures (one entry per indexed method, deduped across parts). */
+        public List<MethodSummary> methods = new ArrayList<>();
+
+        public static class MethodSummary {
+            public String chunkId;
+            public String methodName;
+            public String signature;
+            public int totalParts;
+            public MethodSummary(String chunkId, String methodName, String signature, int totalParts) {
+                this.chunkId = chunkId;
+                this.methodName = methodName;
+                this.signature = signature;
+                this.totalParts = totalParts;
+            }
+        }
+    }
+
+    /**
+     * Fetch a complete class-level overview: signature, fields, imports, and the
+     * full list of method (and constructor, if indexed) signatures. Method bodies
+     * are NOT included — this is meant to give a class map cheaply.
+     *
+     * <p>Imports are sourced from any one method node in the class (they're stored
+     * per-method but identical within a file).
+     *
+     * @return populated overview or {@code null} if the class is unknown
+     */
+    public ClassOverview getClassOverview(String fqName) {
+        if (fqName == null || fqName.isBlank()) return null;
+        try (Session session = driver.session()) {
+            return session.executeRead(tx -> {
+                // Class header
+                Result classResult = tx.run(
+                    "MATCH (c) WHERE (c:Class OR c:Interface) AND c.fqName = $id " +
+                        "RETURN labels(c) AS labels, c.fqName AS fqName, c.simpleName AS simpleName, " +
+                        "       c.signature AS signature, c.filePath AS filePath, " +
+                        "       c.packageName AS packageName, c.annotations AS annotations, " +
+                        "       c.extendedTypes AS extendedTypes, c.implementedTypes AS implementedTypes",
+                    Map.of("id", fqName)
+                );
+                if (!classResult.hasNext()) return null;
+                Record cr = classResult.next();
+
+                ClassOverview overview = new ClassOverview();
+                overview.fqName = cr.get("fqName").asString("");
+                overview.simpleName = cr.get("simpleName").asString("");
+                overview.signature = cr.get("signature").asString("");
+                overview.filePath = cr.get("filePath").asString("");
+                overview.packageName = cr.get("packageName").asString("");
+                List<String> labels = cr.get("labels").asList(Value::asString);
+                overview.kind = labels.contains("Interface") ? "Interface" : "Class";
+                overview.annotations = nonNullStringList(cr.get("annotations"));
+                overview.extendedTypes = nonNullStringList(cr.get("extendedTypes"));
+                overview.implementedTypes = nonNullStringList(cr.get("implementedTypes"));
+
+                // Fields via HAS_FIELD
+                Result fieldResult = tx.run(
+                    "MATCH (c {fqName: $id})-[:HAS_FIELD]->(f:Field) " +
+                        "RETURN f.declaration AS decl ORDER BY f.name",
+                    Map.of("id", fqName)
+                );
+                while (fieldResult.hasNext()) {
+                    String decl = fieldResult.next().get("decl").asString("");
+                    if (!decl.isEmpty()) overview.fieldDeclarations.add(decl);
+                }
+
+                // Methods via BELONGS_TO. Dedupe across parts (chunkId may end with #partN).
+                // Pick the part-1 (or only) chunk for the canonical signature.
+                Result methodResult = tx.run(
+                    "MATCH (m:Method)-[:BELONGS_TO]->(c {fqName: $id}) " +
+                        "RETURN m.chunkId AS chunkId, m.methodName AS methodName, " +
+                        "       m.methodSignature AS signature, m.partIndex AS partIndex, " +
+                        "       m.totalParts AS totalParts " +
+                        "ORDER BY m.methodName, m.partIndex",
+                    Map.of("id", fqName)
+                );
+                Map<String, ClassOverview.MethodSummary> byBaseId = new LinkedHashMap<>();
+                while (methodResult.hasNext()) {
+                    Record mr = methodResult.next();
+                    String chunkId = mr.get("chunkId").asString("");
+                    String name = mr.get("methodName").asString("");
+                    String sig = mr.get("signature").asString("");
+                    int partIndex = mr.get("partIndex").asInt(0);
+                    int totalParts = mr.get("totalParts").asInt(1);
+                    // Strip trailing #partN to get the base method id
+                    String baseId = chunkId.replaceFirst("#part\\d+$", "");
+                    ClassOverview.MethodSummary existing = byBaseId.get(baseId);
+                    if (existing == null || partIndex < existing.totalParts /* prefer earlier part */) {
+                        if (existing == null) {
+                            byBaseId.put(baseId, new ClassOverview.MethodSummary(baseId, name, sig, totalParts));
+                        }
+                    }
+                }
+                overview.methods.addAll(byBaseId.values());
+
+                // Imports — pulled from any one method node in this class (they're identical per file)
+                Result importsResult = tx.run(
+                    "MATCH (m:Method)-[:BELONGS_TO]->(c {fqName: $id}) " +
+                        "WHERE m.imports IS NOT NULL " +
+                        "RETURN m.imports AS imports LIMIT 1",
+                    Map.of("id", fqName)
+                );
+                if (importsResult.hasNext()) {
+                    overview.imports = nonNullStringList(importsResult.next().get("imports"));
+                }
+
+                return overview;
+            });
+        }
+    }
+
+    private static List<String> nonNullStringList(Value v) {
+        if (v == null || v.isNull()) return new ArrayList<>();
+        return new ArrayList<>(v.asList(Value::asString));
     }
 
     /**
