@@ -38,6 +38,20 @@ public class ApplyTools {
     /** Per-instance counter so apply-tool calls are visible in the worklog_eval trace. */
     private int applyCallCount = 0;
 
+    /**
+     * Counter of ops successfully committed since the last
+     * {@link #resetIterationStats()} call. Used by the safeloop quick-analyzer
+     * to refuse a SAFE verdict on a no-op iteration that should have produced edits.
+     */
+    private int opsCommittedThisIteration = 0;
+
+    /**
+     * Tracks the number of {@code commitPlan} calls in the current iteration,
+     * regardless of whether they staged anything. A non-zero call count with
+     * zero committed ops indicates the agent invoked commit on an empty draft.
+     */
+    private int commitAttemptsThisIteration = 0;
+
     private void traceCall(String toolName, String args) {
         applyCallCount++;
         System.out.println("  🔨 Apply tool #" + applyCallCount + ": " + toolName + "(" + args + ")");
@@ -50,6 +64,8 @@ public class ApplyTools {
             status = "[empty]";
         } else if (result.startsWith("UNSAFE")) {
             status = "[unsafe]";
+        } else if (result.startsWith("commitPlan: no staged edits")) {
+            status = "[noop]";
         } else if (result.contains("✗") || result.contains("failed")) {
             status = "[failed]";
             System.out.println(result);
@@ -93,6 +109,26 @@ public class ApplyTools {
 
     public List<EditOp> getDraftOps() {
         return List.copyOf(draftOps);
+    }
+
+    /**
+     * Reset per-iteration counters. Called by {@code SafeRefactorLoop} at the start
+     * of each iteration so {@link #getOpsCommittedThisIteration()} reflects only
+     * what happened during that iteration's tool-calling phase.
+     */
+    public void resetIterationStats() {
+        opsCommittedThisIteration = 0;
+        commitAttemptsThisIteration = 0;
+    }
+
+    /** Number of ops successfully committed since the last {@link #resetIterationStats()}. */
+    public int getOpsCommittedThisIteration() {
+        return opsCommittedThisIteration;
+    }
+
+    /** Number of {@code commitPlan} calls (any outcome) since the last {@link #resetIterationStats()}. */
+    public int getCommitAttemptsThisIteration() {
+        return commitAttemptsThisIteration;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -205,10 +241,12 @@ public class ApplyTools {
         """)
     public String commitPlan(@P("One-paragraph rationale for the change set") String rationale) {
         traceCall("commitPlan", draftOps.size() + " staged op(s)");
+        commitAttemptsThisIteration++;
         if (draftOps.isEmpty()) {
             return traceReturn("commitPlan: no staged edits to apply.");
         }
 
+        int opsBeingCommitted = draftOps.size();
         PatchPlan plan = new PatchPlan(
             List.copyOf(draftOps),
             rationale == null ? "" : rationale,
@@ -223,6 +261,9 @@ public class ApplyTools {
         PatchApplier applier = new PatchApplier(repoRoot, graphReader, dryRun, backup);
         lastResult = applier.apply(plan);
         draftOps.clear();
+        if (lastResult.isSuccess()) {
+            opsCommittedThisIteration += opsBeingCommitted;
+        }
 
         // Refresh Neo4j so subsequent retrievals see the just-applied code.
         // Skipped on dry-run (no files were actually written) and on apply failure.

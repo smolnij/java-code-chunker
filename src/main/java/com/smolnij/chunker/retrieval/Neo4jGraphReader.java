@@ -84,7 +84,26 @@ public class Neo4jGraphReader implements AutoCloseable {
      *
      * @return the chunkId if found, or {@code null}
      */
-    public String findMethodExact(String identifier) {
+    public String findMethodExact(String rawIdentifier) {
+        // Normalize prose-form 'Class.method' (or 'pkg.Class.method') into the canonical
+        // 'Class#method' form. Users naturally write Java identifiers with '.' separators
+        // in queries; without this rewrite the resolver falls through to CONTAINS or
+        // unresolved. We only rewrite when the segment after the last '.' looks like a
+        // method (starts with lowercase) — leaves 'pkg.Class' alone.
+        final String identifier;
+        if (rawIdentifier != null && rawIdentifier.indexOf('#') < 0 && rawIdentifier.indexOf('.') > 0) {
+            int lastDot = rawIdentifier.lastIndexOf('.');
+            String tail = rawIdentifier.substring(lastDot + 1);
+            if (!tail.isEmpty() && Character.isLowerCase(tail.charAt(0))) {
+                String rewritten = rawIdentifier.substring(0, lastDot) + "#" + tail;
+                System.out.println("    [resolver] normalized '" + rawIdentifier + "' → '" + rewritten + "'");
+                identifier = rewritten;
+            } else {
+                identifier = rawIdentifier;
+            }
+        } else {
+            identifier = rawIdentifier;
+        }
         try (Session session = driver.session()) {
             // Try exact chunkId match first
             Record rec = session.executeRead(tx -> {
@@ -149,11 +168,21 @@ public class Neo4jGraphReader implements AutoCloseable {
             // Boundary-anchored CONTAINS: only match the class-name segment of chunkIds,
             // i.e. require the input to be followed by '#' (a class boundary). This prevents
             // a substring like "Ralph" from hitting unrelated methods like RalphMain.run.
+            //
+            // When multiple methods inside the class match, pick the centroid:
+            //   - deprioritize <init>/<clinit> (rarely what the user means by naming the class alone)
+            //   - prefer the method with the highest fan-in (most callers) — the "main entry" of the class
+            //   - tie-break on chunkId for determinism
             String boundaryFragment = identifier + "#";
             Record containsRec = session.executeRead(tx -> {
                 Result r = tx.run(
                     "MATCH (m:Method) WHERE m.chunkId CONTAINS $fragment " +
-                        "RETURN m.chunkId AS id LIMIT 1",
+                        "OPTIONAL MATCH (m)<-[:CALLS]-(caller:Method) " +
+                        "WITH m, count(DISTINCT caller) AS fanIn, " +
+                        "     CASE WHEN m.methodName = '<init>' OR m.methodName = '<clinit>' THEN 0 ELSE 1 END AS isMethod " +
+                        "RETURN m.chunkId AS id, fanIn, isMethod " +
+                        "ORDER BY isMethod DESC, fanIn DESC, m.chunkId " +
+                        "LIMIT 1",
                     Map.of("fragment", boundaryFragment)
                 );
                 return r.hasNext() ? r.next() : null;
@@ -167,8 +196,10 @@ public class Neo4jGraphReader implements AutoCloseable {
                     return r.hasNext() ? r.next().get("c").asLong() : 1L;
                 });
                 String id = containsRec.get("id").asString();
+                long fanIn = containsRec.get("fanIn").asLong();
                 System.out.println("    [resolver] '" + identifier + "' → '" + id
-                        + "' (CONTAINS fallback @class boundary, " + total + " candidate" + (total == 1 ? "" : "s") + ")");
+                        + "' (CONTAINS fallback @class boundary, " + total + " candidate" + (total == 1 ? "" : "s")
+                        + ", picked highest fan-in=" + fanIn + ")");
                 return id;
             }
 

@@ -123,6 +123,11 @@ public class SafeRefactorLoop {
         4. Unhandled side effects
         5. Behavioral changes that weren't requested
         6. Error handling gaps
+        7. TASK COMPLETION: when the user request describes a code change, the iteration
+           must actually have committed edits. If STAGED_OPS_COMMITTED_THIS_ITERATION is 0
+           (or missing) yet the request asks for an extraction, rename, refactor, etc.,
+           return verdict "UNSAFE" with a HIGH-severity risk
+           "no edit was applied; agent declared the task complete without verification".
 
         Reply ONLY with a single JSON object matching this shape (no prose outside the JSON,
         no markdown fences):
@@ -280,6 +285,8 @@ public class SafeRefactorLoop {
                 System.out.println("━━━ " + iterLabel + ": Phase 3 — Refactoring ━━━━━━━━━━━");
 
                 agentTools.resetToolCallCount();
+                ApplyTools iterApply = agent.getApplyTools();
+                if (iterApply != null) iterApply.resetIterationStats();
 
                 if (iteration == 0) {
                     // First iteration: send the original query + pre-fetched context
@@ -353,7 +360,8 @@ public class SafeRefactorLoop {
 
                                 // Immediately call the analyzer with the hydrated missing-context (quick-check)
                                 try {
-                                    String quickPrompt = buildQuickAnalyzerPrompt(userQuery, lastAgentResponse, iteration, "", deterministicMissing, newContext);
+                                    String taskCompletion = buildTaskCompletionStats(agent.getApplyTools());
+                                    String quickPrompt = buildQuickAnalyzerPrompt(userQuery, lastAgentResponse, iteration, "", deterministicMissing, newContext, taskCompletion);
                                     System.out.println("  ┌─ Quick Analyzer (from self-review MISSING) ────────");
                                     StructuredOutputSpec quickSpec = analyzerSpec(config.getStructuredOutput());
                                     String quickResp = quickSpec != null
@@ -502,8 +510,9 @@ public class SafeRefactorLoop {
                 lastCrossDiff = crossDiff;
                 lastAstSafetyScore = astSafetyScore;
 
-                // Phase 4b: LLM analyzer evaluation (with AST diff injected)
-                String analyzerPrompt = buildAnalyzerPrompt(userQuery, lastAgentResponse, iteration, astDiffReport);
+                // Phase 4b: LLM analyzer evaluation (with AST diff + commit stats injected)
+                String taskCompletionFull = buildTaskCompletionStats(agent.getApplyTools());
+                String analyzerPrompt = buildAnalyzerPrompt(userQuery, lastAgentResponse, iteration, astDiffReport, taskCompletionFull);
                 System.out.println("  ┌─ Analyzer ─────────────────────────────────────");
                 StructuredOutputSpec analyzerSpec = analyzerSpec(config.getStructuredOutput());
                 String analyzerResponse = analyzerSpec != null
@@ -690,7 +699,8 @@ public class SafeRefactorLoop {
      * @param astDiffReport AST diff analysis report (empty string if not available)
      */
     private String buildAnalyzerPrompt(String originalQuery, String agentResponse,
-                                       int iteration, String astDiffReport) {
+                                       int iteration, String astDiffReport,
+                                       String taskCompletion) {
         StringBuilder sb = new StringBuilder();
 
         sb.append("TASK: Evaluate the safety of this proposed refactoring.\n\n");
@@ -700,6 +710,10 @@ public class SafeRefactorLoop {
 
         sb.append("PROPOSED REFACTORING (iteration ").append(iteration + 1).append("):\n");
         sb.append(agentResponse).append("\n\n");
+
+        if (taskCompletion != null && !taskCompletion.isEmpty()) {
+            sb.append(taskCompletion).append("\n");
+        }
 
         sb.append("GRAPH COVERAGE:\n");
         sb.append("Total methods retrieved: ").append(loopTools.getTotalNodesRetrieved()).append("\n");
@@ -844,7 +858,8 @@ public class SafeRefactorLoop {
      */
     private String buildQuickAnalyzerPrompt(String originalQuery, String agentResponse,
                                            int iteration, String astDiffReport,
-                                           List<String> missingIds, String hydratedContext) {
+                                           List<String> missingIds, String hydratedContext,
+                                           String taskCompletion) {
         StringBuilder sb = new StringBuilder();
         sb.append("TASK: Quickly evaluate the safety of this proposed refactoring given the additional missing context requested by a low-temperature self-reviewer.\n\n");
         sb.append("ORIGINAL REQUEST:\n");
@@ -852,6 +867,10 @@ public class SafeRefactorLoop {
 
         sb.append("PROPOSED REFACTORING (iteration ").append(iteration + 1).append("):\n");
         sb.append(agentResponse).append("\n\n");
+
+        if (taskCompletion != null && !taskCompletion.isEmpty()) {
+            sb.append(taskCompletion).append("\n");
+        }
 
         sb.append("MISSING: the reviewer requested the following identifiers to be inspected (deterministic order):\n");
         for (String id : missingIds) {
@@ -863,6 +882,26 @@ public class SafeRefactorLoop {
         sb.append(hydratedContext).append("\n\n");
 
         sb.append("Note: This quick check should be conservative. If you need more context, list items in NEEDS.\n");
+        return sb.toString();
+    }
+
+    /**
+     * Build the TASK COMPLETION block that tells the analyzer how many ops the
+     * agent actually committed in this iteration. Empty when the agent has no
+     * ApplyTools wired in (some test harnesses), which the analyzer treats as
+     * "unknown" rather than zero.
+     */
+    private static String buildTaskCompletionStats(ApplyTools applyTools) {
+        if (applyTools == null) return "";
+        int committed = applyTools.getOpsCommittedThisIteration();
+        int attempts = applyTools.getCommitAttemptsThisIteration();
+        StringBuilder sb = new StringBuilder();
+        sb.append("TASK COMPLETION:\n");
+        sb.append("STAGED_OPS_COMMITTED_THIS_ITERATION: ").append(committed).append("\n");
+        sb.append("COMMIT_ATTEMPTS_THIS_ITERATION: ").append(attempts).append("\n");
+        if (committed == 0) {
+            sb.append("NOTE: No edits were applied this iteration. If the original request describes a code change, treat this as UNSAFE per system-prompt rule 7.\n");
+        }
         return sb.toString();
     }
 

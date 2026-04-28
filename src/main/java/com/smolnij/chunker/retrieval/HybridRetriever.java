@@ -190,10 +190,13 @@ public class HybridRetriever {
         List<String> identifiers = new ArrayList<>();
         String[] tokens = query.split("[\\s,;:!?()\"']+");
 
-        for (String token : tokens) {
+        for (String raw : tokens) {
+            // Strip trailing sentence punctuation (e.g. "splitIfNeeded." → "splitIfNeeded").
+            String token = raw.replaceAll("[.,;:!?]+$", "");
             // Skip common English words
             if (token.length() <= 2) continue;
             if (isCommonWord(token)) continue;
+            if (isImperativeVerb(token)) continue;
 
             // Check if it looks like an identifier (contains uppercase in middle, or has dots/hashes)
             if (token.contains(".") || token.contains("#") ||
@@ -214,6 +217,23 @@ public class HybridRetriever {
             "fix", "bug", "error", "issue", "implement", "create", "delete"
         );
         return common.contains(word.toLowerCase());
+    }
+
+    /**
+     * Bare English imperatives that are camelCase-shaped enough to slip past
+     * {@link #isCommonWord} but never refer to a Java identifier when written
+     * stand-alone (i.e. not joined with a dot or hash). Filtering these stops
+     * the resolver from logging noise like {@code [resolver] 'Rename' unresolved}.
+     */
+    private boolean isImperativeVerb(String word) {
+        if (word.contains(".") || word.contains("#")) return false;
+        if (!word.matches("[A-Za-z]+")) return false;
+        Set<String> verbs = Set.of(
+            "Rename", "Extract", "Refactor", "Inline", "Move", "Add", "Remove",
+            "Delete", "Update", "Create", "Replace", "Convert", "Change", "Fix",
+            "Migrate", "Split", "Merge", "Introduce", "Encapsulate"
+        );
+        return verbs.contains(word);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -265,7 +285,8 @@ public class HybridRetriever {
             candidates.putAll(graphReader.fetchMethodChunks(subgraph.keySet()));
         }
 
-        // Always supplement with vector search — captures semantically similar but structurally distant code
+        // Always supplement with vector search — captures semantically similar but structurally distant code.
+        // When we have no anchor at all, this is the *only* source of candidates, so failures here must be loud.
         if (queryEmbedding != null) {
             try {
                 List<String> vectorHits = graphReader.vectorSearch(queryEmbedding, config.getVectorSearchK());
@@ -273,11 +294,16 @@ public class HybridRetriever {
                 newIds.removeAll(candidates.keySet());
                 if (!newIds.isEmpty()) {
                     candidates.putAll(graphReader.fetchMethodChunks(newIds));
+                } else if (anchorId == null && vectorHits.isEmpty()) {
+                    System.err.println("WARN: vector-only fallback returned 0 hits for query='"
+                        + userQuery + "'. Index may be empty or embedding dim mismatched.");
                 }
             } catch (Exception e) {
-                e.printStackTrace();
-                System.err.println("WARN: Vector supplement failed: " + e.getMessage());
+                System.err.println("WARN: Vector supplement failed for query='" + userQuery
+                    + "': " + e.getClass().getSimpleName() + ": " + e.getMessage());
             }
+        } else if (anchorId == null) {
+            System.err.println("WARN: no anchor and no query embedding — retrieval will return 0 results.");
         }
 
         return candidates;
