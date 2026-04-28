@@ -438,6 +438,11 @@ public class LlmResponseParser {
                 case "create_file" -> new EditOp.CreateFile(
                         readStringField(o, "rel_path"),
                         readStringField(o, "content"));
+                case "add_maven_dependency" -> new EditOp.AddMavenDependency(
+                        readStringField(o, "group_id"),
+                        readStringField(o, "artifact_id"),
+                        readStringField(o, "version"),
+                        readStringField(o, "scope"));
                 default -> null;
             };
             if (op != null) ops.add(op);

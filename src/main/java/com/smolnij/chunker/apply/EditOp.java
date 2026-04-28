@@ -16,7 +16,8 @@ public sealed interface EditOp
                 EditOp.AddMethod,
                 EditOp.DeleteMethod,
                 EditOp.AddImport,
-                EditOp.CreateFile {
+                EditOp.CreateFile,
+                EditOp.AddMavenDependency {
 
     /**
      * Replace the body + signature of an existing method with {@code newCode}.
@@ -62,4 +63,23 @@ public sealed interface EditOp
      */
     record CreateFile(String relPath,
                       String content) implements EditOp { }
+
+    /**
+     * Add a Maven dependency to the project's {@code pom.xml}.
+     *
+     * <p>The applier inserts a properly indented {@code <dependency>} block
+     * just before the closing {@code </dependencies>} tag of the first
+     * {@code <dependencies>} section it finds. Idempotent: if a dependency
+     * with the same {@code groupId} + {@code artifactId} already exists,
+     * the op succeeds as a no-op.
+     *
+     * @param groupId     Maven groupId (required)
+     * @param artifactId  Maven artifactId (required)
+     * @param version     version string; may be empty when supplied by a BOM / dependencyManagement
+     * @param scope       Maven scope (compile, test, provided, ...); may be empty for default
+     */
+    record AddMavenDependency(String groupId,
+                              String artifactId,
+                              String version,
+                              String scope) implements EditOp { }
 }

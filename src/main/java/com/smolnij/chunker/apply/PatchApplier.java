@@ -13,7 +13,11 @@ import com.github.javaparser.printer.lexicalpreservation.LexicalPreservingPrinte
 import com.smolnij.chunker.model.CodeChunk;
 import com.smolnij.chunker.retrieval.Neo4jGraphReader;
 
+import javax.xml.parsers.DocumentBuilderFactory;
+import org.xml.sax.InputSource;
+
 import java.io.IOException;
+import java.io.StringReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -81,12 +85,15 @@ public class PatchApplier {
 
         // Stage all edits in memory, keyed by absolute path. The same file
         // may be touched by multiple ops; we thread a single CompilationUnit
-        // through all of them so rewrites compose.
+        // through all of them so rewrites compose. A parallel text-only map
+        // holds non-Java files (pom.xml etc.) edited by ops like
+        // {@link EditOp.AddMavenDependency}; these don't go through JavaParser.
         Map<Path, CompilationUnit> staged = new LinkedHashMap<>();
+        Map<Path, String> stagedText = new LinkedHashMap<>();
 
         for (EditOp op : plan.ops()) {
             try {
-                boolean ok = applyOp(op, staged, result);
+                boolean ok = applyOp(op, staged, stagedText, result);
                 if (!ok) {
                     return result.error("aborting — op failed, no files written").failure();
                 }
@@ -100,7 +107,7 @@ public class PatchApplier {
             }
         }
 
-        // ── Post-edit parse check: every staged file must still parse as Java ──
+        // ── Post-edit parse check: every staged Java file must still parse ──
         Map<Path, String> staged_text = new LinkedHashMap<>();
         for (Map.Entry<Path, CompilationUnit> e : staged.entrySet()) {
             String rendered = LexicalPreservingPrinter.print(e.getValue());
@@ -111,6 +118,23 @@ public class PatchApplier {
                     + ": " + reparse.getProblems());
                 return result.failure();
             }
+        }
+
+        // ── Post-edit XML well-formedness check for staged non-Java files ──
+        for (Map.Entry<Path, String> e : stagedText.entrySet()) {
+            String name = e.getKey().getFileName().toString().toLowerCase();
+            if (name.endsWith(".xml") || name.equals("pom.xml")) {
+                try {
+                    DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+                    dbf.setNamespaceAware(true);
+                    dbf.newDocumentBuilder().parse(new InputSource(new StringReader(e.getValue())));
+                } catch (Exception xmlErr) {
+                    result.error("post-edit XML parse failed for " + e.getKey()
+                        + ": " + xmlErr.getMessage());
+                    return result.failure();
+                }
+            }
+            staged_text.put(e.getKey(), e.getValue());
         }
 
         result.staged(staged_text);
@@ -144,12 +168,14 @@ public class PatchApplier {
 
     private boolean applyOp(EditOp op,
                             Map<Path, CompilationUnit> staged,
+                            Map<Path, String> stagedText,
                             ApplyResult.Builder result) throws IOException {
         if (op instanceof EditOp.ReplaceMethod r) return applyReplaceMethod(r, staged, result);
         if (op instanceof EditOp.AddMethod a) return applyAddMethod(a, staged, result);
         if (op instanceof EditOp.DeleteMethod d) return applyDeleteMethod(d, staged, result);
         if (op instanceof EditOp.AddImport i) return applyAddImport(i, staged, result);
         if (op instanceof EditOp.CreateFile c) return applyCreateFile(c, result);
+        if (op instanceof EditOp.AddMavenDependency m) return applyAddMavenDependency(m, stagedText, result);
         throw new IllegalStateException("unknown op type: " + op.getClass());
     }
 
@@ -293,6 +319,137 @@ public class PatchApplier {
     }
 
     // ═══════════════════════════════════════════════════════════════
+    // Maven dependency handler
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Insert a {@code <dependency>} block into the project's {@code pom.xml}.
+     *
+     * <p>v1 scope: only touches {@code repoRoot/pom.xml} (single-module).
+     * Idempotent — a matching groupId+artifactId existing dependency is a no-op.
+     * Fails with a clear error when the file or its {@code <dependencies>}
+     * section is missing; we don't auto-create the section in v1 so the LLM
+     * has a chance to fix its plan.
+     *
+     * <p>The implementation does targeted text insertion rather than DOM
+     * round-tripping so comments, ordering, and indentation are preserved
+     * exactly. Well-formedness is checked at commit time in {@link #apply}.
+     */
+    private boolean applyAddMavenDependency(EditOp.AddMavenDependency op,
+                                            Map<Path, String> stagedText,
+                                            ApplyResult.Builder result) throws IOException {
+        if (op.groupId() == null || op.groupId().isBlank()
+                || op.artifactId() == null || op.artifactId().isBlank()) {
+            result.op(new ApplyResult.OpStatus("add_maven_dependency", describe(op), false,
+                "groupId and artifactId are required"));
+            return false;
+        }
+
+        Path target = repoRoot.resolve("pom.xml").normalize();
+        if (!Files.exists(target)) {
+            result.op(new ApplyResult.OpStatus("add_maven_dependency", describe(op), false,
+                "pom.xml not found at " + target));
+            return false;
+        }
+
+        String current = stagedText.get(target);
+        if (current == null) current = Files.readString(target);
+
+        // Idempotency: skip if a <dependency> with this groupId+artifactId
+        // already exists. Cheap pattern match — the well-formedness check at
+        // commit time catches anything weirder.
+        if (hasExistingDependency(current, op.groupId(), op.artifactId())) {
+            result.op(new ApplyResult.OpStatus("add_maven_dependency", describe(op), true,
+                "already present"));
+            return true;
+        }
+
+        int closeIdx = current.lastIndexOf("</dependencies>");
+        if (closeIdx < 0) {
+            result.op(new ApplyResult.OpStatus("add_maven_dependency", describe(op), false,
+                "no <dependencies> section found in pom.xml — add one before staging dependency edits"));
+            return false;
+        }
+
+        String depIndent = inferDependencyIndent(current, closeIdx);
+        String childIndent = depIndent + "    ";
+        StringBuilder dep = new StringBuilder();
+        dep.append(depIndent).append("<dependency>\n");
+        dep.append(childIndent).append("<groupId>").append(op.groupId()).append("</groupId>\n");
+        dep.append(childIndent).append("<artifactId>").append(op.artifactId()).append("</artifactId>\n");
+        if (op.version() != null && !op.version().isBlank()) {
+            dep.append(childIndent).append("<version>").append(op.version()).append("</version>\n");
+        }
+        if (op.scope() != null && !op.scope().isBlank()) {
+            dep.append(childIndent).append("<scope>").append(op.scope()).append("</scope>\n");
+        }
+        dep.append(depIndent).append("</dependency>\n");
+
+        // Insert before </dependencies>, preserving the indentation in front
+        // of the closing tag (the leading whitespace on that line).
+        int lineStart = current.lastIndexOf('\n', closeIdx - 1) + 1;
+        String updated = current.substring(0, lineStart)
+                + dep.toString()
+                + current.substring(lineStart);
+
+        stagedText.put(target, updated);
+        result.op(new ApplyResult.OpStatus("add_maven_dependency", describe(op), true));
+        return true;
+    }
+
+    /**
+     * Detect whether a {@code <dependency>} entry with the given coordinates
+     * already exists. We pattern-match on text since this runs before the
+     * commit-time XML validation. Whitespace-tolerant within a block.
+     */
+    private static boolean hasExistingDependency(String pomText, String groupId, String artifactId) {
+        // Find all <dependency>...</dependency> blocks and check coords.
+        int from = 0;
+        while (true) {
+            int open = pomText.indexOf("<dependency>", from);
+            if (open < 0) return false;
+            int close = pomText.indexOf("</dependency>", open);
+            if (close < 0) return false;
+            String block = pomText.substring(open, close);
+            if (containsTagValue(block, "groupId", groupId)
+                    && containsTagValue(block, "artifactId", artifactId)) {
+                return true;
+            }
+            from = close + "</dependency>".length();
+        }
+    }
+
+    private static boolean containsTagValue(String block, String tag, String value) {
+        String open = "<" + tag + ">";
+        String close = "</" + tag + ">";
+        int o = block.indexOf(open);
+        if (o < 0) return false;
+        int c = block.indexOf(close, o);
+        if (c < 0) return false;
+        return block.substring(o + open.length(), c).trim().equals(value);
+    }
+
+    /**
+     * Infer the indentation used for {@code <dependency>} blocks by looking
+     * at the line before {@code </dependencies>} or at an existing nested
+     * {@code <dependency>}. Falls back to 8 spaces (the convention used in
+     * this project's own pom.xml).
+     */
+    private static String inferDependencyIndent(String pomText, int closeIdx) {
+        // Look backward for the most recent <dependency> opening tag and
+        // take whatever whitespace precedes it on its line.
+        int prevDep = pomText.lastIndexOf("<dependency>", closeIdx);
+        if (prevDep > 0) {
+            int lineStart = pomText.lastIndexOf('\n', prevDep - 1) + 1;
+            String prefix = pomText.substring(lineStart, prevDep);
+            if (prefix.chars().allMatch(Character::isWhitespace) && !prefix.isEmpty()) {
+                return prefix;
+            }
+        }
+        return "        ";
+    }
+
+    // ═══════════════════════════════════════════════════════════════
     // Resolution + AST helpers
     // ═══════════════════════════════════════════════════════════════
 
@@ -423,6 +580,7 @@ public class PatchApplier {
         if (op instanceof EditOp.DeleteMethod) return "delete_method";
         if (op instanceof EditOp.AddImport) return "add_import";
         if (op instanceof EditOp.CreateFile) return "create_file";
+        if (op instanceof EditOp.AddMavenDependency) return "add_maven_dependency";
         return "unknown";
     }
 
@@ -432,6 +590,11 @@ public class PatchApplier {
         if (op instanceof EditOp.DeleteMethod d) return d.fqClassName() + "#" + d.methodName() + " (delete)";
         if (op instanceof EditOp.AddImport i) return i.filePath() + " (+import " + i.importDecl() + ")";
         if (op instanceof EditOp.CreateFile c) return c.relPath() + " (new)";
+        if (op instanceof EditOp.AddMavenDependency m) {
+            String coord = m.groupId() + ":" + m.artifactId();
+            if (m.version() != null && !m.version().isBlank()) coord += ":" + m.version();
+            return "pom.xml (+dep " + coord + ")";
+        }
         return op.toString();
     }
 

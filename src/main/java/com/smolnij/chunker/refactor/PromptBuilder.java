@@ -185,13 +185,21 @@ public class PromptBuilder {
         sb.append("    {\"kind\": \"replace_method\", \"fq_class_name\": \"com.example.UserService\",\n");
         sb.append("     \"method_name\": \"createUser\", \"original_signature\": \"public User createUser(Request r)\",\n");
         sb.append("     \"new_code\": \"public User createUser(Request r) { ... }\",\n");
-        sb.append("     \"file_path\": \"\", \"import_decl\": \"\", \"rel_path\": \"\", \"content\": \"\"}\n");
+        sb.append("     \"file_path\": \"\", \"import_decl\": \"\", \"rel_path\": \"\", \"content\": \"\",\n");
+        sb.append("     \"group_id\": \"\", \"artifact_id\": \"\", \"version\": \"\", \"scope\": \"\"},\n");
+        sb.append("    {\"kind\": \"add_maven_dependency\", \"fq_class_name\": \"\", \"method_name\": \"\",\n");
+        sb.append("     \"original_signature\": \"\", \"new_code\": \"\", \"file_path\": \"\", \"import_decl\": \"\",\n");
+        sb.append("     \"rel_path\": \"\", \"content\": \"\",\n");
+        sb.append("     \"group_id\": \"com.fasterxml.jackson.core\", \"artifact_id\": \"jackson-databind\",\n");
+        sb.append("     \"version\": \"2.17.0\", \"scope\": \"\"}\n");
         sb.append("  ],\n");
         sb.append("  \"rationale\": \"one-paragraph explanation of the change set\"\n");
         sb.append("}\n");
         sb.append("Every op object MUST contain every field (kind, fq_class_name, method_name, original_signature, new_code, ");
-        sb.append("file_path, import_decl, rel_path, content). Unused fields MUST be the empty string \"\" — never omit them, never use null.\n");
-        sb.append("Valid kinds: replace_method, add_method, delete_method, add_import, create_file.\n");
+        sb.append("file_path, import_decl, rel_path, content, group_id, artifact_id, version, scope). ");
+        sb.append("Unused fields MUST be the empty string \"\" — never omit them, never use null.\n");
+        sb.append("Valid kinds: replace_method, add_method, delete_method, add_import, create_file, add_maven_dependency.\n");
+        sb.append("For add_maven_dependency: set group_id and artifact_id (required); leave version empty if a BOM/dependencyManagement supplies it; leave scope empty for default compile scope.\n");
         sb.append("Use [] if no edits are needed.\n");
 
         return sb.toString();
@@ -445,7 +453,7 @@ public class PromptBuilder {
             "properties", object(
                 "kind", enumSchema(
                     "replace_method", "add_method", "delete_method",
-                    "add_import", "create_file"),
+                    "add_import", "create_file", "add_maven_dependency"),
                 "fq_class_name", stringSchema(),
                 "method_name", stringSchema(),
                 "original_signature", stringSchema(),
@@ -453,11 +461,16 @@ public class PromptBuilder {
                 "file_path", stringSchema(),
                 "import_decl", stringSchema(),
                 "rel_path", stringSchema(),
-                "content", stringSchema()
+                "content", stringSchema(),
+                "group_id", stringSchema(),
+                "artifact_id", stringSchema(),
+                "version", stringSchema(),
+                "scope", stringSchema()
             ),
             "required", array("kind", "fq_class_name", "method_name",
                               "original_signature", "new_code",
-                              "file_path", "import_decl", "rel_path", "content")
+                              "file_path", "import_decl", "rel_path", "content",
+                              "group_id", "artifact_id", "version", "scope")
         );
         return object(
             "type", "object",

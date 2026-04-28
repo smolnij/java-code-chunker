@@ -1,5 +1,6 @@
 package com.smolnij.chunker.safeloop;
 
+import com.smolnij.chunker.apply.StagedPlanIndex;
 import com.smolnij.chunker.model.CodeChunk;
 import com.smolnij.chunker.refactor.RefactorTools;
 import com.smolnij.chunker.retrieval.HybridRetriever;
@@ -160,6 +161,27 @@ public class SafeLoopTools {
      * @return formatted context string for injection into agent memory
      */
     public String expandForAnalyzer(List<String> requestedIds) {
+        return expandForAnalyzer(requestedIds, null);
+    }
+
+    /**
+     * Expand the graph to retrieve specific methods requested by the analyzer,
+     * with a fallback to the agent's currently-staged patch plan for FQNs that
+     * don't exist in the indexed graph yet.
+     *
+     * <p>The Neo4j graph is built before the refactor runs, so any method the
+     * agent has just <em>introduced</em> (e.g. via {@code stageAddMethod} or
+     * {@code stageCreateFile}) is invisible to the analyzer. When the analyzer
+     * asks for those, this method consults {@code stagedIndex} and synthesizes
+     * a {@link CodeChunk} on the fly so the analyzer can see the proposed code
+     * and approve the patch.
+     *
+     * @param requestedIds method identifiers the analyzer says it needs
+     * @param stagedIndex  optional index over staged ops; may be {@code null}
+     *                     for callers that don't have one (legacy/distributed)
+     * @return formatted context string for injection into agent memory
+     */
+    public String expandForAnalyzer(List<String> requestedIds, StagedPlanIndex stagedIndex) {
         expansionCount++;
         lastExpansionChunks.clear();
         lastExpansionHadNewNodes = false;
@@ -167,12 +189,22 @@ public class SafeLoopTools {
         Set<String> newIds = new LinkedHashSet<>();
         List<String> unresolved = new ArrayList<>();
         List<String> alreadyPresent = new ArrayList<>();
+        Map<String, CodeChunk> stagedHits = new LinkedHashMap<>();
 
         for (String requestedId : requestedIds) {
-            // Try to resolve the method ID
+            // Try to resolve the method ID against the indexed graph first
             String resolved = resolveMethodId(requestedId);
             if (resolved == null) {
-                unresolved.add(requestedId);
+                // Fallback: maybe the analyzer is asking about a method the
+                // agent just staged (not yet in Neo4j)
+                CodeChunk synthetic = stagedIndex == null
+                        ? null
+                        : stagedIndex.resolveSynthetic(requestedId);
+                if (synthetic != null && !stagedHits.containsKey(synthetic.getChunkId())) {
+                    stagedHits.put(synthetic.getChunkId(), synthetic);
+                } else {
+                    unresolved.add(requestedId);
+                }
             } else if (retrievedNodeIds.contains(resolved)) {
                 alreadyPresent.add(requestedId + "→" + resolved);
             } else {
@@ -187,21 +219,38 @@ public class SafeLoopTools {
                 }
             }
 
-            // Cap total new IDs
-            if (newIds.size() >= config.getMaxChunks()) break;
+            // Cap total new IDs (graph + staged combined)
+            if (newIds.size() + stagedHits.size() >= config.getMaxChunks()) break;
         }
 
+        if (!stagedHits.isEmpty()) {
+            System.out.println("  [analyzer-expand] resolved from staged plan: " + stagedHits.keySet());
+        }
         if (!unresolved.isEmpty()) {
             System.out.println("  [analyzer-expand] unresolved (not in graph): " + unresolved);
         }
         if (!alreadyPresent.isEmpty()) {
             System.out.println("  [analyzer-expand] already in context (not counted as new): " + alreadyPresent);
         }
-        if (newIds.isEmpty() && unresolved.isEmpty() && alreadyPresent.isEmpty()) {
+        if (newIds.isEmpty() && stagedHits.isEmpty() && unresolved.isEmpty() && alreadyPresent.isEmpty()) {
             System.out.println("  [analyzer-expand] caller passed no IDs");
         }
 
-        return hydrateAndTrack(newIds, "Analyzer-requested expansion");
+        String graphContext = hydrateAndTrack(newIds, "Analyzer-requested expansion");
+        if (stagedHits.isEmpty()) {
+            return graphContext;
+        }
+
+        // Merge synthetic chunks into the formatted output and the
+        // last-expansion bookkeeping so the convergence check in
+        // SafeRefactorLoop sees these as "new nodes" and keeps looping.
+        lastExpansionChunks.putAll(stagedHits);
+        lastExpansionHadNewNodes = true;
+
+        String stagedContext = formatChunksForAgent(stagedHits,
+                "Newly Proposed (from staged plan, not yet committed)");
+        if (graphContext.isEmpty()) return stagedContext;
+        return graphContext + "\n" + stagedContext;
     }
 
     // ═══════════════════════════════════════════════════════════════

@@ -35,7 +35,7 @@ public class ApplyTools {
     /** Last ApplyResult; exposed so the loop can read applied files after the agent returns. */
     private ApplyResult lastResult;
 
-    /** Per-instance counter so apply-tool calls are visible in the worklog trace. */
+    /** Per-instance counter so apply-tool calls are visible in the worklog_eval trace. */
     private int applyCallCount = 0;
 
     private void traceCall(String toolName, String args) {
@@ -164,6 +164,30 @@ public class ApplyTools {
         traceCall("stageCreateFile", relPath + " (" + (content == null ? 0 : content.length()) + " chars)");
         draftOps.add(new EditOp.CreateFile(relPath, content));
         return traceReturn("staged create_file " + relPath
+            + " (ops so far: " + draftOps.size() + ")");
+    }
+
+    @Tool("""
+        Stage a Maven dependency addition to the project's pom.xml.
+        Pass groupId and artifactId (both required). Leave version empty when a BOM or
+        dependencyManagement section supplies the version; otherwise pass an explicit version.
+        Leave scope empty for the default compile scope, or pass test/provided/runtime as needed.
+        Idempotent: if a dependency with the same groupId+artifactId already exists the op is a no-op.
+        Use this when introducing a new library import (e.g. Jackson, Guava) — staging the dependency
+        and then add_import / replace_method commits the change atomically.
+        """)
+    public String stageAddMavenDependency(@P("Maven groupId, e.g. com.fasterxml.jackson.core") String groupId,
+                                          @P("Maven artifactId, e.g. jackson-databind") String artifactId,
+                                          @P("Version string; pass empty when supplied by a BOM") String version,
+                                          @P("Maven scope; pass empty for default compile scope") String scope) {
+        traceCall("stageAddMavenDependency", groupId + ":" + artifactId
+            + (version == null || version.isBlank() ? "" : ":" + version));
+        draftOps.add(new EditOp.AddMavenDependency(
+            groupId == null ? "" : groupId,
+            artifactId == null ? "" : artifactId,
+            version == null ? "" : version,
+            scope == null ? "" : scope));
+        return traceReturn("staged add_maven_dependency " + groupId + ":" + artifactId
             + " (ops so far: " + draftOps.size() + ")");
     }
 

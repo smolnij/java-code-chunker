@@ -9,6 +9,7 @@ import com.smolnij.chunker.apply.ApplyTools;
 import com.smolnij.chunker.apply.GraphReindexer;
 import com.smolnij.chunker.apply.PatchApplier;
 import com.smolnij.chunker.apply.PatchPlan;
+import com.smolnij.chunker.apply.StagedPlanIndex;
 import com.smolnij.chunker.refactor.ChatService;
 import com.smolnij.chunker.refactor.LlmResponseParser;
 import com.smolnij.chunker.refactor.PromptBuilder;
@@ -563,7 +564,13 @@ public class SafeRefactorLoop {
                 // Check: More context needed?
                 if (verdict.needsMoreContext()) {
                     System.out.println("  → Analyzer needs more context: " + verdict.getMissingContext());
-                    String newContext = loopTools.expandForAnalyzer(verdict.getMissingContext());
+                    // Build a snapshot of staged ops so the analyzer can see
+                    // methods the agent just introduced (not yet in Neo4j).
+                    ApplyTools applyTools = agent.getApplyTools();
+                    StagedPlanIndex stagedIndex = applyTools == null
+                            ? null
+                            : new StagedPlanIndex(applyTools.getDraftOps());
+                    String newContext = loopTools.expandForAnalyzer(verdict.getMissingContext(), stagedIndex);
 
                     if (newContext.isEmpty() || !loopTools.hasNewNodes()) {
                         if (config.isStopOnNoNewNodes()) {

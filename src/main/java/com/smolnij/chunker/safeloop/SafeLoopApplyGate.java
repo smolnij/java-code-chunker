@@ -106,6 +106,12 @@ final class SafeLoopApplyGate implements SafetyGate {
             } else if (op instanceof EditOp.CreateFile cf) {
                 sb.append("### create_file ").append(cf.relPath()).append('\n')
                     .append("```java\n").append(cf.content()).append("\n```\n\n");
+            } else if (op instanceof EditOp.AddMavenDependency m) {
+                sb.append("### add_maven_dependency ")
+                    .append(m.groupId()).append(':').append(m.artifactId());
+                if (m.version() != null && !m.version().isBlank()) sb.append(':').append(m.version());
+                if (m.scope() != null && !m.scope().isBlank()) sb.append(" (scope=").append(m.scope()).append(')');
+                sb.append("\n\n");
             }
         }
         return sb.toString();
