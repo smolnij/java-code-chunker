@@ -85,16 +85,81 @@ public class PatchApplier {
 
     public ApplyResult apply(PatchPlan plan) {
         ApplyResult.Builder result = new ApplyResult.Builder().dryRun(dryRun);
+        Map<Path, String> overlay = stageInMemory(plan, result);
+        if (overlay == null) {
+            return result.failure();
+        }
 
+        // ── Commit ──
+        List<Path> written = new ArrayList<>();
+        if (!dryRun) {
+            for (Map.Entry<Path, String> e : overlay.entrySet()) {
+                try {
+                    Path target = e.getKey();
+                    boolean targetExists = Files.exists(target);
+                    if (backup && targetExists) {
+                        Path bak = target.resolveSibling(target.getFileName() + ".bak");
+                        Files.copy(target, bak, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                    if (!targetExists && target.getParent() != null) {
+                        Files.createDirectories(target.getParent());
+                    }
+                    Files.writeString(target, e.getValue());
+                    written.add(target);
+                } catch (IOException ioe) {
+                    result.error("write failed for " + e.getKey() + ": " + ioe.getMessage());
+                    return result.failure();
+                }
+            }
+        } else {
+            written.addAll(overlay.keySet());
+        }
+
+        return result.changed(written).success();
+    }
+
+    /**
+     * Stage a {@link PatchPlan} entirely in memory and return the resulting
+     * {@code path → content} overlay <em>without writing to disk</em>.
+     *
+     * <p>Useful for compile-time verification: callers can compose this overlay
+     * with the worktree-on-disk to feed a Java compiler before committing the
+     * edits via {@link #apply(PatchPlan)}. The returned {@link ApplyResult} has
+     * {@code dryRun=true} (nothing was written) and {@code success=true} when
+     * staging succeeded; on failure, {@code success=false} and the errors
+     * mirror what {@link #apply(PatchPlan)} would have reported.
+     */
+    public ApplyResult previewEdits(PatchPlan plan) {
+        ApplyResult.Builder result = new ApplyResult.Builder().dryRun(true);
+        // Empty plan = "verify the worktree as-is"; success with empty overlay.
         if (plan == null || plan.isEmpty()) {
-            return result.error("empty patch plan — nothing to apply").failure();
+            return result.staged(Map.of()).changed(new ArrayList<>()).success();
+        }
+        Map<Path, String> overlay = stageInMemory(plan, result);
+        if (overlay == null) {
+            return result.failure();
+        }
+        return result.changed(new ArrayList<>(overlay.keySet())).success();
+    }
+
+    /**
+     * Run every op against in-memory CompilationUnit / text maps and return
+     * the rendered overlay. Returns {@code null} on any failure (the builder
+     * already carries the error context).
+     */
+    private Map<Path, String> stageInMemory(PatchPlan plan, ApplyResult.Builder result) {
+        if (plan == null || plan.isEmpty()) {
+            result.error("empty patch plan — nothing to apply");
+            return null;
         }
 
         // Stage all edits in memory, keyed by absolute path. The same file
         // may be touched by multiple ops; we thread a single CompilationUnit
         // through all of them so rewrites compose. A parallel text-only map
         // holds non-Java files (pom.xml etc.) edited by ops like
-        // {@link EditOp.AddMavenDependency}; these don't go through JavaParser.
+        // {@link EditOp.AddMavenDependency} and net-new files staged by
+        // {@link EditOp.CreateFile}; these don't go through JavaParser at
+        // commit time.
         Map<Path, CompilationUnit> staged = new LinkedHashMap<>();
         Map<Path, String> stagedText = new LinkedHashMap<>();
 
@@ -102,29 +167,29 @@ public class PatchApplier {
             try {
                 boolean ok = applyOp(op, staged, stagedText, result);
                 if (!ok) {
-                    return result.error("aborting — op failed, no files written").failure();
+                    result.error("aborting — op failed, no files written");
+                    return null;
                 }
                 result.committed(op);
             } catch (Exception e) {
                 logOpFailure(op, e);
                 result.op(new ApplyResult.OpStatus(
                     opKind(op), describe(op), false, e.getClass().getSimpleName() + ": " + e.getMessage()));
-                return result
-                    .error("exception applying " + opKind(op) + ": " + e.getMessage())
-                    .failure();
+                result.error("exception applying " + opKind(op) + ": " + e.getMessage());
+                return null;
             }
         }
 
         // ── Post-edit parse check: every staged Java file must still parse ──
-        Map<Path, String> staged_text = new LinkedHashMap<>();
+        Map<Path, String> overlay = new LinkedHashMap<>();
         for (Map.Entry<Path, CompilationUnit> e : staged.entrySet()) {
             String rendered = LexicalPreservingPrinter.print(e.getValue());
-            staged_text.put(e.getKey(), rendered);
+            overlay.put(e.getKey(), rendered);
             ParseResult<CompilationUnit> reparse = parser.parse(rendered);
             if (!reparse.isSuccessful()) {
                 result.error("post-edit parse failed for " + e.getKey()
                     + ": " + reparse.getProblems());
-                return result.failure();
+                return null;
             }
         }
 
@@ -139,35 +204,14 @@ public class PatchApplier {
                 } catch (Exception xmlErr) {
                     result.error("post-edit XML parse failed for " + e.getKey()
                         + ": " + xmlErr.getMessage());
-                    return result.failure();
+                    return null;
                 }
             }
-            staged_text.put(e.getKey(), e.getValue());
+            overlay.put(e.getKey(), e.getValue());
         }
 
-        result.staged(staged_text);
-
-        // ── Commit ──
-        List<Path> written = new ArrayList<>();
-        if (!dryRun) {
-            for (Map.Entry<Path, String> e : staged_text.entrySet()) {
-                try {
-                    if (backup && Files.exists(e.getKey())) {
-                        Path bak = e.getKey().resolveSibling(e.getKey().getFileName() + ".bak");
-                        Files.copy(e.getKey(), bak, StandardCopyOption.REPLACE_EXISTING);
-                    }
-                    Files.writeString(e.getKey(), e.getValue());
-                    written.add(e.getKey());
-                } catch (IOException ioe) {
-                    result.error("write failed for " + e.getKey() + ": " + ioe.getMessage());
-                    return result.failure();
-                }
-            }
-        } else {
-            written.addAll(staged_text.keySet());
-        }
-
-        return result.changed(written).success();
+        result.staged(overlay);
+        return overlay;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -182,7 +226,7 @@ public class PatchApplier {
         if (op instanceof EditOp.AddMethod a) return applyAddMethod(a, staged, result);
         if (op instanceof EditOp.DeleteMethod d) return applyDeleteMethod(d, staged, result);
         if (op instanceof EditOp.AddImport i) return applyAddImport(i, staged, result);
-        if (op instanceof EditOp.CreateFile c) return applyCreateFile(c, result);
+        if (op instanceof EditOp.CreateFile c) return applyCreateFile(c, stagedText, result);
         if (op instanceof EditOp.AddMavenDependency m) return applyAddMavenDependency(m, stagedText, result);
         if (op instanceof EditOp.RenameMethod r) return applyRenameMethod(r, staged, result);
         if (op instanceof EditOp.RenameClass r) return applyRenameClass(r, staged, result);
@@ -493,14 +537,16 @@ public class PatchApplier {
         return true;
     }
 
-    private boolean applyCreateFile(EditOp.CreateFile op, ApplyResult.Builder result) throws IOException {
+    private boolean applyCreateFile(EditOp.CreateFile op,
+                                    Map<Path, String> stagedText,
+                                    ApplyResult.Builder result) {
         Path target = repoRoot.resolve(op.relPath()).normalize();
         if (!target.startsWith(repoRoot)) {
             result.op(new ApplyResult.OpStatus("create_file", describe(op), false,
                 "target escapes repoRoot: " + target));
             return false;
         }
-        if (Files.exists(target)) {
+        if (Files.exists(target) || stagedText.containsKey(target)) {
             result.op(new ApplyResult.OpStatus("create_file", describe(op), false,
                 "file already exists: " + target));
             return false;
@@ -514,10 +560,11 @@ public class PatchApplier {
                 return false;
             }
         }
-        if (!dryRun) {
-            Files.createDirectories(target.getParent());
-            Files.writeString(target, op.content());
-        }
+        // Route the new file's content through the text overlay so the
+        // post-edit pipeline (XML check + commit) handles it uniformly with
+        // pom.xml-style edits. Disk writing is deferred to apply()'s commit
+        // block; previewEdits() leaves disk untouched.
+        stagedText.put(target, op.content());
         result.op(new ApplyResult.OpStatus("create_file", describe(op), true));
         return true;
     }

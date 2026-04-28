@@ -1,5 +1,9 @@
 package com.smolnij.chunker.apply;
 
+import com.smolnij.chunker.apply.verify.CompilationRequest;
+import com.smolnij.chunker.apply.verify.CompilationResult;
+import com.smolnij.chunker.apply.verify.CompilationVerifier;
+import com.smolnij.chunker.apply.verify.DiagnosticFormatter;
 import com.smolnij.chunker.retrieval.Neo4jGraphReader;
 
 import dev.langchain4j.agent.tool.P;
@@ -7,7 +11,9 @@ import dev.langchain4j.agent.tool.Tool;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * LangChain4j tool wrapper around {@link PatchApplier}. Exposes a single
@@ -28,6 +34,10 @@ public class ApplyTools {
     private final SafetyGate safetyGate;
     /** Optional. When set, runs a Neo4j delta re-index after a successful commit so subsequent retrievals see fresh code. */
     private final GraphReindexer reindexer;
+    /** Optional. When set, {@link #commitPlan} runs the verifier between the safety gate and the disk write; compile failures keep the draft staged. */
+    private final CompilationVerifier compileVerifier;
+    private final int verifyMaxErrors;
+    private final CompilationRequest.Mode verifyMode;
 
     /** Accumulated ops until {@link #commitPlan(String)} flushes them. */
     private final List<EditOp> draftOps = new ArrayList<>();
@@ -84,23 +94,42 @@ public class ApplyTools {
 
     public ApplyTools(Path repoRoot, Neo4jGraphReader graphReader,
                       boolean dryRun, boolean backup) {
-        this(repoRoot, graphReader, dryRun, backup, SafetyGate.ALLOW_ALL, null);
+        this(repoRoot, graphReader, dryRun, backup, SafetyGate.ALLOW_ALL, null, null,
+             CompilationRequest.Mode.AUTO, DiagnosticFormatter.DEFAULT_MAX_ERRORS);
     }
 
     public ApplyTools(Path repoRoot, Neo4jGraphReader graphReader,
                       boolean dryRun, boolean backup, SafetyGate safetyGate) {
-        this(repoRoot, graphReader, dryRun, backup, safetyGate, null);
+        this(repoRoot, graphReader, dryRun, backup, safetyGate, null, null,
+             CompilationRequest.Mode.AUTO, DiagnosticFormatter.DEFAULT_MAX_ERRORS);
     }
 
     public ApplyTools(Path repoRoot, Neo4jGraphReader graphReader,
                       boolean dryRun, boolean backup, SafetyGate safetyGate,
                       GraphReindexer reindexer) {
+        this(repoRoot, graphReader, dryRun, backup, safetyGate, reindexer, null,
+             CompilationRequest.Mode.AUTO, DiagnosticFormatter.DEFAULT_MAX_ERRORS);
+    }
+
+    /**
+     * Full constructor including the optional compile verifier (auto-gate inside
+     * {@link #commitPlan}).
+     */
+    public ApplyTools(Path repoRoot, Neo4jGraphReader graphReader,
+                      boolean dryRun, boolean backup, SafetyGate safetyGate,
+                      GraphReindexer reindexer,
+                      CompilationVerifier compileVerifier,
+                      CompilationRequest.Mode verifyMode,
+                      int verifyMaxErrors) {
         this.repoRoot = repoRoot;
         this.graphReader = graphReader;
         this.dryRun = dryRun;
         this.backup = backup;
         this.safetyGate = safetyGate == null ? SafetyGate.ALLOW_ALL : safetyGate;
         this.reindexer = reindexer;
+        this.compileVerifier = compileVerifier;
+        this.verifyMode = verifyMode == null ? CompilationRequest.Mode.AUTO : verifyMode;
+        this.verifyMaxErrors = verifyMaxErrors > 0 ? verifyMaxErrors : DiagnosticFormatter.DEFAULT_MAX_ERRORS;
     }
 
     public ApplyResult getLastResult() {
@@ -109,6 +138,24 @@ public class ApplyTools {
 
     public List<EditOp> getDraftOps() {
         return List.copyOf(draftOps);
+    }
+
+    public Path getRepoRoot() {
+        return repoRoot;
+    }
+
+    /**
+     * Run the currently-staged draft through {@link PatchApplier#previewEdits} and
+     * return the resulting in-memory overlay (path → proposed content) without
+     * touching disk. Useful for compile-time verification before {@link #commitPlan}.
+     *
+     * <p>Returns an {@link ApplyResult} with {@code dryRun=true}; on staging failure
+     * {@code success=false} and the errors mirror what {@link #commitPlan} would
+     * have surfaced.
+     */
+    public ApplyResult previewDraft() {
+        PatchPlan plan = new PatchPlan(List.copyOf(draftOps), "preview", "verify");
+        return new PatchApplier(repoRoot, graphReader, true, false).previewEdits(plan);
     }
 
     /**
@@ -307,6 +354,32 @@ public class ApplyTools {
         }
 
         PatchApplier applier = new PatchApplier(repoRoot, graphReader, dryRun, backup);
+
+        // Compile auto-gate: run before mutating disk so a compile-failed plan
+        // leaves draftOps intact. Only active when a verifier was wired in.
+        if (compileVerifier != null) {
+            ApplyResult preview = applier.previewEdits(plan);
+            if (!preview.isSuccess()) {
+                // Staging itself failed (parse error, missing file, etc.) — surface
+                // the same diagnostics the eventual apply() would have produced and
+                // keep draftOps so the agent can fix.
+                String errs = String.join("; ", preview.getErrors());
+                return traceReturn("STAGING FAIL: " + errs
+                    + "\nDraft kept (" + draftOps.size() + " op(s)). Revise and retry, or call discardDraft.");
+            }
+            Map<Path, String> overlay = preview.getStagedContents() == null
+                ? Map.of() : new LinkedHashMap<>(preview.getStagedContents());
+            CompilationRequest req = new CompilationRequest(
+                repoRoot, overlay, verifyMode, overlay.keySet(), verifyMaxErrors);
+            CompilationResult cr = compileVerifier.verify(req);
+            if (!cr.success()) {
+                String diagnostics = DiagnosticFormatter.format(cr, repoRoot, verifyMaxErrors);
+                return traceReturn("COMPILE FAIL (backend=" + cr.backend() + ", "
+                    + cr.errorCount() + " error(s)):\n" + diagnostics
+                    + "\nDraft kept (" + draftOps.size() + " op(s)). Fix and retry, or call discardDraft.");
+            }
+        }
+
         lastResult = applier.apply(plan);
         draftOps.clear();
         if (lastResult.isSuccess()) {

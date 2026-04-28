@@ -23,6 +23,7 @@ import com.smolnij.chunker.eval.scorer.BuildScorer;
 import com.smolnij.chunker.eval.scorer.Metric;
 import com.smolnij.chunker.eval.scorer.RetrievalScorer;
 import com.smolnij.chunker.eval.scorer.Scorer;
+import com.smolnij.chunker.eval.verifier.CompilingVerifier;
 import com.smolnij.chunker.eval.verifier.NoopVerifier;
 import com.smolnij.chunker.eval.verifier.Verifier;
 import com.smolnij.chunker.eval.verifier.VerifierResult;
@@ -145,7 +146,7 @@ public final class EvalMain {
 
     private static List<EvalRecord> runDryRun(List<Fixture> fixtures, EvalConfig cfg) {
         DryRunRunner runner = new DryRunRunner();
-        Verifier verifier = new NoopVerifier();
+        Verifier verifier = pickVerifier();
         List<Scorer> scorers = defaultScorers();
 
         List<EvalRecord> records = new ArrayList<>(fixtures.size());
@@ -167,7 +168,7 @@ public final class EvalMain {
         String user = getConfigValue("NEO4J_USER", "neo4j.user", NEO4J_DEFAULT_USER);
         String password = getConfigValue("NEO4J_PASSWORD", "neo4j.password", NEO4J_DEFAULT_PASSWORD);
 
-        Verifier verifier = new NoopVerifier();
+        Verifier verifier = pickVerifier();
         List<Scorer> scorers = defaultScorers();
         List<EvalRecord> records = new ArrayList<>(fixtures.size());
 
@@ -196,6 +197,22 @@ public final class EvalMain {
 
     private static List<Scorer> defaultScorers() {
         return List.of(new RetrievalScorer(), new AnalyzerScorer(), new BuildScorer());
+    }
+
+    /**
+     * Pick the verifier impl based on the {@code EVAL_VERIFIER} env (or
+     * {@code eval.verifier} sysprop). Defaults to {@code noop} so the
+     * real-compile path is opt-in until a fixture set is stabilised against
+     * it; flip the default in a follow-up.
+     */
+    private static Verifier pickVerifier() {
+        String choice = System.getProperty("eval.verifier");
+        if (choice == null || choice.isBlank()) choice = System.getenv("EVAL_VERIFIER");
+        if (choice == null) choice = "noop";
+        return switch (choice.trim().toLowerCase()) {
+            case "compiling", "compile" -> new CompilingVerifier();
+            default -> new NoopVerifier();
+        };
     }
 
     private static EvalRecord score(Fixture f, RunResult res, Verifier verifier, List<Scorer> scorers) {

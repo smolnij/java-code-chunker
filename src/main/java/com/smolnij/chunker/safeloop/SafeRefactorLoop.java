@@ -10,6 +10,10 @@ import com.smolnij.chunker.apply.GraphReindexer;
 import com.smolnij.chunker.apply.PatchApplier;
 import com.smolnij.chunker.apply.PatchPlan;
 import com.smolnij.chunker.apply.StagedPlanIndex;
+import com.smolnij.chunker.apply.verify.CompilationRequest;
+import com.smolnij.chunker.apply.verify.CompilationResult;
+import com.smolnij.chunker.apply.verify.CompilationVerifier;
+import com.smolnij.chunker.apply.verify.DiagnosticFormatter;
 import com.smolnij.chunker.refactor.ChatService;
 import com.smolnij.chunker.refactor.LlmResponseParser;
 import com.smolnij.chunker.refactor.PromptBuilder;
@@ -128,6 +132,12 @@ public class SafeRefactorLoop {
            (or missing) yet the request asks for an extraction, rename, refactor, etc.,
            return verdict "UNSAFE" with a HIGH-severity risk
            "no edit was applied; agent declared the task complete without verification".
+        8. COMPILATION STATUS: a `COMPILATION_STATUS` block is provided when the harness
+           pre-ran the in-memory compiler against the currently-staged edits. If that
+           block lists `path:line:col: error: ...` diagnostics (anything other than
+           "OK: no errors", "NO_STAGED_EDITS", or absent), return verdict "UNSAFE" with
+           a HIGH-severity risk "compilation errors in staged edits — see COMPILATION_STATUS"
+           and confidence ≤ 0.2. Treat STAGING_FAILED and VERIFIER_ERROR as UNSAFE / HIGH.
 
         Reply ONLY with a single JSON object matching this shape (no prose outside the JSON,
         no markdown fences):
@@ -149,6 +159,8 @@ public class SafeRefactorLoop {
         - If you don't have enough context to judge, set confidence low and list items in needs.
         - Each risk entry must include description, severity, and mitigation.
         - Use [] for empty risks/needs; use "" for empty feedback.
+        - Trust COMPILATION_STATUS over the agent's narrative — if the compiler disagrees
+          with the agent's claim that the change works, the compiler is right.
         """;
 
     /** Name used for the analyzer JSON schema / forced tool call. */
@@ -172,6 +184,12 @@ public class SafeRefactorLoop {
 
     /** Optional Neo4j delta re-indexer used by the prose-extracted apply fallback. */
     private final GraphReindexer reindexer;
+
+    /** Optional compile verifier — null when requireCompile=false. Used by the harness
+     *  to pre-compute COMPILATION_STATUS for the analyzer (which has no tool access). */
+    private final CompilationVerifier verifier;
+    private final CompilationRequest.Mode verifyMode;
+    private final int verifyMaxErrors;
 
     /** Callback for streaming progress updates. */
     private Consumer<String> progressCallback;
@@ -199,6 +217,21 @@ public class SafeRefactorLoop {
                             AstDiffEngine diffEngine,
                             DiffScorer diffScorer,
                             GraphReindexer reindexer) {
+        this(agent, analyzerChat, loopTools, agentTools, config, diffEngine, diffScorer,
+             reindexer, null, CompilationRequest.Mode.AUTO, 50);
+    }
+
+    public SafeRefactorLoop(RefactorAgent agent,
+                            ChatService analyzerChat,
+                            SafeLoopTools loopTools,
+                            RefactorTools agentTools,
+                            SafeLoopConfig config,
+                            AstDiffEngine diffEngine,
+                            DiffScorer diffScorer,
+                            GraphReindexer reindexer,
+                            CompilationVerifier verifier,
+                            CompilationRequest.Mode verifyMode,
+                            int verifyMaxErrors) {
         this.agent = agent;
         this.analyzerChat = analyzerChat;
         this.loopTools = loopTools;
@@ -207,6 +240,9 @@ public class SafeRefactorLoop {
         this.diffEngine = Objects.requireNonNull(diffEngine, "diffEngine");
         this.diffScorer = Objects.requireNonNull(diffScorer, "diffScorer");
         this.reindexer = reindexer;
+        this.verifier = verifier;
+        this.verifyMode = verifyMode == null ? CompilationRequest.Mode.AUTO : verifyMode;
+        this.verifyMaxErrors = verifyMaxErrors;
         this.progressCallback = System.out::print;
     }
 
@@ -361,7 +397,8 @@ public class SafeRefactorLoop {
                                 // Immediately call the analyzer with the hydrated missing-context (quick-check)
                                 try {
                                     String taskCompletion = buildTaskCompletionStats(agent.getApplyTools());
-                                    String quickPrompt = buildQuickAnalyzerPrompt(userQuery, lastAgentResponse, iteration, "", deterministicMissing, newContext, taskCompletion);
+                                    String compStatus35 = buildCompilationStatus(agent.getApplyTools());
+                                    String quickPrompt = buildQuickAnalyzerPrompt(userQuery, lastAgentResponse, iteration, "", deterministicMissing, newContext, taskCompletion, compStatus35);
                                     System.out.println("  ┌─ Quick Analyzer (from self-review MISSING) ────────");
                                     StructuredOutputSpec quickSpec = analyzerSpec(config.getStructuredOutput());
                                     String quickResp = quickSpec != null
@@ -512,7 +549,8 @@ public class SafeRefactorLoop {
 
                 // Phase 4b: LLM analyzer evaluation (with AST diff + commit stats injected)
                 String taskCompletionFull = buildTaskCompletionStats(agent.getApplyTools());
-                String analyzerPrompt = buildAnalyzerPrompt(userQuery, lastAgentResponse, iteration, astDiffReport, taskCompletionFull);
+                String compilationStatusFull = buildCompilationStatus(agent.getApplyTools());
+                String analyzerPrompt = buildAnalyzerPrompt(userQuery, lastAgentResponse, iteration, astDiffReport, taskCompletionFull, compilationStatusFull);
                 System.out.println("  ┌─ Analyzer ─────────────────────────────────────");
                 StructuredOutputSpec analyzerSpec = analyzerSpec(config.getStructuredOutput());
                 String analyzerResponse = analyzerSpec != null
@@ -700,7 +738,7 @@ public class SafeRefactorLoop {
      */
     private String buildAnalyzerPrompt(String originalQuery, String agentResponse,
                                        int iteration, String astDiffReport,
-                                       String taskCompletion) {
+                                       String taskCompletion, String compilationStatus) {
         StringBuilder sb = new StringBuilder();
 
         sb.append("TASK: Evaluate the safety of this proposed refactoring.\n\n");
@@ -713,6 +751,10 @@ public class SafeRefactorLoop {
 
         if (taskCompletion != null && !taskCompletion.isEmpty()) {
             sb.append(taskCompletion).append("\n");
+        }
+
+        if (compilationStatus != null && !compilationStatus.isEmpty()) {
+            sb.append(compilationStatus).append("\n");
         }
 
         sb.append("GRAPH COVERAGE:\n");
@@ -859,7 +901,7 @@ public class SafeRefactorLoop {
     private String buildQuickAnalyzerPrompt(String originalQuery, String agentResponse,
                                            int iteration, String astDiffReport,
                                            List<String> missingIds, String hydratedContext,
-                                           String taskCompletion) {
+                                           String taskCompletion, String compilationStatus) {
         StringBuilder sb = new StringBuilder();
         sb.append("TASK: Quickly evaluate the safety of this proposed refactoring given the additional missing context requested by a low-temperature self-reviewer.\n\n");
         sb.append("ORIGINAL REQUEST:\n");
@@ -870,6 +912,10 @@ public class SafeRefactorLoop {
 
         if (taskCompletion != null && !taskCompletion.isEmpty()) {
             sb.append(taskCompletion).append("\n");
+        }
+
+        if (compilationStatus != null && !compilationStatus.isEmpty()) {
+            sb.append(compilationStatus).append("\n");
         }
 
         sb.append("MISSING: the reviewer requested the following identifiers to be inspected (deterministic order):\n");
@@ -903,6 +949,38 @@ public class SafeRefactorLoop {
             sb.append("NOTE: No edits were applied this iteration. If the original request describes a code change, treat this as UNSAFE per system-prompt rule 7.\n");
         }
         return sb.toString();
+    }
+
+    /**
+     * Run the verifier against the current staged draft and return a structured
+     * COMPILATION_STATUS block for the analyzer (which has no tool access).
+     * Returns "" when no verifier is wired or no ApplyTools is available;
+     * "NO_STAGED_EDITS" when the draft is empty.
+     */
+    private String buildCompilationStatus(ApplyTools applyTools) {
+        if (verifier == null || applyTools == null) return "";
+        try {
+            ApplyResult preview = applyTools.previewDraft();
+            if (!preview.isSuccess()) {
+                return "COMPILATION_STATUS:\nSTAGING_FAILED: "
+                    + String.join("; ", preview.getErrors())
+                    + "\nNOTE: treat as UNSAFE.\n";
+            }
+            Map<Path, String> overlay = preview.getStagedContents() == null
+                ? Map.of() : preview.getStagedContents();
+            if (overlay.isEmpty()) {
+                return "COMPILATION_STATUS:\nNO_STAGED_EDITS\n";
+            }
+            CompilationRequest req = new CompilationRequest(
+                applyTools.getRepoRoot(), overlay, verifyMode,
+                overlay.keySet(), verifyMaxErrors);
+            CompilationResult res = verifier.verify(req);
+            return "COMPILATION_STATUS:\n"
+                + DiagnosticFormatter.format(res, applyTools.getRepoRoot(), verifyMaxErrors)
+                + "\n";
+        } catch (Exception e) {
+            return "COMPILATION_STATUS:\nVERIFIER_ERROR: " + e.getMessage() + "\n";
+        }
     }
 
     /** Build a compact one-line-per-assumption summary from structured self-review JSON. */

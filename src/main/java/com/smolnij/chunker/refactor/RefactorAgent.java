@@ -1,6 +1,7 @@
 package com.smolnij.chunker.refactor;
 
 import com.smolnij.chunker.apply.ApplyTools;
+import com.smolnij.chunker.apply.verify.VerifyTools;
 
 import dev.langchain4j.http.client.jdk.JdkHttpClientBuilder;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
@@ -85,6 +86,29 @@ public class RefactorAgent {
             - commitPlan(rationale): flush every staged op atomically; the safety analyzer runs first and may veto.
             - discardDraft(): drop every staged op.
 
+            VERIFY tools — you MUST use these around every staging burst:
+            - verifyJavaSnippet(code, fqn, "fast"): compile a self-contained Java source string
+              before staging it. Use BEFORE stageReplaceMethod / stageAddMethod / stageCreateFile
+              for every non-trivial body. Catches typos, missing imports, and signature mistakes
+              while the edit is still cheap to revise.
+            - getCompilationErrors(mode): compile the project with all currently staged edits
+              overlaid in memory. Returns "OK: no errors" or `path:line:col: error: msg` lines.
+              mode is "fast" | "full" | "auto".
+
+            Mandatory verification protocol — DO NOT skip:
+              step 1 (per snippet, encouraged for non-trivial bodies):
+                verifyJavaSnippet(code, fqn, "fast")
+                → if FAIL, fix the snippet text BEFORE you call any stage* tool.
+              step 2 (after each batch of stage* calls):
+                getCompilationErrors("fast")
+                → if errors are listed, FIX them with more stage* calls (stageAddImport,
+                  stageReplaceMethod, …) or call discardDraft and restart. Re-run
+                  getCompilationErrors("fast") and repeat until it returns "OK: no errors".
+              step 3 (final, before commitPlan):
+                getCompilationErrors("full")
+                → AUTHORITATIVE check. If it returns anything other than "OK: no errors",
+                  DO NOT call commitPlan.
+
             Rules:
             1. ALWAYS gather context before suggesting changes. Never guess at code you haven't seen.
             2. If you lack context about a method or class, call the appropriate retrieval tool.
@@ -94,8 +118,12 @@ public class RefactorAgent {
             6. When you are ready to apply the refactoring, stage every edit with the CHANGES tools and
                finish with commitPlan. If commitPlan returns UNSAFE, read the reason, revise the staged ops
                (or call discardDraft first), and retry.
-            7. If the CHANGES tools are not wired in this session, fall through to the response format below
-               so the loop's post-hoc parser can still apply the edits.
+            7. The verification protocol above is mandatory. Never call commitPlan with known compile
+               errors — a failing getCompilationErrors result is a hard stop.
+            8. If verifyJavaSnippet or getCompilationErrors keeps returning the same error after three
+               fix attempts, call discardDraft and reconsider the approach rather than looping forever.
+            9. If the CHANGES/VERIFY tools are not wired in this session, fall through to the response
+               format below so the loop's post-hoc parser can still apply the edits.
 
             Response format (fallback — only when CHANGES tools are unavailable):
             1. CHANGES: For each modified method, provide the complete updated code in a ```java block.
@@ -113,6 +141,7 @@ public class RefactorAgent {
     private final Assistant assistant;
     private final RefactorTools tools;
     private final ApplyTools applyTools;
+    private final VerifyTools verifyTools;
     private final RefactorConfig config;
 
     // ═══════════════════════════════════════════════════════════════
@@ -120,13 +149,19 @@ public class RefactorAgent {
     // ═══════════════════════════════════════════════════════════════
 
     public RefactorAgent(RefactorConfig config, RefactorTools tools) {
-        this(config, tools, null);
+        this(config, tools, null, null);
     }
 
     public RefactorAgent(RefactorConfig config, RefactorTools tools, ApplyTools applyTools) {
+        this(config, tools, applyTools, null);
+    }
+
+    public RefactorAgent(RefactorConfig config, RefactorTools tools,
+                         ApplyTools applyTools, VerifyTools verifyTools) {
         this.config = config;
         this.tools = tools;
         this.applyTools = applyTools;
+        this.verifyTools = verifyTools;
 
         // ── Build the OpenAI-compatible chat model (LM-Studio) ──
         ChatModel chatModel = buildChatModel(config);
@@ -136,11 +171,13 @@ public class RefactorAgent {
                 .maxMessages(config.getChatMemorySize())
                 .build();
 
-        // ── Wire up the AI Service with retrieval tools (plus CHANGES tools if present) ──
+        // ── Wire up the AI Service with retrieval tools (plus CHANGES + VERIFY tools if present) ──
         AiServices<Assistant> builder = AiServices.builder(Assistant.class)
                 .chatModel(chatModel)
                 .chatMemory(chatMemory);
-        if (applyTools != null) {
+        if (applyTools != null && verifyTools != null) {
+            builder = builder.tools(tools, applyTools, verifyTools);
+        } else if (applyTools != null) {
             builder = builder.tools(tools, applyTools);
         } else {
             builder = builder.tools(tools);
@@ -152,6 +189,10 @@ public class RefactorAgent {
 
     public ApplyTools getApplyTools() {
         return applyTools;
+    }
+
+    public VerifyTools getVerifyTools() {
+        return verifyTools;
     }
 
     // ═══════════════════════════════════════════════════════════════

@@ -62,6 +62,12 @@ public class RefactorConfig {
     private boolean dryRun = true;
     private boolean backup = true;
 
+    // ── Compile verification (LLM-callable + commitPlan auto-gate) ──
+    private boolean requireCompile = true;
+    private String verifyMode = "auto";   // fast | full | auto
+    private int verifyMaxErrors = 25;
+    private String classpathCacheDir = ""; // empty → <repoRoot>/target
+
     // ── Trace ──
     private boolean trace = true;
 
@@ -95,6 +101,12 @@ public class RefactorConfig {
         cfg.apply = boolVal("REFACTOR_APPLY", "refactor.apply", cfg.apply);
         cfg.dryRun = boolVal("REFACTOR_DRY_RUN", "refactor.dryRun", cfg.dryRun);
         cfg.backup = boolVal("REFACTOR_BACKUP", "refactor.backup", cfg.backup);
+
+        cfg.requireCompile = boolVal("APPLY_REQUIRE_COMPILE", "apply.requireCompile", cfg.requireCompile);
+        cfg.verifyMode = strVal("VERIFY_MODE", "verify.mode", cfg.verifyMode);
+        cfg.verifyMaxErrors = intVal("VERIFY_MAX_ERRORS", "verify.maxErrors", cfg.verifyMaxErrors);
+        cfg.classpathCacheDir = strVal("VERIFY_CLASSPATH_CACHE", "verify.classpathCacheDir", cfg.classpathCacheDir);
+
         cfg.trace = boolVal("REFACTOR_TRACE", "refactor.trace", cfg.trace);
 
         return cfg;
@@ -120,6 +132,10 @@ public class RefactorConfig {
     public boolean isApply() { return apply; }
     public boolean isDryRun() { return dryRun; }
     public boolean isBackup() { return backup; }
+    public boolean isRequireCompile() { return requireCompile; }
+    public String getVerifyMode() { return verifyMode; }
+    public int getVerifyMaxErrors() { return verifyMaxErrors; }
+    public String getClasspathCacheDir() { return classpathCacheDir; }
     public boolean isTrace() { return trace; }
 
     // ═══════════════════════════════════════════════════════════════
@@ -142,6 +158,10 @@ public class RefactorConfig {
     public RefactorConfig withApply(boolean v) { this.apply = v; return this; }
     public RefactorConfig withDryRun(boolean v) { this.dryRun = v; return this; }
     public RefactorConfig withBackup(boolean v) { this.backup = v; return this; }
+    public RefactorConfig withRequireCompile(boolean v) { this.requireCompile = v; return this; }
+    public RefactorConfig withVerifyMode(String v) { this.verifyMode = v; return this; }
+    public RefactorConfig withVerifyMaxErrors(int v) { this.verifyMaxErrors = v; return this; }
+    public RefactorConfig withClasspathCacheDir(String v) { this.classpathCacheDir = v; return this; }
     public RefactorConfig withTrace(boolean v) { this.trace = v; return this; }
 
     @Override
