@@ -227,6 +227,54 @@ public class ApplyTools {
             + " (ops so far: " + draftOps.size() + ")");
     }
 
+    @Tool("""
+        Stage a method-rename edit. PREFER THIS over stageReplaceMethod when the change is
+        purely a rename — the post-apply Neo4j re-indexer uses this op as an authoritative
+        signal to update CALLS edges and refresh source text in unchanged caller files,
+        which keeps retrievals accurate without a heuristic re-detection pass.
+        Pass the FQN of the owning class, the current method name, the new method name,
+        and the parameter signature (e.g. "(java.lang.String, int)") for overload disambiguation.
+        Pass an empty paramSignature to match a method by name when no overload exists.
+        """)
+    public String stageRenameMethod(@P("Fully-qualified class name") String fqClassName,
+                                    @P("Current method name") String oldMethodName,
+                                    @P("Replacement method name") String newMethodName,
+                                    @P("Parameter signature for overload disambiguation; empty if no overload") String paramSignature) {
+        traceCall("stageRenameMethod", fqClassName + "#" + oldMethodName + " → " + newMethodName);
+        draftOps.add(new EditOp.RenameMethod(fqClassName, oldMethodName, newMethodName,
+            paramSignature == null ? "" : paramSignature));
+        return traceReturn("staged rename_method " + fqClassName + "#" + oldMethodName
+            + " → " + newMethodName + " (ops so far: " + draftOps.size() + ")");
+    }
+
+    @Tool("""
+        Stage a class-rename edit (within the same package). PREFER THIS over a delete+create
+        sequence when the change is purely a rename — the post-apply Neo4j re-indexer uses
+        this op to repair USES_TYPE / IMPORTS / EXTENDS / IMPLEMENTS edges from unchanged files
+        and to refresh their source text. Cross-package moves are not supported by this op.
+        """)
+    public String stageRenameClass(@P("Current fully-qualified class name") String oldFqName,
+                                   @P("Replacement fully-qualified class name (same package)") String newFqName) {
+        traceCall("stageRenameClass", oldFqName + " → " + newFqName);
+        draftOps.add(new EditOp.RenameClass(oldFqName, newFqName));
+        return traceReturn("staged rename_class " + oldFqName + " → " + newFqName
+            + " (ops so far: " + draftOps.size() + ")");
+    }
+
+    @Tool("""
+        Stage a field-rename edit. PREFER THIS over delete+add when the change is purely a
+        rename — the post-apply Neo4j re-indexer uses this op to repair READS_FIELD /
+        WRITES_FIELD edges from unchanged files.
+        """)
+    public String stageRenameField(@P("Fully-qualified owning class name") String owningClassFqn,
+                                   @P("Current field name") String oldFieldName,
+                                   @P("Replacement field name") String newFieldName) {
+        traceCall("stageRenameField", owningClassFqn + "." + oldFieldName + " → " + newFieldName);
+        draftOps.add(new EditOp.RenameField(owningClassFqn, oldFieldName, newFieldName));
+        return traceReturn("staged rename_field " + owningClassFqn + "." + oldFieldName
+            + " → " + newFieldName + " (ops so far: " + draftOps.size() + ")");
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // Commit tool
     // ═══════════════════════════════════════════════════════════════
@@ -270,7 +318,9 @@ public class ApplyTools {
         String reindexLine = "";
         if (reindexer != null && lastResult.isSuccess() && !dryRun) {
             try {
-                GraphReindexer.ReindexResult rr = reindexer.reindex(lastResult.getChangedFiles());
+                GraphReindexer.ReindexResult rr = reindexer.reindex(
+                    lastResult.getChangedFiles(),
+                    lastResult.getCommittedOps());
                 reindexLine = "\n" + rr.toReport();
             } catch (Exception e) {
                 reindexLine = "\nReindex: ✗ " + e.getClass().getSimpleName() + ": " + e.getMessage();

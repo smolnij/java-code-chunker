@@ -207,12 +207,16 @@ public class Neo4jGraphStore implements AutoCloseable {
      *       IMPLEMENTS, INNER_CLASS_OF) for the same reason.</li>
      * </ul>
      *
-     * <p>Inbound edges from <em>unchanged</em> files are not touched —
+     * <p>Inbound edges from <em>unchanged</em> files are not touched here —
      * Neo4j's {@code DETACH DELETE} on a removed method automatically drops
-     * dangling relationships. A caller in an unchanged file whose target
-     * method was renamed will keep its stale {@code calls} list in the
-     * stored {@code :Method.code} property until the caller's own file is
-     * re-indexed; this is acceptable (and documented) for v1.
+     * dangling relationships. To repair them after the new (renamed) nodes
+     * are upserted, call {@link #captureBeforeSnapshot} BEFORE this prune,
+     * then {@link #recreateInboundEdges} after the subsequent
+     * {@link #store(GraphModel)}; that flow re-points the inbound edges at
+     * the renamed targets so call-graph topology is preserved across
+     * renames in unchanged caller files. The caller's stored
+     * {@code :Method.code} text still reflects its on-disk source — the
+     * repair operates on edges, not source.
      *
      * @param filePaths           repo-relative file paths just touched by the apply
      * @param keepMethodChunkIds  method chunk ids that remain in the new model
@@ -280,6 +284,347 @@ public class Neo4jGraphStore implements AutoCloseable {
             "  ✓ pruneByFile: %d file(s), kept %d method(s), %d field(s), %d class(es)%n",
             filePaths.size(), keepMethodChunkIds.size(), keepFieldFqns.size(), keepClassFqns.size()
         );
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Cross-file reindex repair (snapshot + edge rewrite)
+    // ═══════════════════════════════════════════════════════════════
+
+    /** Identity tuple for a {@code :Method} node, captured pre-prune. */
+    public record MethodIdent(String chunkId,
+                              String fqClassName,
+                              String methodName,
+                              String methodSignature,
+                              String filePath,
+                              int partIndex) { }
+
+    /** Identity tuple for a {@code :Class}/{@code :Interface} node, captured pre-prune. */
+    public record ClassIdent(String fqName,
+                             String simpleName,
+                             String packageName,
+                             String filePath,
+                             boolean isInterface) { }
+
+    /** Identity tuple for a {@code :Field} node, captured pre-prune. */
+    public record FieldIdent(String fqName,
+                             String name,
+                             String type,
+                             String owningClassFqn) { }
+
+    /**
+     * One inbound edge into a node in a changed file, captured pre-prune so
+     * we can recreate it after MERGE upserts new (possibly renamed) targets.
+     *
+     * <p>{@code sourceLabel} is one of {@code Method}, {@code Class},
+     * {@code Interface}. {@code targetLabel} is one of those plus {@code Field}.
+     * Source keys are {@code chunkId} for Method and {@code fqName} for
+     * Class/Interface; target keys analogous, plus {@code fqName} for Field.
+     */
+    public record InboundEdge(String relType,
+                              String sourceLabel,
+                              String sourceKeyValue,
+                              String targetLabel,
+                              String oldTargetKeyValue) { }
+
+    /** Pre-prune snapshot: identity of nodes-in-changed-files plus their inbound edges from elsewhere. */
+    public record BeforeSnapshot(Map<String, MethodIdent> methodsByChunkId,
+                                 Map<String, ClassIdent>  classesByFqn,
+                                 Map<String, FieldIdent>  fieldsByFqn,
+                                 List<InboundEdge>        inboundEdges) {
+
+        public static BeforeSnapshot empty() {
+            return new BeforeSnapshot(Map.of(), Map.of(), Map.of(), List.of());
+        }
+
+        public Set<String> allMethodChunkIds() { return methodsByChunkId.keySet(); }
+        public Set<String> allClassFqns()      { return classesByFqn.keySet(); }
+        public Set<String> allFieldFqns()      { return fieldsByFqn.keySet(); }
+
+        public boolean isEmpty() {
+            return methodsByChunkId.isEmpty() && classesByFqn.isEmpty()
+                && fieldsByFqn.isEmpty() && inboundEdges.isEmpty();
+        }
+    }
+
+    /**
+     * Capture the identity of every {@code :Method}/{@code :Class}/
+     * {@code :Interface}/{@code :Field} node currently living in
+     * {@code filePaths}, plus every inbound edge into those nodes whose
+     * source lives outside {@code filePaths}.
+     *
+     * <p>Run BEFORE {@link #pruneByFile}: prune deletes the targets and
+     * cascades {@code DETACH DELETE} over the inbound edges, so a snapshot
+     * taken after prune would be empty.
+     */
+    public BeforeSnapshot captureBeforeSnapshot(Set<String> filePaths) {
+        if (filePaths == null || filePaths.isEmpty()) return BeforeSnapshot.empty();
+        List<String> files = new ArrayList<>(filePaths);
+
+        Map<String, MethodIdent> methods = new LinkedHashMap<>();
+        Map<String, ClassIdent>  classes = new LinkedHashMap<>();
+        Map<String, FieldIdent>  fields  = new LinkedHashMap<>();
+        List<InboundEdge> inboundEdges = new ArrayList<>();
+
+        try (Session session = driver.session()) {
+            session.executeRead(tx -> {
+                Result mres = tx.run(
+                    "MATCH (m:Method) WHERE m.filePath IN $files " +
+                    "RETURN m.chunkId AS chunkId, m.fqClassName AS fqc, m.methodName AS name, " +
+                    "       m.methodSignature AS sig, m.filePath AS filePath, m.partIndex AS partIndex",
+                    Map.of("files", files));
+                while (mres.hasNext()) {
+                    var rec = mres.next();
+                    String chunkId = rec.get("chunkId").asString(null);
+                    if (chunkId == null) continue;
+                    methods.put(chunkId, new MethodIdent(
+                        chunkId,
+                        rec.get("fqc").asString(""),
+                        rec.get("name").asString(""),
+                        rec.get("sig").asString(""),
+                        rec.get("filePath").asString(""),
+                        rec.get("partIndex").asInt(0)));
+                }
+
+                Result cres = tx.run(
+                    "MATCH (c) WHERE (c:Class OR c:Interface) AND c.filePath IN $files " +
+                    "RETURN c.fqName AS fqName, c.simpleName AS simpleName, c.packageName AS pkg, " +
+                    "       c.filePath AS filePath, (CASE WHEN c:Interface THEN true ELSE false END) AS isIface",
+                    Map.of("files", files));
+                while (cres.hasNext()) {
+                    var rec = cres.next();
+                    String fq = rec.get("fqName").asString(null);
+                    if (fq == null) continue;
+                    classes.put(fq, new ClassIdent(
+                        fq,
+                        rec.get("simpleName").asString(""),
+                        rec.get("pkg").asString(""),
+                        rec.get("filePath").asString(""),
+                        rec.get("isIface").asBoolean(false)));
+                }
+
+                // Fields don't carry filePath, so join through HAS_FIELD to the owning class.
+                Result fres = tx.run(
+                    "MATCH (c)-[:HAS_FIELD]->(f:Field) " +
+                    "WHERE (c:Class OR c:Interface) AND c.filePath IN $files " +
+                    "RETURN f.fqName AS fqName, f.name AS name, f.type AS type, " +
+                    "       f.owningClassFqn AS owningClass",
+                    Map.of("files", files));
+                while (fres.hasNext()) {
+                    var rec = fres.next();
+                    String fq = rec.get("fqName").asString(null);
+                    if (fq == null) continue;
+                    fields.put(fq, new FieldIdent(
+                        fq,
+                        rec.get("name").asString(""),
+                        rec.get("type").asString(""),
+                        rec.get("owningClass").asString("")));
+                }
+
+                // ── Inbound edges: outside-source → in-changed-files target ──
+
+                // Method-source → Method-target (CALLS, OVERRIDES, TEST_FOR)
+                Result e1 = tx.run(
+                    "MATCH (src:Method)-[r:CALLS|OVERRIDES|TEST_FOR]->(tgt:Method) " +
+                    "WHERE tgt.filePath IN $files AND NOT src.filePath IN $files " +
+                    "RETURN type(r) AS rt, src.chunkId AS srcKey, tgt.chunkId AS tgtKey",
+                    Map.of("files", files));
+                while (e1.hasNext()) {
+                    var rec = e1.next();
+                    inboundEdges.add(new InboundEdge(
+                        rec.get("rt").asString(),
+                        "Method", rec.get("srcKey").asString(""),
+                        "Method", rec.get("tgtKey").asString("")));
+                }
+
+                // Method-source → Class-or-Interface-target (USES_TYPE, RETURNS_TYPE, THROWS, CATCHES)
+                Result e2 = tx.run(
+                    "MATCH (src:Method)-[r:USES_TYPE|RETURNS_TYPE|THROWS|CATCHES]->(tgt) " +
+                    "WHERE (tgt:Class OR tgt:Interface) AND tgt.filePath IN $files " +
+                    "  AND NOT src.filePath IN $files " +
+                    "RETURN type(r) AS rt, src.chunkId AS srcKey, tgt.fqName AS tgtKey, " +
+                    "       (CASE WHEN tgt:Interface THEN 'Interface' ELSE 'Class' END) AS tgtLabel",
+                    Map.of("files", files));
+                while (e2.hasNext()) {
+                    var rec = e2.next();
+                    inboundEdges.add(new InboundEdge(
+                        rec.get("rt").asString(),
+                        "Method", rec.get("srcKey").asString(""),
+                        rec.get("tgtLabel").asString("Class"), rec.get("tgtKey").asString("")));
+                }
+
+                // Method-source → Field-target (READS_FIELD, WRITES_FIELD)
+                Result e3 = tx.run(
+                    "MATCH (src:Method)-[r:READS_FIELD|WRITES_FIELD]->(tgt:Field) " +
+                    "MATCH (owner)-[:HAS_FIELD]->(tgt) WHERE (owner:Class OR owner:Interface) " +
+                    "  AND owner.filePath IN $files AND NOT src.filePath IN $files " +
+                    "RETURN type(r) AS rt, src.chunkId AS srcKey, tgt.fqName AS tgtKey",
+                    Map.of("files", files));
+                while (e3.hasNext()) {
+                    var rec = e3.next();
+                    inboundEdges.add(new InboundEdge(
+                        rec.get("rt").asString(),
+                        "Method", rec.get("srcKey").asString(""),
+                        "Field", rec.get("tgtKey").asString("")));
+                }
+
+                // Class-source → Class/Interface-target (IMPORTS, EXTENDS, IMPLEMENTS, INNER_CLASS_OF)
+                Result e4 = tx.run(
+                    "MATCH (src)-[r:IMPORTS|EXTENDS|IMPLEMENTS|INNER_CLASS_OF]->(tgt) " +
+                    "WHERE (src:Class OR src:Interface) AND (tgt:Class OR tgt:Interface) " +
+                    "  AND tgt.filePath IN $files AND src.filePath IS NOT NULL " +
+                    "  AND NOT src.filePath IN $files " +
+                    "RETURN type(r) AS rt, src.fqName AS srcKey, tgt.fqName AS tgtKey, " +
+                    "       (CASE WHEN src:Interface THEN 'Interface' ELSE 'Class' END) AS srcLabel, " +
+                    "       (CASE WHEN tgt:Interface THEN 'Interface' ELSE 'Class' END) AS tgtLabel",
+                    Map.of("files", files));
+                while (e4.hasNext()) {
+                    var rec = e4.next();
+                    inboundEdges.add(new InboundEdge(
+                        rec.get("rt").asString(),
+                        rec.get("srcLabel").asString("Class"), rec.get("srcKey").asString(""),
+                        rec.get("tgtLabel").asString("Class"), rec.get("tgtKey").asString("")));
+                }
+                return null;
+            });
+        }
+
+        System.out.printf(
+            "  ✓ captureBeforeSnapshot: %d method(s), %d class(es), %d field(s), %d inbound edge(s)%n",
+            methods.size(), classes.size(), fields.size(), inboundEdges.size());
+        return new BeforeSnapshot(methods, classes, fields, inboundEdges);
+    }
+
+    /**
+     * Find unchanged files (i.e. files NOT in {@code excludeFilePaths}) that
+     * contain at least one node with an outbound edge into a symbol from
+     * the snapshot. Returns repo-relative paths, capped at {@code maxFiles}.
+     */
+    public Set<String> findFilesReferencingSymbols(Set<String> chunkIds,
+                                                   Set<String> classFqns,
+                                                   Set<String> fieldFqns,
+                                                   Set<String> excludeFilePaths,
+                                                   int maxFiles) {
+        if ((chunkIds == null || chunkIds.isEmpty())
+                && (classFqns == null || classFqns.isEmpty())
+                && (fieldFqns == null || fieldFqns.isEmpty())) {
+            return Set.of();
+        }
+        List<String> exclude = new ArrayList<>(excludeFilePaths == null ? Set.of() : excludeFilePaths);
+        List<String> mIds  = new ArrayList<>(chunkIds  == null ? Set.of() : chunkIds);
+        List<String> cFqns = new ArrayList<>(classFqns == null ? Set.of() : classFqns);
+        List<String> fFqns = new ArrayList<>(fieldFqns == null ? Set.of() : fieldFqns);
+
+        Set<String> result = new LinkedHashSet<>();
+        try (Session session = driver.session()) {
+            session.executeRead(tx -> {
+                if (!mIds.isEmpty()) {
+                    Result r = tx.run(
+                        "MATCH (src:Method)-[r:CALLS|OVERRIDES|TEST_FOR]->(tgt:Method) " +
+                        "WHERE tgt.chunkId IN $ids AND NOT src.filePath IN $exclude " +
+                        "RETURN DISTINCT src.filePath AS fp",
+                        Map.of("ids", mIds, "exclude", exclude));
+                    while (r.hasNext()) result.add(r.next().get("fp").asString());
+                }
+                if (!cFqns.isEmpty()) {
+                    Result r = tx.run(
+                        "MATCH (src:Method)-[r:USES_TYPE|RETURNS_TYPE|THROWS|CATCHES]->(tgt) " +
+                        "WHERE (tgt:Class OR tgt:Interface) AND tgt.fqName IN $fqns " +
+                        "  AND NOT src.filePath IN $exclude " +
+                        "RETURN DISTINCT src.filePath AS fp",
+                        Map.of("fqns", cFqns, "exclude", exclude));
+                    while (r.hasNext()) result.add(r.next().get("fp").asString());
+
+                    Result r2 = tx.run(
+                        "MATCH (src)-[r:IMPORTS|EXTENDS|IMPLEMENTS|INNER_CLASS_OF]->(tgt) " +
+                        "WHERE (src:Class OR src:Interface) AND (tgt:Class OR tgt:Interface) " +
+                        "  AND tgt.fqName IN $fqns AND src.filePath IS NOT NULL " +
+                        "  AND NOT src.filePath IN $exclude " +
+                        "RETURN DISTINCT src.filePath AS fp",
+                        Map.of("fqns", cFqns, "exclude", exclude));
+                    while (r2.hasNext()) result.add(r2.next().get("fp").asString());
+                }
+                if (!fFqns.isEmpty()) {
+                    Result r = tx.run(
+                        "MATCH (src:Method)-[r:READS_FIELD|WRITES_FIELD]->(tgt:Field) " +
+                        "WHERE tgt.fqName IN $fqns AND NOT src.filePath IN $exclude " +
+                        "RETURN DISTINCT src.filePath AS fp",
+                        Map.of("fqns", fFqns, "exclude", exclude));
+                    while (r.hasNext()) result.add(r.next().get("fp").asString());
+                }
+                return null;
+            });
+        }
+        if (maxFiles > 0 && result.size() > maxFiles) {
+            return new LinkedHashSet<>(new ArrayList<>(result).subList(0, maxFiles));
+        }
+        return result;
+    }
+
+    /**
+     * Recreate inbound edges from {@code snapshot} whose target was renamed,
+     * pointing them at the new target. Edges whose target was deleted with
+     * no rename are skipped (Neo4j's {@code DETACH DELETE} already removed
+     * them when the old node disappeared during {@link #pruneByFile}).
+     *
+     * @return number of edges recreated
+     */
+    public int recreateInboundEdges(BeforeSnapshot snapshot,
+                                    Map<String, String> methodRenames,
+                                    Map<String, String> classRenames,
+                                    Map<String, String> fieldRenames) {
+        if (snapshot == null || snapshot.inboundEdges().isEmpty()) return 0;
+        if (methodRenames == null) methodRenames = Map.of();
+        if (classRenames  == null) classRenames  = Map.of();
+        if (fieldRenames  == null) fieldRenames  = Map.of();
+
+        // Group edges by their canonical Cypher shape: (srcLabel, tgtLabel, relType)
+        // Each shape maps to one batched UNWIND query.
+        Map<String, List<Map<String, Object>>> bucketsByShape = new LinkedHashMap<>();
+
+        for (InboundEdge e : snapshot.inboundEdges()) {
+            String newTgt = switch (e.targetLabel()) {
+                case "Method" -> methodRenames.getOrDefault(e.oldTargetKeyValue(), null);
+                case "Field"  -> fieldRenames.getOrDefault(e.oldTargetKeyValue(), null);
+                case "Class", "Interface" -> classRenames.getOrDefault(e.oldTargetKeyValue(), null);
+                default -> null;
+            };
+            if (newTgt == null) continue; // deleted with no rename → leave gone
+
+            String shapeKey = e.sourceLabel() + "|" + e.targetLabel() + "|" + e.relType();
+            bucketsByShape.computeIfAbsent(shapeKey, k -> new ArrayList<>())
+                .add(Map.of("src", e.sourceKeyValue(), "tgt", newTgt));
+        }
+        if (bucketsByShape.isEmpty()) return 0;
+
+        int total = 0;
+        try (Session session = driver.session()) {
+            for (Map.Entry<String, List<Map<String, Object>>> entry : bucketsByShape.entrySet()) {
+                String[] parts = entry.getKey().split("\\|", -1);
+                String srcLabel = parts[0];
+                String tgtLabel = parts[1];
+                String relType = parts[2];
+                String srcKey = "Method".equals(srcLabel) ? "chunkId" : "fqName";
+                String tgtKey = switch (tgtLabel) {
+                    case "Method" -> "chunkId";
+                    default -> "fqName"; // Class, Interface, Field
+                };
+
+                String cypher =
+                    "UNWIND $batch AS row " +
+                    "MATCH (a:" + srcLabel + " {" + srcKey + ": row.src}) " +
+                    "MATCH (b:" + tgtLabel + " {" + tgtKey + ": row.tgt}) " +
+                    "MERGE (a)-[:" + relType + "]->(b)";
+
+                final List<Map<String, Object>> batch = entry.getValue();
+                ResultSummary summary = session.executeWrite(tx -> tx.run(cypher,
+                    Map.of("batch", batch)).consume());
+                total += summary.counters().relationshipsCreated();
+            }
+        }
+        if (total > 0) {
+            System.out.printf("  ✓ recreateInboundEdges: %d edge(s) re-pointed at renamed targets%n", total);
+        }
+        return total;
     }
 
     /**

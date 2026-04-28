@@ -203,7 +203,9 @@ public class SafeLoopMain {
             if (repoRoot != null && !repoRoot.isEmpty()) {
                 reindexer = new GraphReindexer(
                     Path.of(repoRoot), DEFAULT_SOURCE_ROOTS,
-                    DEFAULT_MAX_TOKENS_PER_CHUNK, store, embeddings);
+                    DEFAULT_MAX_TOKENS_PER_CHUNK, store, embeddings,
+                    safeConfig.isReindexCascadeEnabled(),
+                    safeConfig.getReindexCascadeMaxFiles());
             }
 
             try (SafeLoopBundle bundle = SafeLoopBundle.build(reader, retriever, safeConfig, reindexer)) {

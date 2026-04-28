@@ -7,8 +7,15 @@ import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.ImportDeclaration;
 import com.github.javaparser.ast.body.BodyDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
+import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.TypeDeclaration;
+import com.github.javaparser.ast.body.VariableDeclarator;
+import com.github.javaparser.ast.expr.FieldAccessExpr;
+import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.github.javaparser.ast.expr.MethodReferenceExpr;
+import com.github.javaparser.ast.expr.NameExpr;
+import com.github.javaparser.ast.expr.SimpleName;
 import com.github.javaparser.printer.lexicalpreservation.LexicalPreservingPrinter;
 import com.smolnij.chunker.model.CodeChunk;
 import com.smolnij.chunker.retrieval.Neo4jGraphReader;
@@ -97,6 +104,7 @@ public class PatchApplier {
                 if (!ok) {
                     return result.error("aborting — op failed, no files written").failure();
                 }
+                result.committed(op);
             } catch (Exception e) {
                 logOpFailure(op, e);
                 result.op(new ApplyResult.OpStatus(
@@ -176,7 +184,203 @@ public class PatchApplier {
         if (op instanceof EditOp.AddImport i) return applyAddImport(i, staged, result);
         if (op instanceof EditOp.CreateFile c) return applyCreateFile(c, result);
         if (op instanceof EditOp.AddMavenDependency m) return applyAddMavenDependency(m, stagedText, result);
+        if (op instanceof EditOp.RenameMethod r) return applyRenameMethod(r, staged, result);
+        if (op instanceof EditOp.RenameClass r) return applyRenameClass(r, staged, result);
+        if (op instanceof EditOp.RenameField r) return applyRenameField(r, staged, result);
         throw new IllegalStateException("unknown op type: " + op.getClass());
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Rename handlers
+    // ═══════════════════════════════════════════════════════════════
+
+    private boolean applyRenameMethod(EditOp.RenameMethod op,
+                                      Map<Path, CompilationUnit> staged,
+                                      ApplyResult.Builder result) throws IOException {
+        Path target = resolveClassFile(op.fqClassName());
+        if (target == null) {
+            result.op(new ApplyResult.OpStatus("rename_method", describe(op), false,
+                "class not found in graph: " + op.fqClassName()));
+            return false;
+        }
+        CompilationUnit cu = cuFor(target, staged);
+        MethodDeclaration existing = findMethod(cu, op.fqClassName(), op.oldMethodName(), op.paramSignature());
+        if (existing == null) {
+            result.op(new ApplyResult.OpStatus("rename_method", describe(op), false,
+                "method not found: " + op.oldMethodName() + " [signature=" + op.paramSignature() + "]"));
+            return false;
+        }
+        String oldName = op.oldMethodName();
+        String newName = op.newMethodName();
+        if (oldName == null || oldName.isBlank() || newName == null || newName.isBlank()) {
+            result.op(new ApplyResult.OpStatus("rename_method", describe(op), false,
+                "oldMethodName and newMethodName are required"));
+            return false;
+        }
+
+        // Rename the declaration.
+        existing.setName(newName);
+
+        // Rewrite intra-file call sites: foo()/this.foo()/SimpleClass.foo() that
+        // most plausibly resolve to the renamed method. We don't rewrite calls
+        // qualified by an unrelated receiver expression — those couldn't refer
+        // to this method anyway.
+        String classSimple = simpleNameOf(op.fqClassName());
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            if (!call.getNameAsString().equals(oldName)) continue;
+            if (!isCallToOwningClass(call, classSimple)) continue;
+            call.setName(newName);
+        }
+        for (MethodReferenceExpr mref : cu.findAll(MethodReferenceExpr.class)) {
+            if (!mref.getIdentifier().equals(oldName)) continue;
+            // Method references look like Receiver::name. If the receiver is the
+            // owning class (or "this"), update.
+            String scopeRepr = mref.getScope().toString();
+            if (scopeRepr.equals(classSimple) || scopeRepr.equals("this")
+                    || scopeRepr.equals(op.fqClassName())) {
+                mref.setIdentifier(newName);
+            }
+        }
+
+        result.op(new ApplyResult.OpStatus("rename_method", describe(op), true));
+        return true;
+    }
+
+    private boolean applyRenameClass(EditOp.RenameClass op,
+                                     Map<Path, CompilationUnit> staged,
+                                     ApplyResult.Builder result) throws IOException {
+        String oldFq = op.oldFqName();
+        String newFq = op.newFqName();
+        if (oldFq == null || oldFq.isBlank() || newFq == null || newFq.isBlank()) {
+            result.op(new ApplyResult.OpStatus("rename_class", describe(op), false,
+                "oldFqName and newFqName are required"));
+            return false;
+        }
+        String oldPkg = packageOf(oldFq);
+        String newPkg = packageOf(newFq);
+        if (!oldPkg.equals(newPkg)) {
+            result.op(new ApplyResult.OpStatus("rename_class", describe(op), false,
+                "package change in rename_class is not supported in v2 (oldPkg=" + oldPkg + ", newPkg=" + newPkg + ")"));
+            return false;
+        }
+        Path target = resolveClassFile(oldFq);
+        if (target == null) {
+            result.op(new ApplyResult.OpStatus("rename_class", describe(op), false,
+                "class not found in graph: " + oldFq));
+            return false;
+        }
+        CompilationUnit cu = cuFor(target, staged);
+        TypeDeclaration<?> type = findType(cu, oldFq);
+        if (type == null) {
+            result.op(new ApplyResult.OpStatus("rename_class", describe(op), false,
+                "type declaration not found: " + oldFq));
+            return false;
+        }
+        String oldSimple = simpleNameOf(oldFq);
+        String newSimple = simpleNameOf(newFq);
+
+        type.setName(newSimple);
+
+        // Rewrite intra-file references to the simple name. JavaParser's
+        // SimpleName is shared by NameExpr, ClassOrInterfaceType, etc., so
+        // walking SimpleName covers most reference sites.
+        for (SimpleName sn : cu.findAll(SimpleName.class)) {
+            if (sn.getIdentifier().equals(oldSimple)) {
+                // Skip the type's own name node (already updated via setName).
+                if (sn == type.getName()) continue;
+                sn.setIdentifier(newSimple);
+            }
+        }
+        result.op(new ApplyResult.OpStatus("rename_class", describe(op), true));
+        return true;
+    }
+
+    private boolean applyRenameField(EditOp.RenameField op,
+                                     Map<Path, CompilationUnit> staged,
+                                     ApplyResult.Builder result) throws IOException {
+        String oldName = op.oldFieldName();
+        String newName = op.newFieldName();
+        if (oldName == null || oldName.isBlank() || newName == null || newName.isBlank()) {
+            result.op(new ApplyResult.OpStatus("rename_field", describe(op), false,
+                "oldFieldName and newFieldName are required"));
+            return false;
+        }
+        Path target = resolveClassFile(op.owningClassFqn());
+        if (target == null) {
+            result.op(new ApplyResult.OpStatus("rename_field", describe(op), false,
+                "class not found in graph: " + op.owningClassFqn()));
+            return false;
+        }
+        CompilationUnit cu = cuFor(target, staged);
+        TypeDeclaration<?> type = findType(cu, op.owningClassFqn());
+        if (type == null) {
+            result.op(new ApplyResult.OpStatus("rename_field", describe(op), false,
+                "type declaration not found: " + op.owningClassFqn()));
+            return false;
+        }
+
+        // Locate the VariableDeclarator carrying the field name.
+        VariableDeclarator decl = null;
+        FieldDeclaration owningField = null;
+        for (BodyDeclaration<?> member : type.getMembers()) {
+            if (!(member instanceof FieldDeclaration fd)) continue;
+            for (VariableDeclarator vd : fd.getVariables()) {
+                if (vd.getNameAsString().equals(oldName)) {
+                    decl = vd;
+                    owningField = fd;
+                    break;
+                }
+            }
+            if (decl != null) break;
+        }
+        if (decl == null) {
+            result.op(new ApplyResult.OpStatus("rename_field", describe(op), false,
+                "field not found: " + oldName));
+            return false;
+        }
+        decl.setName(newName);
+
+        // Rewrite intra-file references plausibly pointing at this field:
+        //   - bare NameExpr {oldName}, when no local variable shadows it (best effort: rewrite
+        //     only inside the owning class)
+        //   - FieldAccessExpr where field == oldName and scope is this/SimpleClass
+        String classSimple = simpleNameOf(op.owningClassFqn());
+        // Rewrite only within the owning class body to limit blast radius.
+        for (NameExpr ne : type.findAll(NameExpr.class)) {
+            if (ne.getNameAsString().equals(oldName)) {
+                ne.setName(newName);
+            }
+        }
+        for (FieldAccessExpr fa : cu.findAll(FieldAccessExpr.class)) {
+            if (!fa.getNameAsString().equals(oldName)) continue;
+            String scope = fa.getScope().toString();
+            if (scope.equals("this") || scope.equals(classSimple) || scope.equals(op.owningClassFqn())) {
+                fa.setName(newName);
+            }
+        }
+        // Avoid unused-warning by silencing owningField when we don't need it.
+        if (owningField == null) { /* unreachable */ }
+
+        result.op(new ApplyResult.OpStatus("rename_field", describe(op), true));
+        return true;
+    }
+
+    private static boolean isCallToOwningClass(MethodCallExpr call, String classSimple) {
+        if (call.getScope().isEmpty()) return true;
+        String scope = call.getScope().get().toString();
+        return scope.equals("this") || scope.equals(classSimple);
+    }
+
+    private static String simpleNameOf(String fq) {
+        if (fq == null) return "";
+        int dot = fq.lastIndexOf('.');
+        return dot < 0 ? fq : fq.substring(dot + 1);
+    }
+
+    private static String packageOf(String fq) {
+        if (fq == null) return "";
+        int dot = fq.lastIndexOf('.');
+        return dot < 0 ? "" : fq.substring(0, dot);
     }
 
     private boolean applyReplaceMethod(EditOp.ReplaceMethod op,
@@ -581,6 +785,9 @@ public class PatchApplier {
         if (op instanceof EditOp.AddImport) return "add_import";
         if (op instanceof EditOp.CreateFile) return "create_file";
         if (op instanceof EditOp.AddMavenDependency) return "add_maven_dependency";
+        if (op instanceof EditOp.RenameMethod) return "rename_method";
+        if (op instanceof EditOp.RenameClass) return "rename_class";
+        if (op instanceof EditOp.RenameField) return "rename_field";
         return "unknown";
     }
 
@@ -594,6 +801,13 @@ public class PatchApplier {
             String coord = m.groupId() + ":" + m.artifactId();
             if (m.version() != null && !m.version().isBlank()) coord += ":" + m.version();
             return "pom.xml (+dep " + coord + ")";
+        }
+        if (op instanceof EditOp.RenameMethod r) {
+            return r.fqClassName() + "#" + r.oldMethodName() + " → " + r.newMethodName();
+        }
+        if (op instanceof EditOp.RenameClass r) return r.oldFqName() + " → " + r.newFqName();
+        if (op instanceof EditOp.RenameField r) {
+            return r.owningClassFqn() + "." + r.oldFieldName() + " → " + r.newFieldName();
         }
         return op.toString();
     }

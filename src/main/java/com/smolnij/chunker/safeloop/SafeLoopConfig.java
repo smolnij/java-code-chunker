@@ -90,6 +90,15 @@ public class SafeLoopConfig {
     // ── Trace ──
     private boolean trace = true;
 
+    // ── Post-apply Neo4j re-index (cross-file repair) ──
+    /** When true, re-parse up to {@link #reindexCascadeMaxFiles} unchanged caller files
+     *  per commit so their {@code :Method.code} and outbound edges stay in sync after
+     *  a cross-file rename / signature change. */
+    private boolean reindexCascadeEnabled = true;
+    /** Cap on the cascade pass; files beyond the cap fall back to surgical edge rewrite
+     *  + a stale-source-text WARN log. */
+    private int reindexCascadeMaxFiles = 25;
+
     // ═══════════════════════════════════════════════════════════════
     // Factory
     // ═══════════════════════════════════════════════════════════════
@@ -132,6 +141,13 @@ public class SafeLoopConfig {
         cfg.backup = boolVal("SAFELOOP_BACKUP", "safeloop.backup", cfg.backup);
         cfg.trace = boolVal("SAFELOOP_TRACE", "safeloop.trace", cfg.trace);
 
+        cfg.reindexCascadeEnabled = boolVal(
+            "SAFELOOP_REINDEX_CASCADE_ENABLED", "safeloop.reindex.cascadeEnabled",
+            cfg.reindexCascadeEnabled);
+        cfg.reindexCascadeMaxFiles = intVal(
+            "SAFELOOP_REINDEX_CASCADE_MAX_FILES", "safeloop.reindex.cascadeMaxFiles",
+            cfg.reindexCascadeMaxFiles);
+
         return cfg;
     }
 
@@ -163,6 +179,8 @@ public class SafeLoopConfig {
     public boolean isDryRun() { return dryRun; }
     public boolean isBackup() { return backup; }
     public boolean isTrace() { return trace; }
+    public boolean isReindexCascadeEnabled() { return reindexCascadeEnabled; }
+    public int getReindexCascadeMaxFiles() { return reindexCascadeMaxFiles; }
 
     // ═══════════════════════════════════════════════════════════════
     // Builder-style setters
@@ -194,6 +212,8 @@ public class SafeLoopConfig {
     public SafeLoopConfig withDryRun(boolean v) { this.dryRun = v; return this; }
     public SafeLoopConfig withBackup(boolean v) { this.backup = v; return this; }
     public SafeLoopConfig withTrace(boolean v) { this.trace = v; return this; }
+    public SafeLoopConfig withReindexCascadeEnabled(boolean v) { this.reindexCascadeEnabled = v; return this; }
+    public SafeLoopConfig withReindexCascadeMaxFiles(int v) { this.reindexCascadeMaxFiles = v; return this; }
 
     @Override
     public String toString() {

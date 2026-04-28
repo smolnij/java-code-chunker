@@ -28,19 +28,22 @@ public class ApplyResult {
     private final List<OpStatus> opStatuses;
     private final Map<Path, String> stagedContents;
     private final boolean dryRun;
+    private final List<EditOp> committedOps;
 
     ApplyResult(boolean success,
                 List<Path> changedFiles,
                 List<String> errors,
                 List<OpStatus> opStatuses,
                 Map<Path, String> stagedContents,
-                boolean dryRun) {
+                boolean dryRun,
+                List<EditOp> committedOps) {
         this.success = success;
         this.changedFiles = List.copyOf(changedFiles);
         this.errors = List.copyOf(errors);
         this.opStatuses = List.copyOf(opStatuses);
         this.stagedContents = Collections.unmodifiableMap(new LinkedHashMap<>(stagedContents));
         this.dryRun = dryRun;
+        this.committedOps = List.copyOf(committedOps);
     }
 
     public boolean isSuccess() { return success; }
@@ -49,6 +52,13 @@ public class ApplyResult {
     public List<OpStatus> getOpStatuses() { return opStatuses; }
     public Map<Path, String> getStagedContents() { return stagedContents; }
     public boolean isDryRun() { return dryRun; }
+    /**
+     * Ops the applier wrote to disk (or staged, in dry-run). On atomic
+     * failure this list is empty regardless of how many ops succeeded
+     * before the failing one — same atomicity guarantee as
+     * {@link #getChangedFiles()}.
+     */
+    public List<EditOp> getCommittedOps() { return committedOps; }
 
     /**
      * One line per op describing its outcome; suitable for inclusion in a
@@ -104,19 +114,21 @@ public class ApplyResult {
         private final List<OpStatus> opStatuses = new ArrayList<>();
         private final Map<Path, String> staged = new LinkedHashMap<>();
         private final List<Path> changed = new ArrayList<>();
+        private final List<EditOp> committed = new ArrayList<>();
 
         Builder dryRun(boolean v) { this.dryRun = v; return this; }
         Builder error(String e) { this.errors.add(e); return this; }
         Builder op(OpStatus os) { this.opStatuses.add(os); return this; }
+        Builder committed(EditOp op) { this.committed.add(op); return this; }
         Builder staged(Map<Path, String> m) { this.staged.putAll(m); return this; }
         Builder changed(List<Path> files) { this.changed.addAll(files); return this; }
 
         ApplyResult success() {
-            return new ApplyResult(true, changed, errors, opStatuses, staged, dryRun);
+            return new ApplyResult(true, changed, errors, opStatuses, staged, dryRun, committed);
         }
 
         ApplyResult failure() {
-            return new ApplyResult(false, List.of(), errors, opStatuses, staged, dryRun);
+            return new ApplyResult(false, List.of(), errors, opStatuses, staged, dryRun, List.of());
         }
     }
 }

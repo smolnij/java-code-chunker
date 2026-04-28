@@ -1,3 +1,12 @@
+/usage
+Get errors tool
+How should chunks be improved? (without LLM summary)
+Which new graph edges can improve efficiency
+Which tools can be added considering new graph?
+Improve chunks with LLM summary
+The deferred items in the plan stay deferred
+How re-indexer must be updated considering new tools and chunks structure
+
 # java-code-chunker — Future Plan
 
 Analysis of the current LLM-orchestration layer with proposals to

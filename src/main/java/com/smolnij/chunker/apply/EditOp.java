@@ -17,7 +17,10 @@ public sealed interface EditOp
                 EditOp.DeleteMethod,
                 EditOp.AddImport,
                 EditOp.CreateFile,
-                EditOp.AddMavenDependency {
+                EditOp.AddMavenDependency,
+                EditOp.RenameMethod,
+                EditOp.RenameClass,
+                EditOp.RenameField {
 
     /**
      * Replace the body + signature of an existing method with {@code newCode}.
@@ -82,4 +85,51 @@ public sealed interface EditOp
                               String artifactId,
                               String version,
                               String scope) implements EditOp { }
+
+    /**
+     * Rename a method in place (same class). The applier renames the
+     * declaration and rewrites every {@code this.oldName(...)} or
+     * {@code oldName(...)} call site within the same compilation unit.
+     *
+     * <p>Cross-file callers are repaired by the post-apply
+     * {@code GraphReindexer}: this op also acts as an authoritative seed
+     * for the rename map so callers in unchanged files get their CALLS
+     * edges re-pointed (and, when within cascade budget, their
+     * {@code :Method.code} text refreshed by re-parse).
+     *
+     * @param fqClassName     owning class FQN
+     * @param oldMethodName   current method name
+     * @param newMethodName   replacement method name
+     * @param paramSignature  param-type signature (e.g. {@code "(java.lang.String, int)"});
+     *                        empty disables overload disambiguation
+     */
+    record RenameMethod(String fqClassName,
+                        String oldMethodName,
+                        String newMethodName,
+                        String paramSignature) implements EditOp { }
+
+    /**
+     * Rename a class (or interface). The applier rewrites the type
+     * declaration and any {@code new OldName(...)} / {@code OldName.foo}
+     * references in the same file. When the class is the file's primary
+     * type, the file itself is also renamed on disk.
+     *
+     * <p>Acts as an authoritative seed for cross-file repair.
+     */
+    record RenameClass(String oldFqName,
+                       String newFqName) implements EditOp { }
+
+    /**
+     * Rename a field within its owning class. The applier rewrites the
+     * declaration and intra-file references.
+     *
+     * <p>Acts as an authoritative seed for cross-file repair.
+     *
+     * @param owningClassFqn  FQN of the class that declares the field
+     * @param oldFieldName    current field name
+     * @param newFieldName    replacement field name
+     */
+    record RenameField(String owningClassFqn,
+                       String oldFieldName,
+                       String newFieldName) implements EditOp { }
 }
