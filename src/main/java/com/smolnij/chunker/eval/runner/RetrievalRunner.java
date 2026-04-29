@@ -5,6 +5,7 @@ import com.smolnij.chunker.eval.result.RetrievedChunk;
 import com.smolnij.chunker.eval.result.RunResult;
 import com.smolnij.chunker.retrieval.HybridRetriever.RetrievalResponse;
 import com.smolnij.chunker.retrieval.RetrievalResult;
+import com.smolnij.chunker.util.Errors;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -41,10 +42,11 @@ public final class RetrievalRunner implements ModeRunner {
                     response.getAnchorId(), retrieved, null, null);
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - t0;
+            e.printStackTrace();
             return new RunResult(
                     fixture.id(), modeName(), startedAt, duration,
                     null, List.of(), null,
-                    e.getClass().getSimpleName() + ": " + e.getMessage());
+                    Errors.format(e));
         } finally {
             ctx.retrievalConfig().withTopK(originalTopK);
         }

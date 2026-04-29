@@ -11,6 +11,7 @@ import com.smolnij.chunker.safeloop.SafeLoopBundle;
 import com.smolnij.chunker.safeloop.SafeLoopConfig;
 import com.smolnij.chunker.safeloop.SafeLoopResult;
 import com.smolnij.chunker.safeloop.SafetyVerdict;
+import com.smolnij.chunker.util.Errors;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -65,10 +66,11 @@ public final class SafeLoopRunner implements ModeRunner {
                     anchorId, retrieved, toPayload(result), null);
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - t0;
+            e.printStackTrace();
             return new RunResult(
                     fixture.id(), modeName(), startedAt, duration,
                     anchorId, retrieved, null,
-                    e.getClass().getSimpleName() + ": " + e.getMessage());
+                    Errors.format(e));
         } finally {
             ctx.retrievalConfig().withTopK(originalTopK);
         }

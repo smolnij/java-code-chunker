@@ -25,11 +25,13 @@ import com.smolnij.chunker.eval.scorer.Metric;
 import com.smolnij.chunker.eval.scorer.RetrievalScorer;
 import com.smolnij.chunker.eval.scorer.Scorer;
 import com.smolnij.chunker.eval.verifier.CompilingVerifier;
+import com.smolnij.chunker.eval.result.RetrievedChunk;
 import com.smolnij.chunker.eval.verifier.NoopVerifier;
 import com.smolnij.chunker.eval.verifier.Verifier;
 import com.smolnij.chunker.eval.verifier.VerifierResult;
 import com.smolnij.chunker.retrieval.RetrievalConfig;
 import com.smolnij.chunker.safeloop.SafeLoopConfig;
+import com.smolnij.chunker.util.Errors;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -69,7 +71,8 @@ public final class EvalMain {
             Path dir = cfg.fixturesDir != null ? cfg.fixturesDir : Path.of(DEFAULT_FIXTURES_DIR);
             fixtures = FixtureLoader.loadAll(dir);
         } catch (Exception e) {
-            System.err.println("ERROR: failed to load fixtures — " + e.getMessage());
+            System.err.println("ERROR: failed to load fixtures — " + Errors.format(e));
+            e.printStackTrace();
             System.exit(1);
             return;
         }
@@ -90,6 +93,7 @@ public final class EvalMain {
         System.out.println("Loaded " + fixtures.size() + " fixtures; running "
                 + selected.size() + " after filters.");
         if (cfg.dryRun) System.out.println("Mode: dry-run (no Neo4j, no LLM).");
+        if (cfg.debug) printDebugConfig(cfg, selected);
         System.out.println();
 
         Path outputDir = cfg.outputDir != null ? cfg.outputDir
@@ -104,7 +108,7 @@ public final class EvalMain {
                     ? runDryRun(selected, cfg)
                     : runLive(selected, cfg, p);
         } catch (Exception e) {
-            System.err.println("ERROR: " + e.getMessage());
+            System.err.println("ERROR: eval pipeline failed — " + Errors.format(e));
             e.printStackTrace();
             System.exit(1);
             return;
@@ -114,7 +118,8 @@ public final class EvalMain {
             writeManifest(outputDir, cfg, selected.size(), fixtures.size());
             runReporters(outputDir, cfg, records);
         } catch (IOException e) {
-            System.err.println("ERROR: failed to write reports — " + e.getMessage());
+            System.err.println("ERROR: failed to write reports — " + Errors.format(e));
+            e.printStackTrace();
             System.exit(1);
             return;
         }
@@ -135,8 +140,10 @@ public final class EvalMain {
         for (Fixture f : fixtures) {
             Fixture effective = cfg.retrievalOnly ? withMode(f, "retrieval") : f;
             RunResult res = runner.run(effective, null);
-            records.add(score(effective, res, verifier, scorers));
-            printFixtureLine(effective, res, records.get(records.size() - 1));
+            EvalRecord rec = score(effective, res, verifier, scorers);
+            records.add(rec);
+            printFixtureLine(effective, res, rec);
+            if (cfg.debug) printFixtureDebug(effective, rec);
             if (cfg.failFast && res.isError()) break;
         }
         return records;
@@ -162,6 +169,7 @@ public final class EvalMain {
                 EvalRecord rec = score(effective, res, verifier, scorers);
                 records.add(rec);
                 printFixtureLine(effective, res, rec);
+                if (cfg.debug) printFixtureDebug(effective, rec);
                 if (cfg.failFast && res.isError()) break;
             }
         }
@@ -247,14 +255,21 @@ public final class EvalMain {
 
     private static int decideExitCode(List<EvalRecord> records, EvalConfig cfg, Path outDir) {
         int errors = 0;
-        for (EvalRecord rec : records) if (rec.result().isError()) errors++;
+        StringBuilder errorDetail = new StringBuilder();
+        for (EvalRecord rec : records) {
+            if (rec.result().isError()) {
+                errors++;
+                errorDetail.append("  ").append(rec.fixture().id())
+                           .append(" — ").append(rec.result().error()).append('\n');
+            }
+        }
 
         boolean emptyGraph = !cfg.dryRun && records.stream()
                 .allMatch(r -> r.result().retrieved().isEmpty() && !r.result().isError());
         if (emptyGraph) {
             System.err.println();
-            System.err.println("WARNING: every fixture returned 0 retrieved chunks.");
-            System.err.println("         Neo4j graph appears empty. Run ChunkerMain on the target repo first.");
+            System.err.println("EXIT 2: every fixture returned 0 retrieved chunks.");
+            System.err.println("        Neo4j graph appears empty. Run ChunkerMain on the target repo first.");
             return 2;
         }
 
@@ -273,15 +288,26 @@ public final class EvalMain {
             }
             if (failed > 0) {
                 System.err.println();
-                System.err.println("✗ self-check failed: " + failed + " FAIL/ERROR metrics");
+                System.err.println("EXIT 1: self-check failed (" + failed + " FAIL/ERROR metrics)");
                 System.err.print(sb);
                 return 1;
             }
             System.out.println("✓ self-check passed");
         }
 
-        if (errors > 0) return 1;
-        if (cfg.baselineJsonl != null && regressionDetected(outDir)) return 1;
+        if (errors > 0) {
+            System.err.println();
+            System.err.println("EXIT 1: " + errors + " of " + records.size()
+                    + " fixture(s) errored during execution:");
+            System.err.print(errorDetail);
+            return 1;
+        }
+        if (cfg.baselineJsonl != null && regressionDetected(outDir)) {
+            System.err.println();
+            System.err.println("EXIT 1: regression detected vs baseline " + cfg.baselineJsonl
+                    + " (see " + outDir.resolve(BaselineDiffReporter.JSON_FILENAME) + ")");
+            return 1;
+        }
         return 0;
     }
 
@@ -295,6 +321,61 @@ public final class EvalMain {
         } catch (Exception ignored) {
             return false;
         }
+    }
+
+    private static void printDebugConfig(EvalConfig cfg, List<Fixture> selected) {
+        System.out.println();
+        System.out.println("── Debug: Resolved Config ──────────────────────────────");
+        System.out.println("  fixturesDir   = " + (cfg.fixturesDir == null ? "(default eval-fixtures)" : cfg.fixturesDir));
+        System.out.println("  outputDir     = " + (cfg.outputDir == null ? "(auto eval-results/<ts>)" : cfg.outputDir));
+        System.out.println("  baselineJsonl = " + cfg.baselineJsonl);
+        System.out.println("  diffEpsilon   = " + cfg.diffEpsilon);
+        System.out.println("  idRegex       = " + cfg.idRegex);
+        System.out.println("  tags          = " + cfg.tags);
+        System.out.println("  mode          = " + cfg.mode);
+        System.out.println("  dryRun        = " + cfg.dryRun);
+        System.out.println("  selfCheck     = " + cfg.selfCheck);
+        System.out.println("  retrievalOnly = " + cfg.retrievalOnly);
+        System.out.println("  failFast      = " + cfg.failFast);
+        System.out.println("  limit         = " + cfg.limit);
+        System.out.println("  verifier      = " + cfg.verifier);
+        System.out.println();
+        System.out.println("── Debug: Selected Fixtures (" + selected.size() + ") ───────────────");
+        for (Fixture f : selected) {
+            System.out.println("  " + f.id() + "  mode=" + f.mode()
+                    + "  topK=" + f.topK()
+                    + "  tags=" + f.tags());
+        }
+    }
+
+    private static void printFixtureDebug(Fixture f, EvalRecord rec) {
+        RunResult res = rec.result();
+        System.out.println("        ── debug ──────────────────────────────────────────");
+        System.out.println("        query: " + f.query());
+        System.out.println("        anchorId: " + res.anchorId());
+        if (f.gold() != null) {
+            System.out.println("        gold.anchor:   " + f.gold().anchor());
+            System.out.println("        gold.relevant: " + f.gold().relevant());
+        }
+        System.out.println("        retrieved (" + res.retrieved().size() + "):");
+        for (RetrievedChunk c : res.retrieved()) {
+            System.out.printf("          #%-2d  score=%.4f  %s%n", c.rank(), c.score(), c.chunkId());
+        }
+        System.out.println("        metrics:");
+        for (Metric m : rec.metrics()) {
+            System.out.printf("          [%s] %-32s value=%.4f  note=%s%n",
+                    m.status(), m.name(), m.value(), m.note() == null ? "" : m.note());
+        }
+        if (rec.compile() != null) {
+            System.out.println("        compile: " + rec.compile().status() + "  note=" + rec.compile().note());
+        }
+        if (rec.tests() != null) {
+            System.out.println("        tests:   " + rec.tests().status() + "  note=" + rec.tests().note());
+        }
+        if (res.isError()) {
+            System.out.println("        error: " + res.error());
+        }
+        System.out.println();
     }
 
     private static void printFixtureLine(Fixture f, RunResult res, EvalRecord rec) {

@@ -8,6 +8,7 @@ import com.smolnij.chunker.retrieval.EmbeddingService;
 import com.smolnij.chunker.retrieval.LmStudioEmbeddingService;
 import com.smolnij.chunker.retrieval.RetrievalConfig;
 import com.smolnij.chunker.store.Neo4jGraphStore;
+import com.smolnij.chunker.util.Errors;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 
@@ -33,7 +34,17 @@ import java.util.Properties;
  */
 public class ChunkerMain {
 
-    public static void main(String[] args) throws IOException {
+    public static void main(String[] args) {
+        try {
+            run(args);
+        } catch (Exception e) {
+            System.err.println("ERROR: " + Errors.format(e));
+            e.printStackTrace();
+            System.exit(1);
+        }
+    }
+
+    private static void run(String[] args) throws IOException {
         Properties p = PropertiesLoader.loadOrExit(args, "ChunkerMain", "config/chunker.properties");
 
         Path repoRoot = Path.of(PropertiesLoader.requireString(p, "chunker.repoRoot"));
@@ -170,7 +181,7 @@ public class ChunkerMain {
                     System.out.println("ℹ Embedding storage skipped (set embedding.url to enable).");
                 }
             } catch (Exception e) {
-                System.err.println("ERROR: Failed to persist to Neo4j: " + e.getMessage());
+                System.err.println("ERROR: Failed to persist to Neo4j — " + Errors.format(e));
                 e.printStackTrace();
             }
         } else {

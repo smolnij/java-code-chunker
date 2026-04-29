@@ -4,6 +4,7 @@ import com.smolnij.chunker.apply.GraphReindexer;
 import com.smolnij.chunker.config.PropertiesLoader;
 import com.smolnij.chunker.retrieval.*;
 import com.smolnij.chunker.store.Neo4jGraphStore;
+import com.smolnij.chunker.util.Errors;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -113,7 +114,7 @@ public class SafeLoopMain {
             }
 
         } catch (Exception e) {
-            System.err.println("ERROR: " + e.getMessage());
+            System.err.println("ERROR: " + Errors.format(e));
             e.printStackTrace();
             System.exit(1);
         }

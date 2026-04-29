@@ -2,6 +2,7 @@ package com.smolnij.chunker.refactor;
 
 import com.smolnij.chunker.config.PropertiesLoader;
 import com.smolnij.chunker.retrieval.*;
+import com.smolnij.chunker.util.Errors;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -73,7 +74,7 @@ public class AgentRefactorMain {
             }
 
         } catch (Exception e) {
-            System.err.println("ERROR: " + e.getMessage());
+            System.err.println("ERROR: " + Errors.format(e));
             e.printStackTrace();
             System.exit(1);
         }

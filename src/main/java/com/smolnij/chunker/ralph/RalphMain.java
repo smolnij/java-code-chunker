@@ -6,6 +6,7 @@ import com.smolnij.chunker.refactor.LmStudioChatService;
 import com.smolnij.chunker.refactor.diff.AstDiffEngine;
 import com.smolnij.chunker.refactor.diff.DiffScorer;
 import com.smolnij.chunker.retrieval.*;
+import com.smolnij.chunker.util.Errors;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -106,7 +107,7 @@ public class RalphMain {
             }
 
         } catch (Exception e) {
-            System.err.println("ERROR: " + e.getMessage());
+            System.err.println("ERROR: " + Errors.format(e));
             e.printStackTrace();
             System.exit(1);
         }

@@ -6,6 +6,7 @@ import com.smolnij.chunker.refactor.LmStudioChatService;
 import com.smolnij.chunker.retrieval.*;
 import com.smolnij.chunker.safeloop.SafeLoopResult;
 import com.smolnij.chunker.safeloop.SafetyVerdict;
+import com.smolnij.chunker.util.Errors;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -130,7 +131,7 @@ public class DistributedSafeLoopMain {
             }
 
         } catch (Exception e) {
-            System.err.println("ERROR: " + e.getMessage());
+            System.err.println("ERROR: " + Errors.format(e));
             e.printStackTrace();
             System.exit(1);
         }

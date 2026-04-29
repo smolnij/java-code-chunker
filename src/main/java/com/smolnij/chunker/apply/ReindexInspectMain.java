@@ -1,6 +1,7 @@
 package com.smolnij.chunker.apply;
 
 import com.smolnij.chunker.config.PropertiesLoader;
+import com.smolnij.chunker.util.Errors;
 import org.neo4j.driver.AuthTokens;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.GraphDatabase;
@@ -49,7 +50,7 @@ public class ReindexInspectMain {
                 }
             }
         } catch (Exception e) {
-            System.err.println("ERROR: " + e.getMessage());
+            System.err.println("ERROR: " + Errors.format(e));
             e.printStackTrace();
             System.exit(1);
         }

@@ -16,6 +16,7 @@ import com.smolnij.chunker.safeloop.SafeLoopBundle;
 import com.smolnij.chunker.safeloop.SafeLoopConfig;
 import com.smolnij.chunker.safeloop.SafeLoopResult;
 import com.smolnij.chunker.store.Neo4jGraphStore;
+import com.smolnij.chunker.util.Errors;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -97,7 +98,7 @@ public class ApplyMain {
             System.exit(exit);
 
         } catch (Exception e) {
-            System.err.println("ERROR: " + e.getMessage());
+            System.err.println("ERROR: " + Errors.format(e));
             e.printStackTrace();
             System.exit(1);
         }
@@ -161,7 +162,7 @@ public class ApplyMain {
             }
             return result.getAppliedFiles().isEmpty() ? 1 : 0;
         } catch (Exception e) {
-            System.err.println("ERROR: " + e.getMessage());
+            System.err.println("ERROR: " + Errors.format(e));
             e.printStackTrace();
             return 1;
         }
