@@ -1,5 +1,6 @@
 package com.smolnij.chunker.apply;
 
+import com.smolnij.chunker.config.PropertiesLoader;
 import org.neo4j.driver.AuthTokens;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.GraphDatabase;
@@ -7,65 +8,30 @@ import org.neo4j.driver.Result;
 import org.neo4j.driver.Session;
 
 import java.util.Map;
+import java.util.Properties;
 
 /**
  * Read-only verification harness for the post-apply re-index repair pass.
  *
- * <p>This is a manual diagnostic — there are no automated tests in this
- * project — used to confirm that {@link GraphReindexer} repaired the graph
- * correctly after a refactor. Runs simple Cypher queries against the
- * configured Neo4j instance and prints node/edge counts and small samples.
- *
  * <h3>Usage</h3>
  * <pre>
- *   # Verify a method rename: before chunkId no longer exists, callers
- *   # of "after" chunkId now include the renamed callers from unchanged files.
  *   java -cp target/java-code-chunker-1.0-SNAPSHOT.jar \
- *        com.smolnij.chunker.apply.ReindexInspectMain \
- *        --check method-rename \
- *        --before "com.example.B#oldName()" \
- *        --after  "com.example.B#newName()"
- *
- *   # Verify a class rename:
- *        --check class-rename \
- *        --before com.example.Foo \
- *        --after  com.example.Bar
- *
- *   # Verify a field rename (FQNs are owningClass + "." + fieldName):
- *        --check field-rename \
- *        --before com.example.Foo.oldField \
- *        --after  com.example.Foo.newField
- *
- *   # Show :Method.code samples for the inbound callers of a chunkId
- *   # (useful for spotting stale source-text references):
- *        --check callers --of "com.example.B#newName()"
+ *        com.smolnij.chunker.apply.ReindexInspectMain config/reindex-inspect.properties
  * </pre>
- *
- * <p>Connection settings come from the same env vars / system properties
- * as the rest of the project: {@code NEO4J_URI}, {@code NEO4J_USER},
- * {@code NEO4J_PASSWORD}.
  */
 public class ReindexInspectMain {
 
     public static void main(String[] args) {
-        String check = "summary";
-        String before = "";
-        String after = "";
-        String of = "";
+        Properties p = PropertiesLoader.loadOrExit(args, "ReindexInspectMain", "config/reindex-inspect.properties");
 
-        for (int i = 0; i < args.length; i++) {
-            switch (args[i]) {
-                case "--check" -> { if (i + 1 < args.length) check = args[++i]; }
-                case "--before" -> { if (i + 1 < args.length) before = args[++i]; }
-                case "--after" -> { if (i + 1 < args.length) after = args[++i]; }
-                case "--of" -> { if (i + 1 < args.length) of = args[++i]; }
-                default -> { /* ignore */ }
-            }
-        }
+        String check = PropertiesLoader.getString(p, "reindex.check", "summary");
+        String before = PropertiesLoader.getString(p, "reindex.before", "");
+        String after = PropertiesLoader.getString(p, "reindex.after", "");
+        String of = PropertiesLoader.getString(p, "reindex.of", "");
 
-        String uri = configValue("NEO4J_URI", "neo4j.uri", "bolt://localhost:7687");
-        String user = configValue("NEO4J_USER", "neo4j.user", "neo4j");
-        String pwd = configValue("NEO4J_PASSWORD", "neo4j.password", "12345678");
+        String uri = PropertiesLoader.requireString(p, "neo4j.uri");
+        String user = PropertiesLoader.getString(p, "neo4j.user", "neo4j");
+        String pwd = PropertiesLoader.requireString(p, "neo4j.password");
 
         try (Driver driver = GraphDatabase.driver(uri, AuthTokens.basic(user, pwd));
              Session session = driver.session()) {
@@ -77,7 +43,7 @@ public class ReindexInspectMain {
                 case "callers"       -> showCallers(session, of);
                 case "summary"       -> showSummary(session);
                 default -> {
-                    System.err.println("unknown --check value: " + check);
+                    System.err.println("unknown reindex.check value: " + check);
                     System.err.println("expected one of: method-rename, class-rename, field-rename, callers, summary");
                     System.exit(2);
                 }
@@ -93,7 +59,7 @@ public class ReindexInspectMain {
 
     private static void checkMethodRename(Session s, String before, String after) {
         if (before.isEmpty() || after.isEmpty()) {
-            System.err.println("--check method-rename requires --before <oldChunkId> --after <newChunkId>");
+            System.err.println("reindex.check=method-rename requires reindex.before and reindex.after");
             System.exit(2);
         }
         long oldExists = scalarLong(s,
@@ -115,7 +81,6 @@ public class ReindexInspectMain {
         System.out.println("  inbound CALLS to before: " + inboundOld + (inboundOld == 0 ? " ✓" : " ✗"));
         System.out.println("  inbound CALLS to after:  " + inboundNew + (inboundNew >= 1 ? " ✓" : " ✗ (no callers re-pointed?)"));
 
-        // Sample callers for context
         Result callers = s.run(
             "MATCH (caller:Method)-[:CALLS]->(m:Method {chunkId: $id}) " +
             "RETURN caller.chunkId AS id, caller.filePath AS file LIMIT 10",
@@ -131,7 +96,7 @@ public class ReindexInspectMain {
 
     private static void checkClassRename(Session s, String before, String after) {
         if (before.isEmpty() || after.isEmpty()) {
-            System.err.println("--check class-rename requires --before <oldFqn> --after <newFqn>");
+            System.err.println("reindex.check=class-rename requires reindex.before and reindex.after");
             System.exit(2);
         }
         long oldExists = scalarLong(s,
@@ -158,7 +123,7 @@ public class ReindexInspectMain {
 
     private static void checkFieldRename(Session s, String before, String after) {
         if (before.isEmpty() || after.isEmpty()) {
-            System.err.println("--check field-rename requires --before <oldFqn> --after <newFqn>");
+            System.err.println("reindex.check=field-rename requires reindex.before and reindex.after");
             System.exit(2);
         }
         long oldExists = scalarLong(s,
@@ -177,7 +142,7 @@ public class ReindexInspectMain {
 
     private static void showCallers(Session s, String of) {
         if (of.isEmpty()) {
-            System.err.println("--check callers requires --of <chunkId>");
+            System.err.println("reindex.check=callers requires reindex.of");
             System.exit(2);
         }
         Result callers = s.run(
@@ -213,13 +178,5 @@ public class ReindexInspectMain {
     private static long scalarLong(Session s, String cypher, Map<String, Object> params) {
         Result r = s.run(cypher, params);
         return r.hasNext() ? r.next().get(0).asLong(0L) : 0L;
-    }
-
-    private static String configValue(String envKey, String sysPropKey, String defaultValue) {
-        String v = System.getProperty(sysPropKey);
-        if (v != null && !v.isEmpty()) return v;
-        v = System.getenv(envKey);
-        if (v != null && !v.isEmpty()) return v;
-        return defaultValue;
     }
 }

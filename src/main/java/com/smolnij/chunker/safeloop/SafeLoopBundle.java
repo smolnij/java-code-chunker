@@ -57,9 +57,6 @@ public final class SafeLoopBundle implements AutoCloseable {
                                        HybridRetriever retriever,
                                        SafeLoopConfig config,
                                        GraphReindexer reindexer) {
-        // Pull verify-related fields from env/sysprops without touching the LLM
-        // endpoint config, which the SafeLoopConfig already owns.
-        RefactorConfig envDefaults = RefactorConfig.fromEnvironment();
         RefactorConfig refactorConfig = new RefactorConfig()
                 .withChatUrl(config.getChatUrl())
                 .withChatModel(config.getRefactorModel())
@@ -71,10 +68,10 @@ public final class SafeLoopBundle implements AutoCloseable {
                 .withMaxToolCalls(config.getMaxToolCalls())
                 .withChatMemorySize(config.getChatMemorySize())
                 .withStructuredOutput(config.getStructuredOutput())
-                .withRequireCompile(envDefaults.isRequireCompile())
-                .withVerifyMode(envDefaults.getVerifyMode())
-                .withVerifyMaxErrors(envDefaults.getVerifyMaxErrors())
-                .withClasspathCacheDir(envDefaults.getClasspathCacheDir());
+                .withRequireCompile(config.isRequireCompile())
+                .withVerifyMode(config.getVerifyMode())
+                .withVerifyMaxErrors(config.getVerifyMaxErrors())
+                .withClasspathCacheDir(config.getClasspathCacheDir());
 
         RefactorTools agentTools = new RefactorTools(retriever, reader, config.getMaxChunks());
         AstDiffEngine diffEngine = new AstDiffEngine();

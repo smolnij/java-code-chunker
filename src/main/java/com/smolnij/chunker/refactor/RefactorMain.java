@@ -1,109 +1,38 @@
 package com.smolnij.chunker.refactor;
 
+import com.smolnij.chunker.config.PropertiesLoader;
 import com.smolnij.chunker.refactor.diff.AstDiffEngine;
 import com.smolnij.chunker.refactor.diff.DiffScorer;
 import com.smolnij.chunker.retrieval.*;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Properties;
 
 /**
  * CLI entry point for the graph-aware LLM refactoring loop.
  *
- * <p>Connects to Neo4j (code graph must be loaded via {@code ChunkerMain}),
- * runs hybrid retrieval, and orchestrates an iterative refactoring conversation
- * with a local LLM via LM-Studio.
- *
  * <h3>Usage:</h3>
  * <pre>
- *   java -cp java-code-chunker.jar com.example.chunker.refactor.RefactorMain "Refactor createUser to async"
- *
- *   Required environment variables / system properties:
- *     NEO4J_URI      / -Dneo4j.uri      — bolt URI (e.g. bolt://localhost:7687)
- *     NEO4J_USER     / -Dneo4j.user     — username (default: neo4j)
- *     NEO4J_PASSWORD / -Dneo4j.password — password
- *
- *   Optional:
- *     LLM_CHAT_URL       / -Dllm.chatUrl       — chat endpoint (default: http://localhost:1234/v1/chat/completions)
- *     LLM_CHAT_MODEL     / -Dllm.chatModel     — model name (default: whatever is loaded)
- *     LLM_TEMPERATURE    / -Dllm.temperature    — sampling temperature (default: 0.1)
- *     LLM_MAX_TOKENS     / -Dllm.maxTokens      — max response tokens (default: 4096)
- *     REFACTOR_MAX_CHUNKS / -Drefactor.maxChunks — context chunks (default: 6)
- *     REFACTOR_MAX_REFINEMENTS / -Drefactor.maxRefinements — retry rounds (default: 2)
- *     EMBEDDING_URL      / -Dembedding.url      — embedding endpoint
- *
- *   Flags:
- *     --output / -o &lt;file&gt;  — write result to file
- *     --no-stream            — disable SSE streaming (wait for full response)
- *     --agent                — use LangChain4j agentic mode (LLM calls tools autonomously)
- *     --debug                — print raw LLM responses
+ *   java -cp java-code-chunker.jar com.smolnij.chunker.refactor.RefactorMain config/refactor.properties
  * </pre>
  */
 public class RefactorMain {
 
     public static void main(String[] args) {
+        Properties p = PropertiesLoader.loadOrExit(args, "RefactorMain", "config/refactor.properties");
 
-        // ── Parse arguments ──
-        String query = null;
-        String outputFile = null;
-        boolean noStream = false;
-        boolean debug = false;
-        boolean agentMode = false;
+        String query = PropertiesLoader.requireString(p, "refactor.query");
+        String outputFile = PropertiesLoader.getString(p, "refactor.outputFile", null);
+        boolean debug = PropertiesLoader.getBoolean(p, "refactor.debug", false);
 
-        for (int i = 0; i < args.length; i++) {
-            switch (args[i]) {
-                case "--output", "-o" -> {
-                    if (i + 1 < args.length) outputFile = args[++i];
-                }
-                case "--no-stream" -> noStream = true;
-                case "--agent" -> agentMode = true;
-                case "--debug" -> debug = true;
-                default -> {
-                    if (!args[i].startsWith("-")) {
-                        query = args[i];
-                    }
-                }
-            }
-        }
+        RetrievalConfig retrievalConfig = RetrievalConfig.fromProperties(p);
+        RefactorConfig refactorConfig = RefactorConfig.fromProperties(p);
 
-        if (query == null || query.isBlank()) {
-            System.err.println("Usage: RefactorMain <query> [--output <file>] [--no-stream] [--agent] [--debug]");
-            System.err.println();
-            System.err.println("Example:");
-            System.err.println("  RefactorMain \"Refactor createUser to async\"");
-            System.err.println();
-            System.err.println("Modes:");
-            System.err.println("  (default)  — Fixed pipeline: Retrieve → Analyze → Refactor → Safety");
-            System.err.println("  --agent    — Agentic mode: LLM calls retrieval tools autonomously (requires tool-calling model)");
-            System.err.println();
-            System.err.println("Required: NEO4J_URI, NEO4J_PASSWORD");
-            System.err.println("Optional: LLM_CHAT_URL, LLM_CHAT_MODEL, EMBEDDING_URL");
-            System.exit(1);
-            return;
-        }
+        String neo4jUri = PropertiesLoader.requireString(p, "neo4j.uri");
+        String neo4jUser = PropertiesLoader.getString(p, "neo4j.user", "neo4j");
+        String neo4jPassword = PropertiesLoader.requireString(p, "neo4j.password");
 
-        // ── Load configs ──
-        RetrievalConfig retrievalConfig = RetrievalConfig.fromEnvironment();
-        RefactorConfig refactorConfig = RefactorConfig.fromEnvironment();
-
-        if (noStream) {
-            refactorConfig = refactorConfig.withStream(false);
-        }
-        if (agentMode) {
-            refactorConfig = refactorConfig.withAgentMode(true);
-        }
-
-        String neo4jUri = getConfigValue("NEO4J_URI", "neo4j.uri", null);
-        String neo4jUser = getConfigValue("NEO4J_USER", "neo4j.user", "neo4j");
-        String neo4jPassword = getConfigValue("NEO4J_PASSWORD", "neo4j.password", null);
-
-        if (neo4jUri == null || neo4jPassword == null) {
-            System.err.println("ERROR: NEO4J_URI and NEO4J_PASSWORD must be set.");
-            System.exit(1);
-            return;
-        }
-
-        // ── Banner ──
         String mode = refactorConfig.isAgentMode() ? "Agentic (LangChain4j)" : "Pipeline (Retrieve → Refactor → Safety)";
         System.out.println("╔══════════════════════════════════════════════════════╗");
         System.out.println("║  Graph-Aware LLM Refactoring Loop                    ║");
@@ -114,18 +43,14 @@ public class RefactorMain {
         System.out.println("Refactor:  " + refactorConfig);
         System.out.println();
 
-        // ── Run ──
         try (Neo4jGraphReader reader = new Neo4jGraphReader(neo4jUri, neo4jUser, neo4jPassword, retrievalConfig);
              EmbeddingService embeddings = new LmStudioEmbeddingService(retrievalConfig);
              com.smolnij.chunker.store.Neo4jGraphStore store = new com.smolnij.chunker.store.Neo4jGraphStore(neo4jUri, neo4jUser, neo4jPassword)) {
 
-            // Ensure the vector index exists before any vector search
             reader.ensureVectorIndex();
 
             HybridRetriever retriever = new HybridRetriever(reader, embeddings, retrievalConfig);
 
-            // Build the post-apply Neo4j re-indexer when --apply is on so
-            // subsequent retrievals see the fresh code on disk.
             com.smolnij.chunker.apply.GraphReindexer reindexer = null;
             if (refactorConfig.isApply() && !refactorConfig.getRepoRoot().isEmpty()) {
                 reindexer = new com.smolnij.chunker.apply.GraphReindexer(
@@ -137,7 +62,6 @@ public class RefactorMain {
             String output;
 
             if (refactorConfig.isAgentMode()) {
-                // ── Agentic mode: LLM calls tools autonomously ──
                 RefactorTools tools = new RefactorTools(retriever, reader, refactorConfig.getMaxChunks());
                 RefactorAgent agent = new RefactorAgent(refactorConfig, tools);
 
@@ -150,7 +74,6 @@ public class RefactorMain {
                     System.out.println(response);
                 }
             } else {
-                // ── Legacy pipeline mode ──
                 try (ChatService chatService = new LmStudioChatService(refactorConfig)) {
                     AstDiffEngine diffEngine = new AstDiffEngine();
                     DiffScorer diffScorer = new DiffScorer(reader);
@@ -168,7 +91,6 @@ public class RefactorMain {
                 }
             }
 
-            // ── Output ──
             if (outputFile != null) {
                 Files.writeString(Path.of(outputFile), output);
                 System.out.println("✓ Result written to " + outputFile);
@@ -196,13 +118,4 @@ public class RefactorMain {
         sb.append("═".repeat(72)).append("\n");
         return sb.toString();
     }
-
-    private static String getConfigValue(String envKey, String sysPropKey, String defaultValue) {
-        String value = System.getProperty(sysPropKey);
-        if (value != null && !value.isEmpty()) return value;
-        value = System.getenv(envKey);
-        if (value != null && !value.isEmpty()) return value;
-        return defaultValue;
-    }
 }
-

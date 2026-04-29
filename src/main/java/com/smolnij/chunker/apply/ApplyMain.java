@@ -1,5 +1,6 @@
 package com.smolnij.chunker.apply;
 
+import com.smolnij.chunker.config.PropertiesLoader;
 import com.smolnij.chunker.refactor.ChatService;
 import com.smolnij.chunker.refactor.LmStudioChatService;
 import com.smolnij.chunker.refactor.RefactorConfig;
@@ -19,28 +20,17 @@ import com.smolnij.chunker.store.Neo4jGraphStore;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
+import java.util.Properties;
 
 /**
  * CLI entry point for apply-enabled refactoring.
  *
- * <p>Wraps {@link com.smolnij.chunker.safeloop.SafeRefactorLoop} (and
- * {@link RefactorLoop}) with {@code apply=true} so the proposed changes are
- * actually written to disk after the SAFE verdict. Uses {@link PatchApplier}
- * under the hood.
- *
  * <h3>Usage:</h3>
  * <pre>
- *   java -cp java-code-chunker.jar com.smolnij.chunker.apply.ApplyMain \
- *       &lt;repoRoot&gt; "&lt;query&gt;" [--mode safeloop|refactor] [--dry-run] [--no-backup]
+ *   java -cp java-code-chunker.jar com.smolnij.chunker.apply.ApplyMain config/apply.properties
  * </pre>
- *
- * <p>Default: {@code --mode safeloop}, dry-run off (writes happen), backups on.
  */
 public class ApplyMain {
-
-    public static final String NEO4J_DEFAULT_URL = "bolt://localhost:7687";
-    public static final String NEO4J_DEFAULT_USER = "neo4j";
-    public static final String NEO4J_DEFAULT_PASSWORD = "12345678";
 
     enum Mode { SAFELOOP, REFACTOR }
 
@@ -50,43 +40,24 @@ public class ApplyMain {
         Path.of("src/test/java")
     );
 
-    /** Default token budget — must match {@code ChunkerMain.DEFAULT_MAX_TOKENS_PER_CHUNK}. */
     private static final int DEFAULT_MAX_TOKENS_PER_CHUNK = 512;
 
     public static void main(String[] args) {
-        if (args.length < 2) {
-            printUsage();
+        Properties p = PropertiesLoader.loadOrExit(args, "ApplyMain", "config/apply.properties");
+
+        String repoRoot = PropertiesLoader.requireString(p, "apply.repoRoot");
+        String query = PropertiesLoader.requireString(p, "apply.query");
+        String modeStr = PropertiesLoader.getString(p, "apply.mode", "safeloop");
+        boolean dryRun = PropertiesLoader.getBoolean(p, "apply.dryRun", false);
+        boolean backup = PropertiesLoader.getBoolean(p, "apply.backup", true);
+
+        Mode mode;
+        try {
+            mode = Mode.valueOf(modeStr.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            System.err.println("Unknown apply.mode: " + modeStr + " (expected: safeloop | refactor)");
             System.exit(1);
             return;
-        }
-
-        String repoRoot = args[0];
-        String query = args[1];
-        Mode mode = Mode.SAFELOOP;
-        boolean dryRun = false;
-        boolean backup = true;
-
-        for (int i = 2; i < args.length; i++) {
-            switch (args[i]) {
-                case "--mode" -> {
-                    if (i + 1 < args.length) {
-                        try { mode = Mode.valueOf(args[++i].toUpperCase()); }
-                        catch (IllegalArgumentException e) {
-                            System.err.println("Unknown mode: " + args[i]);
-                            System.exit(1);
-                            return;
-                        }
-                    }
-                }
-                case "--dry-run" -> dryRun = true;
-                case "--no-backup" -> backup = false;
-                default -> {
-                    System.err.println("Unknown argument: " + args[i]);
-                    printUsage();
-                    System.exit(1);
-                    return;
-                }
-            }
         }
 
         Path repoRootPath = Paths.get(repoRoot).toAbsolutePath().normalize();
@@ -101,10 +72,10 @@ public class ApplyMain {
         System.out.println("Query:   " + query);
         System.out.println();
 
-        String neo4jUri = cfg("NEO4J_URI", "neo4j.uri", NEO4J_DEFAULT_URL);
-        String neo4jUser = cfg("NEO4J_USER", "neo4j.user", NEO4J_DEFAULT_USER);
-        String neo4jPassword = cfg("NEO4J_PASSWORD", "neo4j.password", NEO4J_DEFAULT_PASSWORD);
-        RetrievalConfig retrievalConfig = RetrievalConfig.fromEnvironment();
+        String neo4jUri = PropertiesLoader.requireString(p, "neo4j.uri");
+        String neo4jUser = PropertiesLoader.getString(p, "neo4j.user", "neo4j");
+        String neo4jPassword = PropertiesLoader.requireString(p, "neo4j.password");
+        RetrievalConfig retrievalConfig = RetrievalConfig.fromProperties(p);
 
         try (Neo4jGraphReader reader = new Neo4jGraphReader(neo4jUri, neo4jUser, neo4jPassword, retrievalConfig);
              EmbeddingService embeddings = new LmStudioEmbeddingService(retrievalConfig);
@@ -113,19 +84,15 @@ public class ApplyMain {
             reader.ensureVectorIndex();
             HybridRetriever retriever = new HybridRetriever(reader, embeddings, retrievalConfig);
 
-            // Build the post-apply re-indexer so subsequent retrievals see fresh code.
-            // The reindexer catches embedding failures and continues without vector
-            // refresh, so passing the embedding service is safe even when EMBEDDING_URL
-            // isn't configured.
             GraphReindexer reindexer = new GraphReindexer(
                 repoRootPath, DEFAULT_SOURCE_ROOTS,
                 DEFAULT_MAX_TOKENS_PER_CHUNK, store, embeddings);
 
             int exit;
             if (mode == Mode.SAFELOOP) {
-                exit = runSafeLoop(reader, retriever, reindexer, repoRootPath, query, dryRun, backup);
+                exit = runSafeLoop(p, reader, retriever, reindexer, repoRootPath, query, dryRun, backup);
             } else {
-                exit = runRefactor(reader, retriever, reindexer, repoRootPath, query, dryRun, backup);
+                exit = runRefactor(p, reader, retriever, reindexer, repoRootPath, query, dryRun, backup);
             }
             System.exit(exit);
 
@@ -136,14 +103,15 @@ public class ApplyMain {
         }
     }
 
-    private static int runSafeLoop(Neo4jGraphReader reader,
+    private static int runSafeLoop(Properties p,
+                                   Neo4jGraphReader reader,
                                    HybridRetriever retriever,
                                    GraphReindexer reindexer,
                                    Path repoRoot,
                                    String query,
                                    boolean dryRun,
                                    boolean backup) throws Exception {
-        SafeLoopConfig cfg = SafeLoopConfig.fromEnvironment()
+        SafeLoopConfig cfg = SafeLoopConfig.fromProperties(p)
             .withRepoRoot(repoRoot.toString())
             .withApply(true)
             .withDryRun(dryRun)
@@ -162,14 +130,15 @@ public class ApplyMain {
         }
     }
 
-    private static int runRefactor(Neo4jGraphReader reader,
+    private static int runRefactor(Properties p,
+                                   Neo4jGraphReader reader,
                                    HybridRetriever retriever,
                                    GraphReindexer reindexer,
                                    Path repoRoot,
                                    String query,
                                    boolean dryRun,
                                    boolean backup) {
-        RefactorConfig cfg = RefactorConfig.fromEnvironment()
+        RefactorConfig cfg = RefactorConfig.fromProperties(p)
             .withRepoRoot(repoRoot.toString())
             .withApply(true)
             .withDryRun(dryRun)
@@ -196,24 +165,5 @@ public class ApplyMain {
             e.printStackTrace();
             return 1;
         }
-    }
-
-    private static void printUsage() {
-        System.err.println("Usage: ApplyMain <repoRoot> \"<query>\" [--mode safeloop|refactor] [--dry-run] [--no-backup]");
-        System.err.println();
-        System.err.println("Required env / sysprops: NEO4J_URI, NEO4J_PASSWORD, LLM_CHAT_URL, EMBEDDING_URL");
-        System.err.println();
-        System.err.println("Examples:");
-        System.err.println("  ApplyMain /home/me/repo \"Rename Util.foo to bar\"");
-        System.err.println("  ApplyMain /home/me/repo \"...\" --dry-run");
-        System.err.println("  ApplyMain /home/me/repo \"...\" --mode refactor --no-backup");
-    }
-
-    private static String cfg(String envKey, String sysPropKey, String defaultValue) {
-        String v = System.getProperty(sysPropKey);
-        if (v != null && !v.isEmpty()) return v;
-        v = System.getenv(envKey);
-        if (v != null && !v.isEmpty()) return v;
-        return defaultValue;
     }
 }

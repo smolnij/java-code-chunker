@@ -1,6 +1,9 @@
 package com.smolnij.chunker.safeloop;
 
+import com.smolnij.chunker.config.PropertiesLoader;
 import com.smolnij.chunker.refactor.RefactorConfig;
+
+import java.util.Properties;
 
 /**
  * Configuration for the self-improving safe refactoring loop.
@@ -16,144 +19,103 @@ import com.smolnij.chunker.refactor.RefactorConfig;
  *   <li>Graph coverage requirements force minimum caller/callee retrieval before refactoring</li>
  *   <li>Convergence detection stops the loop when no new graph nodes are discovered</li>
  * </ul>
- *
- * <h3>Defaults:</h3>
- * <pre>
- *   chatUrl               = http://localhost:1234/v1/chat/completions
- *   refactorModel         = (empty — use loaded model)
- *   analyzerModel         = (empty — use loaded model)
- *   refactorTemperature   = 0.3
- *   analyzerTemperature   = 0.1
- *   topP                  = 0.9
- *   maxTokens             = 4096
- *   safetyThreshold       = 0.9    (confidence ≥ this → SAFE)
- *   maxIterations         = 5      (hard cap on refine loops)
- *   maxChunks             = 8      (CodeChunk objects returned per retrieval tool call)
- *   chatMemorySize        = 60     (message count for LangChain4j MessageWindowChatMemory sliding window)
- *   maxToolCalls          = 30     (soft cap on tool invocations — logged only; LangChain4j hard cap is 200)
- *   minCallerDepth        = 1      (ensure at least this many hops of callers)
- *   minCalleeDepth        = 1      (ensure at least this many hops of callees)
- *   stopOnNoNewNodes      = true   (stop loop if graph expansion yields nothing new)
- *   stopOnStagnation      = true   (stop if analyzer returns same risks twice)
- *   stream                = true   (SSE streaming for refactorer output)
- * </pre>
  */
 public class SafeLoopConfig {
 
-    // ── LLM endpoints ──
     private String chatUrl = "http://localhost:1234/v1/chat/completions";
     private String refactorModel = "";
     private String analyzerModel = "";
 
-    // ── Refactorer sampling ──
     private double refactorTemperature = 0.3;
     private double topP = 0.9;
     private int maxTokens = 66000;
 
-    // ── Analyzer sampling ──
     private double analyzerTemperature = 0.1;
 
-    // ── Safety loop control ──
     private double safetyThreshold = 0.9;
-//    private double safetyThreshold = 0.5; //FIXME set to 0.5 for testing
     private int maxIterations = 5;
 
-    // ── Context ──
-    private int maxChunks = 8;          // max code chunks returned per retrieval tool call (count of CodeChunk objects)
-    private int chatMemorySize = 60;    // sliding window size in messages (LangChain4j MessageWindowChatMemory); one message = one user/assistant/tool turn
-    private int maxToolCalls = 30;      // soft cap on tool invocations per agent run (application counter, logged only — LangChain4j hard cap is RefactorAgent.MAX_SEQUENTIAL_TOOLS_EXECUTIONS=200)
+    private int maxChunks = 8;
+    private int chatMemorySize = 60;
+    private int maxToolCalls = 30;
 
-    // ── Graph coverage requirements ──
     private int minCallerDepth = 1;
     private int minCalleeDepth = 1;
 
-    // ── Convergence ──
     private boolean stopOnNoNewNodes = true;
     private boolean stopOnStagnation = true;
 
-    // ── Streaming ──
     private boolean stream = true;
 
-    // ── Self-review sampling (low-temperature reflexion pass) ──
     private double selfReviewTemperature = 0.05;
 
-    // ── Structured output (response_format / tool-call) ──
     private RefactorConfig.StructuredOutputMode structuredOutput =
         RefactorConfig.StructuredOutputMode.JSON_SCHEMA;
 
-    // ── Patch apply (deterministic file edits after SAFE verdict) ──
-    private String repoRoot = "/home/smola/dev/src/AI_tools/java-code-chunker/";
+    private String repoRoot = "";
     private boolean apply = true;
     private boolean dryRun = false;
     private boolean backup = true;
 
-    // ── Trace ──
     private boolean trace = true;
 
-    // ── Post-apply Neo4j re-index (cross-file repair) ──
-    /** When true, re-parse up to {@link #reindexCascadeMaxFiles} unchanged caller files
-     *  per commit so their {@code :Method.code} and outbound edges stay in sync after
-     *  a cross-file rename / signature change. */
     private boolean reindexCascadeEnabled = true;
-    /** Cap on the cascade pass; files beyond the cap fall back to surgical edge rewrite
-     *  + a stale-source-text WARN log. */
     private int reindexCascadeMaxFiles = 25;
 
-    // ═══════════════════════════════════════════════════════════════
-    // Factory
-    // ═══════════════════════════════════════════════════════════════
+    private boolean requireCompile = true;
+    private String verifyMode = "auto";
+    private int verifyMaxErrors = 25;
+    private String classpathCacheDir = "";
 
-    public static SafeLoopConfig fromEnvironment() {
+    public static SafeLoopConfig fromProperties(Properties p) {
         SafeLoopConfig cfg = new SafeLoopConfig();
 
-        cfg.chatUrl = strVal("SAFELOOP_CHAT_URL", "safeloop.chatUrl", cfg.chatUrl);
-        cfg.refactorModel = strVal("SAFELOOP_REFACTOR_MODEL", "safeloop.refactorModel", cfg.refactorModel);
-        cfg.analyzerModel = strVal("SAFELOOP_ANALYZER_MODEL", "safeloop.analyzerModel", cfg.analyzerModel);
+        cfg.chatUrl = PropertiesLoader.getString(p, "safeloop.chatUrl", cfg.chatUrl);
+        cfg.refactorModel = PropertiesLoader.getString(p, "safeloop.refactorModel", cfg.refactorModel);
+        cfg.analyzerModel = PropertiesLoader.getString(p, "safeloop.analyzerModel", cfg.analyzerModel);
 
-        cfg.refactorTemperature = doubleVal("SAFELOOP_REFACTOR_TEMP", "safeloop.refactorTemp", cfg.refactorTemperature);
-        cfg.analyzerTemperature = doubleVal("SAFELOOP_ANALYZER_TEMP", "safeloop.analyzerTemp", cfg.analyzerTemperature);
-        cfg.topP = doubleVal("SAFELOOP_TOP_P", "safeloop.topP", cfg.topP);
-        cfg.maxTokens = intVal("SAFELOOP_MAX_TOKENS", "safeloop.maxTokens", cfg.maxTokens);
+        cfg.refactorTemperature = PropertiesLoader.getDouble(p, "safeloop.refactorTemp", cfg.refactorTemperature);
+        cfg.analyzerTemperature = PropertiesLoader.getDouble(p, "safeloop.analyzerTemp", cfg.analyzerTemperature);
+        cfg.topP = PropertiesLoader.getDouble(p, "safeloop.topP", cfg.topP);
+        cfg.maxTokens = PropertiesLoader.getInt(p, "safeloop.maxTokens", cfg.maxTokens);
 
-        cfg.safetyThreshold = doubleVal("SAFELOOP_SAFETY_THRESHOLD", "safeloop.safetyThreshold", cfg.safetyThreshold);
-        cfg.maxIterations = intVal("SAFELOOP_MAX_ITERATIONS", "safeloop.maxIterations", cfg.maxIterations);
+        cfg.safetyThreshold = PropertiesLoader.getDouble(p, "safeloop.safetyThreshold", cfg.safetyThreshold);
+        cfg.maxIterations = PropertiesLoader.getInt(p, "safeloop.maxIterations", cfg.maxIterations);
 
-        cfg.maxChunks = intVal("SAFELOOP_MAX_CHUNKS", "safeloop.maxChunks", cfg.maxChunks);
-        cfg.chatMemorySize = intVal("SAFELOOP_CHAT_MEMORY_SIZE", "safeloop.chatMemorySize", cfg.chatMemorySize);
-        cfg.maxToolCalls = intVal("SAFELOOP_MAX_TOOL_CALLS", "safeloop.maxToolCalls", cfg.maxToolCalls);
+        cfg.maxChunks = PropertiesLoader.getInt(p, "safeloop.maxChunks", cfg.maxChunks);
+        cfg.chatMemorySize = PropertiesLoader.getInt(p, "safeloop.chatMemorySize", cfg.chatMemorySize);
+        cfg.maxToolCalls = PropertiesLoader.getInt(p, "safeloop.maxToolCalls", cfg.maxToolCalls);
 
-        cfg.minCallerDepth = intVal("SAFELOOP_MIN_CALLER_DEPTH", "safeloop.minCallerDepth", cfg.minCallerDepth);
-        cfg.minCalleeDepth = intVal("SAFELOOP_MIN_CALLEE_DEPTH", "safeloop.minCalleeDepth", cfg.minCalleeDepth);
+        cfg.minCallerDepth = PropertiesLoader.getInt(p, "safeloop.minCallerDepth", cfg.minCallerDepth);
+        cfg.minCalleeDepth = PropertiesLoader.getInt(p, "safeloop.minCalleeDepth", cfg.minCalleeDepth);
 
-        cfg.stopOnNoNewNodes = boolVal("SAFELOOP_STOP_NO_NEW_NODES", "safeloop.stopOnNoNewNodes", cfg.stopOnNoNewNodes);
-        cfg.stopOnStagnation = boolVal("SAFELOOP_STOP_ON_STAGNATION", "safeloop.stopOnStagnation", cfg.stopOnStagnation);
-        cfg.stream = boolVal("SAFELOOP_STREAM", "safeloop.stream", cfg.stream);
+        cfg.stopOnNoNewNodes = PropertiesLoader.getBoolean(p, "safeloop.stopOnNoNewNodes", cfg.stopOnNoNewNodes);
+        cfg.stopOnStagnation = PropertiesLoader.getBoolean(p, "safeloop.stopOnStagnation", cfg.stopOnStagnation);
+        cfg.stream = PropertiesLoader.getBoolean(p, "safeloop.stream", cfg.stream);
 
-        cfg.selfReviewTemperature = doubleVal("SAFELOOP_SELF_REVIEW_TEMP", "safeloop.selfReviewTemp", cfg.selfReviewTemperature);
+        cfg.selfReviewTemperature = PropertiesLoader.getDouble(p, "safeloop.selfReviewTemp", cfg.selfReviewTemperature);
 
-        cfg.structuredOutput = enumVal(
-            "LLM_STRUCTURED_OUTPUT", "llm.structuredOutput",
+        cfg.structuredOutput = PropertiesLoader.getEnum(p, "llm.structuredOutput",
             RefactorConfig.StructuredOutputMode.class, cfg.structuredOutput);
 
-        cfg.repoRoot = strVal("SAFELOOP_REPO_ROOT", "safeloop.repoRoot", cfg.repoRoot);
-        cfg.apply = boolVal("SAFELOOP_APPLY", "safeloop.apply", cfg.apply);
-        cfg.dryRun = boolVal("SAFELOOP_DRY_RUN", "safeloop.dryRun", cfg.dryRun);
-        cfg.backup = boolVal("SAFELOOP_BACKUP", "safeloop.backup", cfg.backup);
-        cfg.trace = boolVal("SAFELOOP_TRACE", "safeloop.trace", cfg.trace);
+        cfg.repoRoot = PropertiesLoader.getString(p, "safeloop.repoRoot", cfg.repoRoot);
+        cfg.apply = PropertiesLoader.getBoolean(p, "safeloop.apply", cfg.apply);
+        cfg.dryRun = PropertiesLoader.getBoolean(p, "safeloop.dryRun", cfg.dryRun);
+        cfg.backup = PropertiesLoader.getBoolean(p, "safeloop.backup", cfg.backup);
+        cfg.trace = PropertiesLoader.getBoolean(p, "safeloop.trace", cfg.trace);
 
-        cfg.reindexCascadeEnabled = boolVal(
-            "SAFELOOP_REINDEX_CASCADE_ENABLED", "safeloop.reindex.cascadeEnabled",
-            cfg.reindexCascadeEnabled);
-        cfg.reindexCascadeMaxFiles = intVal(
-            "SAFELOOP_REINDEX_CASCADE_MAX_FILES", "safeloop.reindex.cascadeMaxFiles",
-            cfg.reindexCascadeMaxFiles);
+        cfg.reindexCascadeEnabled = PropertiesLoader.getBoolean(
+            p, "safeloop.reindex.cascadeEnabled", cfg.reindexCascadeEnabled);
+        cfg.reindexCascadeMaxFiles = PropertiesLoader.getInt(
+            p, "safeloop.reindex.cascadeMaxFiles", cfg.reindexCascadeMaxFiles);
+
+        cfg.requireCompile = PropertiesLoader.getBoolean(p, "apply.requireCompile", cfg.requireCompile);
+        cfg.verifyMode = PropertiesLoader.getString(p, "verify.mode", cfg.verifyMode);
+        cfg.verifyMaxErrors = PropertiesLoader.getInt(p, "verify.maxErrors", cfg.verifyMaxErrors);
+        cfg.classpathCacheDir = PropertiesLoader.getString(p, "verify.classpathCacheDir", cfg.classpathCacheDir);
 
         return cfg;
     }
-
-    // ═══════════════════════════════════════════════════════════════
-    // Getters
-    // ═══════════════════════════════════════════════════════════════
 
     public String getChatUrl() { return chatUrl; }
     public String getRefactorModel() { return refactorModel; }
@@ -181,10 +143,10 @@ public class SafeLoopConfig {
     public boolean isTrace() { return trace; }
     public boolean isReindexCascadeEnabled() { return reindexCascadeEnabled; }
     public int getReindexCascadeMaxFiles() { return reindexCascadeMaxFiles; }
-
-    // ═══════════════════════════════════════════════════════════════
-    // Builder-style setters
-    // ═══════════════════════════════════════════════════════════════
+    public boolean isRequireCompile() { return requireCompile; }
+    public String getVerifyMode() { return verifyMode; }
+    public int getVerifyMaxErrors() { return verifyMaxErrors; }
+    public String getClasspathCacheDir() { return classpathCacheDir; }
 
     public SafeLoopConfig withChatUrl(String v) { this.chatUrl = v; return this; }
     public SafeLoopConfig withRefactorModel(String v) { this.refactorModel = v; return this; }
@@ -214,6 +176,10 @@ public class SafeLoopConfig {
     public SafeLoopConfig withTrace(boolean v) { this.trace = v; return this; }
     public SafeLoopConfig withReindexCascadeEnabled(boolean v) { this.reindexCascadeEnabled = v; return this; }
     public SafeLoopConfig withReindexCascadeMaxFiles(int v) { this.reindexCascadeMaxFiles = v; return this; }
+    public SafeLoopConfig withRequireCompile(boolean v) { this.requireCompile = v; return this; }
+    public SafeLoopConfig withVerifyMode(String v) { this.verifyMode = v; return this; }
+    public SafeLoopConfig withVerifyMaxErrors(int v) { this.verifyMaxErrors = v; return this; }
+    public SafeLoopConfig withClasspathCacheDir(String v) { this.classpathCacheDir = v; return this; }
 
     @Override
     public String toString() {
@@ -229,41 +195,4 @@ public class SafeLoopConfig {
             stopOnNoNewNodes, stopOnStagnation, stream, structuredOutput, trace
         );
     }
-
-    // ── Helpers ──
-
-    private static String strVal(String envKey, String sysPropKey, String defaultValue) {
-        String v = System.getProperty(sysPropKey);
-        if (v != null && !v.isEmpty()) return v;
-        v = System.getenv(envKey);
-        if (v != null && !v.isEmpty()) return v;
-        return defaultValue;
-    }
-
-    private static int intVal(String envKey, String sysPropKey, int defaultValue) {
-        String v = strVal(envKey, sysPropKey, null);
-        if (v == null) return defaultValue;
-        try { return Integer.parseInt(v); } catch (NumberFormatException e) { return defaultValue; }
-    }
-
-    private static double doubleVal(String envKey, String sysPropKey, double defaultValue) {
-        String v = strVal(envKey, sysPropKey, null);
-        if (v == null) return defaultValue;
-        try { return Double.parseDouble(v); } catch (NumberFormatException e) { return defaultValue; }
-    }
-
-    private static boolean boolVal(String envKey, String sysPropKey, boolean defaultValue) {
-        String v = strVal(envKey, sysPropKey, null);
-        if (v == null) return defaultValue;
-        return Boolean.parseBoolean(v);
-    }
-
-    private static <E extends Enum<E>> E enumVal(String envKey, String sysPropKey,
-                                                 Class<E> enumType, E defaultValue) {
-        String v = strVal(envKey, sysPropKey, null);
-        if (v == null) return defaultValue;
-        try { return Enum.valueOf(enumType, v.trim().toUpperCase()); }
-        catch (IllegalArgumentException e) { return defaultValue; }
-    }
 }
-

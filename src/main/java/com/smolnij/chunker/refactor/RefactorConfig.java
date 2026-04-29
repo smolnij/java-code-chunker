@@ -1,26 +1,15 @@
 package com.smolnij.chunker.refactor;
 
+import com.smolnij.chunker.config.PropertiesLoader;
+
+import java.util.Properties;
+
 /**
  * Configuration for the graph-aware LLM refactoring loop.
  *
- * <p>Controls the LLM chat endpoint, sampling parameters, and
- * refinement-loop behaviour. All values can be overridden via
- * environment variables or system properties (system props win).
- *
- * <h3>Defaults:</h3>
- * <pre>
- *   chatUrl          = http://localhost:1234/v1/chat/completions
- *   chatModel        = (empty → use whatever is loaded in LM-Studio)
- *   temperature      = 0.1
- *   topP             = 0.9
- *   maxTokens        = 4096
- *   maxChunks        = 6      (4–8 works best for local models)
- *   maxRefinements   = 2      (how many expand-and-retry rounds)
- *   stream           = true   (SSE streaming from LM-Studio)
- *   agentMode        = false  (true → use LangChain4j agentic loop with tool calling)
- *   maxToolCalls     = 20     (safety cap on LLM tool invocations per conversation)
- *   chatMemorySize   = 40     (sliding window of messages for agent memory)
- * </pre>
+ * <p>Controls the LLM chat endpoint, sampling parameters, and refinement-loop
+ * behaviour. Loaded from a per-main {@code .properties} file via
+ * {@link #fromProperties(Properties)}.
  */
 public class RefactorConfig {
 
@@ -30,91 +19,72 @@ public class RefactorConfig {
      */
     public enum StructuredOutputMode { OFF, JSON_SCHEMA, JSON_OBJECT, TOOL_CALL }
 
-    // ── LLM endpoint ──
     private String chatUrl = "http://localhost:1234/v1/chat/completions";
     private String chatModel = "";
 
-    // ── Sampling ──
     private double temperature = 0.1;
     private double topP = 0.9;
     private int maxTokens = 66000;
 
-    // ── Context window ──
     private int maxChunks = 6;
 
-    // ── Refinement loop ──
     private int maxRefinements = 2;
 
-    // ── Streaming ──
     private boolean stream = true;
 
-    // ── Agent mode (LangChain4j) ──
     private boolean agentMode = false;
     private int maxToolCalls = 20;
     private int chatMemorySize = 40;
 
-    // ── Structured output (response_format / tool-call) ──
     private StructuredOutputMode structuredOutput = StructuredOutputMode.JSON_SCHEMA;
 
-    // ── Patch apply (deterministic file edits after SAFE verdict) ──
     private String repoRoot = "";
     private boolean apply = false;
     private boolean dryRun = true;
     private boolean backup = true;
 
-    // ── Compile verification (LLM-callable + commitPlan auto-gate) ──
     private boolean requireCompile = true;
     private String verifyMode = "auto";   // fast | full | auto
     private int verifyMaxErrors = 25;
     private String classpathCacheDir = ""; // empty → <repoRoot>/target
 
-    // ── Trace ──
     private boolean trace = true;
 
-    // ═══════════════════════════════════════════════════════════════
-    // Factory
-    // ═══════════════════════════════════════════════════════════════
-
-    public static RefactorConfig fromEnvironment() {
+    public static RefactorConfig fromProperties(Properties p) {
         RefactorConfig cfg = new RefactorConfig();
 
-        cfg.chatUrl = strVal("LLM_CHAT_URL", "llm.chatUrl", cfg.chatUrl);
-        cfg.chatModel = strVal("LLM_CHAT_MODEL", "llm.chatModel", cfg.chatModel);
+        cfg.chatUrl = PropertiesLoader.getString(p, "llm.chatUrl", cfg.chatUrl);
+        cfg.chatModel = PropertiesLoader.getString(p, "llm.chatModel", cfg.chatModel);
 
-        cfg.temperature = doubleVal("LLM_TEMPERATURE", "llm.temperature", cfg.temperature);
-        cfg.topP = doubleVal("LLM_TOP_P", "llm.topP", cfg.topP);
-        cfg.maxTokens = intVal("LLM_MAX_TOKENS", "llm.maxTokens", cfg.maxTokens);
+        cfg.temperature = PropertiesLoader.getDouble(p, "llm.temperature", cfg.temperature);
+        cfg.topP = PropertiesLoader.getDouble(p, "llm.topP", cfg.topP);
+        cfg.maxTokens = PropertiesLoader.getInt(p, "llm.maxTokens", cfg.maxTokens);
 
-        cfg.maxChunks = intVal("REFACTOR_MAX_CHUNKS", "refactor.maxChunks", cfg.maxChunks);
-        cfg.maxRefinements = intVal("REFACTOR_MAX_REFINEMENTS", "refactor.maxRefinements", cfg.maxRefinements);
-        cfg.stream = boolVal("REFACTOR_STREAM", "refactor.stream", cfg.stream);
+        cfg.maxChunks = PropertiesLoader.getInt(p, "refactor.maxChunks", cfg.maxChunks);
+        cfg.maxRefinements = PropertiesLoader.getInt(p, "refactor.maxRefinements", cfg.maxRefinements);
+        cfg.stream = PropertiesLoader.getBoolean(p, "refactor.stream", cfg.stream);
 
-        cfg.agentMode = boolVal("REFACTOR_AGENT_MODE", "refactor.agentMode", cfg.agentMode);
-        cfg.maxToolCalls = intVal("REFACTOR_MAX_TOOL_CALLS", "refactor.maxToolCalls", cfg.maxToolCalls);
-        cfg.chatMemorySize = intVal("REFACTOR_CHAT_MEMORY_SIZE", "refactor.chatMemorySize", cfg.chatMemorySize);
+        cfg.agentMode = PropertiesLoader.getBoolean(p, "refactor.agentMode", cfg.agentMode);
+        cfg.maxToolCalls = PropertiesLoader.getInt(p, "refactor.maxToolCalls", cfg.maxToolCalls);
+        cfg.chatMemorySize = PropertiesLoader.getInt(p, "refactor.chatMemorySize", cfg.chatMemorySize);
 
-        cfg.structuredOutput = enumVal(
-            "LLM_STRUCTURED_OUTPUT", "llm.structuredOutput",
+        cfg.structuredOutput = PropertiesLoader.getEnum(p, "llm.structuredOutput",
             StructuredOutputMode.class, cfg.structuredOutput);
 
-        cfg.repoRoot = strVal("REFACTOR_REPO_ROOT", "refactor.repoRoot", cfg.repoRoot);
-        cfg.apply = boolVal("REFACTOR_APPLY", "refactor.apply", cfg.apply);
-        cfg.dryRun = boolVal("REFACTOR_DRY_RUN", "refactor.dryRun", cfg.dryRun);
-        cfg.backup = boolVal("REFACTOR_BACKUP", "refactor.backup", cfg.backup);
+        cfg.repoRoot = PropertiesLoader.getString(p, "refactor.repoRoot", cfg.repoRoot);
+        cfg.apply = PropertiesLoader.getBoolean(p, "refactor.apply", cfg.apply);
+        cfg.dryRun = PropertiesLoader.getBoolean(p, "refactor.dryRun", cfg.dryRun);
+        cfg.backup = PropertiesLoader.getBoolean(p, "refactor.backup", cfg.backup);
 
-        cfg.requireCompile = boolVal("APPLY_REQUIRE_COMPILE", "apply.requireCompile", cfg.requireCompile);
-        cfg.verifyMode = strVal("VERIFY_MODE", "verify.mode", cfg.verifyMode);
-        cfg.verifyMaxErrors = intVal("VERIFY_MAX_ERRORS", "verify.maxErrors", cfg.verifyMaxErrors);
-        cfg.classpathCacheDir = strVal("VERIFY_CLASSPATH_CACHE", "verify.classpathCacheDir", cfg.classpathCacheDir);
+        cfg.requireCompile = PropertiesLoader.getBoolean(p, "apply.requireCompile", cfg.requireCompile);
+        cfg.verifyMode = PropertiesLoader.getString(p, "verify.mode", cfg.verifyMode);
+        cfg.verifyMaxErrors = PropertiesLoader.getInt(p, "verify.maxErrors", cfg.verifyMaxErrors);
+        cfg.classpathCacheDir = PropertiesLoader.getString(p, "verify.classpathCacheDir", cfg.classpathCacheDir);
 
-        cfg.trace = boolVal("REFACTOR_TRACE", "refactor.trace", cfg.trace);
+        cfg.trace = PropertiesLoader.getBoolean(p, "refactor.trace", cfg.trace);
 
         return cfg;
     }
-
-    // ═══════════════════════════════════════════════════════════════
-    // Getters
-    // ═══════════════════════════════════════════════════════════════
 
     public String getChatUrl() { return chatUrl; }
     public String getChatModel() { return chatModel; }
@@ -137,10 +107,6 @@ public class RefactorConfig {
     public int getVerifyMaxErrors() { return verifyMaxErrors; }
     public String getClasspathCacheDir() { return classpathCacheDir; }
     public boolean isTrace() { return trace; }
-
-    // ═══════════════════════════════════════════════════════════════
-    // Builder-style setters
-    // ═══════════════════════════════════════════════════════════════
 
     public RefactorConfig withChatUrl(String v) { this.chatUrl = v; return this; }
     public RefactorConfig withChatModel(String v) { this.chatModel = v; return this; }
@@ -174,41 +140,4 @@ public class RefactorConfig {
             agentMode, maxToolCalls, chatMemorySize, structuredOutput, trace
         );
     }
-
-    // ── Helpers (same pattern as RetrievalConfig) ──
-
-    private static String strVal(String envKey, String sysPropKey, String defaultValue) {
-        String v = System.getProperty(sysPropKey);
-        if (v != null && !v.isEmpty()) return v;
-        v = System.getenv(envKey);
-        if (v != null && !v.isEmpty()) return v;
-        return defaultValue;
-    }
-
-    private static int intVal(String envKey, String sysPropKey, int defaultValue) {
-        String v = strVal(envKey, sysPropKey, null);
-        if (v == null) return defaultValue;
-        try { return Integer.parseInt(v); } catch (NumberFormatException e) { return defaultValue; }
-    }
-
-    private static double doubleVal(String envKey, String sysPropKey, double defaultValue) {
-        String v = strVal(envKey, sysPropKey, null);
-        if (v == null) return defaultValue;
-        try { return Double.parseDouble(v); } catch (NumberFormatException e) { return defaultValue; }
-    }
-
-    private static boolean boolVal(String envKey, String sysPropKey, boolean defaultValue) {
-        String v = strVal(envKey, sysPropKey, null);
-        if (v == null) return defaultValue;
-        return Boolean.parseBoolean(v);
-    }
-
-    private static <E extends Enum<E>> E enumVal(String envKey, String sysPropKey,
-                                                 Class<E> enumType, E defaultValue) {
-        String v = strVal(envKey, sysPropKey, null);
-        if (v == null) return defaultValue;
-        try { return Enum.valueOf(enumType, v.trim().toUpperCase()); }
-        catch (IllegalArgumentException e) { return defaultValue; }
-    }
 }
-

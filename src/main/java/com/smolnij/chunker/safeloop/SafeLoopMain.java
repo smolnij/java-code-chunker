@@ -1,72 +1,24 @@
 package com.smolnij.chunker.safeloop;
 
 import com.smolnij.chunker.apply.GraphReindexer;
+import com.smolnij.chunker.config.PropertiesLoader;
 import com.smolnij.chunker.retrieval.*;
 import com.smolnij.chunker.store.Neo4jGraphStore;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Properties;
 
 /**
  * CLI entry point for the self-improving safe refactoring loop.
  *
- * <p>This is the evolution from RAG → Graph RAG → Agentic Graph RAG → <b>Safe Agentic
- * Graph RAG</b>. The LLM autonomously retrieves context via tool calling (like
- * {@link AgentRefactorMain}), but now a separate analyzer LLM evaluates each
- * proposal for safety. The loop continues querying the graph and refining until
- * the analyzer's confidence exceeds the safety threshold.
- *
- * <h3>How it works:</h3>
- * <pre>
- *   1. Initial retrieval + graph coverage enforcement
- *   2. Agent proposes refactoring (with autonomous tool calls)
- *   3. Analyzer evaluates safety → confidence + risks + needed context
- *   4. If UNSAFE → expand graph → inject context → agent refines → loop
- *   5. If SAFE → return result
- *   6. If CONVERGED/STAGNANT → return best-effort
- * </pre>
- *
  * <h3>Usage:</h3>
  * <pre>
- *   java -cp java-code-chunker.jar com.smolnij.chunker.safeloop.SafeLoopMain "Refactor createUser to async"
- *
- *   Required environment variables / system properties:
- *     NEO4J_URI      / -Dneo4j.uri      — bolt URI (e.g. bolt://localhost:7687)
- *     NEO4J_USER     / -Dneo4j.user     — username (default: neo4j)
- *     NEO4J_PASSWORD / -Dneo4j.password — password
- *
- *   Optional (SafeLoop-specific):
- *     SAFELOOP_CHAT_URL          / -Dsafeloop.chatUrl          — LLM endpoint (default: http://localhost:1234/v1/chat/completions)
- *     SAFELOOP_REFACTOR_MODEL    / -Dsafeloop.refactorModel    — refactorer model name
- *     SAFELOOP_ANALYZER_MODEL    / -Dsafeloop.analyzerModel    — analyzer model name
- *     SAFELOOP_REFACTOR_TEMP     / -Dsafeloop.refactorTemp     — refactorer temperature (default: 0.3)
- *     SAFELOOP_ANALYZER_TEMP     / -Dsafeloop.analyzerTemp     — analyzer temperature (default: 0.1)
- *     SAFELOOP_SAFETY_THRESHOLD  / -Dsafeloop.safetyThreshold  — min confidence (default: 0.9)
- *     SAFELOOP_MAX_ITERATIONS    / -Dsafeloop.maxIterations    — max loop iterations (default: 5)
- *     SAFELOOP_MAX_CHUNKS        / -Dsafeloop.maxChunks        — context chunks (default: 8)
- *     SAFELOOP_CHAT_MEMORY_SIZE  / -Dsafeloop.chatMemorySize   — agent memory window (default: 60)
- *     SAFELOOP_MAX_TOOL_CALLS    / -Dsafeloop.maxToolCalls     — tool call cap (default: 30)
- *     SAFELOOP_MIN_CALLER_DEPTH  / -Dsafeloop.minCallerDepth   — min caller hops (default: 1)
- *     SAFELOOP_MIN_CALLEE_DEPTH  / -Dsafeloop.minCalleeDepth   — min callee hops (default: 1)
- *     EMBEDDING_URL              / -Dembedding.url             — embedding endpoint
- *
- *   Flags:
- *     --output / -o &lt;file&gt;       — write result to file
- *     --max-iterations &lt;N&gt;       — override max iterations
- *     --threshold &lt;0.0-1.0&gt;     — override safety threshold
- *     --no-stream                 — disable SSE streaming
- *     --debug                     — print extra diagnostics
+ *   java -cp java-code-chunker.jar com.smolnij.chunker.safeloop.SafeLoopMain config/safeloop.properties
  * </pre>
- *
- * <h3>Requirements:</h3>
- * <p>The LM-Studio model must support function/tool calling (e.g. Qwen 2.5,
- * Mistral, Llama 3.1+, or any model with tool-use capability).
  */
 public class SafeLoopMain {
-    public static final String NEO4J_DEFAULT_URL = "bolt://localhost:7687";
-    public static final String NEO4J_DEFAULT_USER = "neo4j";
-    public static final String NEO4J_DEFAULT_PASSWORD = "12345678";
 
     /** Source roots fed to the post-apply Neo4j re-indexer; mirror {@code ChunkerMain}. */
     private static final List<Path> DEFAULT_SOURCE_ROOTS = List.of(
@@ -77,105 +29,19 @@ public class SafeLoopMain {
     private static final int DEFAULT_MAX_TOKENS_PER_CHUNK = 512;
 
     public static void main(String[] args) {
+        Properties p = PropertiesLoader.loadOrExit(args, "SafeLoopMain", "config/safeloop.properties");
 
-        // ── Parse arguments ──
-        String query = "Suggest refactoring of RalphLoop to take prompt and other settings from file instead of from CLI. " +
-                "Don't change files, apply your refactoring suggestions via tools directly to target files";
-        String outputFile = "/home/smola/llmout6_with_AST_lang4j13";
-        boolean noStream = false;
-        boolean debug = true;
-        Integer maxIterOverride = null;
-        Double thresholdOverride = null;
-        Double selfReviewTempOverride = null;
+        String query = PropertiesLoader.requireString(p, "safeloop.query");
+        String outputFile = PropertiesLoader.getString(p, "safeloop.outputFile", null);
+        boolean debug = PropertiesLoader.getBoolean(p, "safeloop.debug", false);
 
-        for (int i = 0; i < args.length; i++) {
-            switch (args[i]) {
-                case "--output", "-o" -> {
-                    if (i + 1 < args.length) outputFile = args[++i];
-                }
-                case "--max-iterations" -> {
-                    if (i + 1 < args.length) {
-                        try { maxIterOverride = Integer.parseInt(args[++i]); }
-                        catch (NumberFormatException ignored) { }
-                    }
-                }
-                case "--threshold" -> {
-                    if (i + 1 < args.length) {
-                        try { thresholdOverride = Double.parseDouble(args[++i]); }
-                        catch (NumberFormatException ignored) { }
-                    }
-                }
-                case "--self-review-temp" -> {
-                    if (i + 1 < args.length) {
-                        try { selfReviewTempOverride = Double.parseDouble(args[++i]); }
-                        catch (NumberFormatException ignored) { }
-                    }
-                }
-                case "--no-stream" -> noStream = true;
-                case "--debug" -> debug = true;
-                default -> {
-                    if (!args[i].startsWith("-")) {
-                        query = args[i];
-                    }
-                }
-            }
-        }
+        RetrievalConfig retrievalConfig = RetrievalConfig.fromProperties(p);
+        SafeLoopConfig safeConfig = SafeLoopConfig.fromProperties(p);
 
-        if (query == null || query.isBlank()) {
-            System.err.println("Usage: SafeLoopMain <query> [options]");
-            System.err.println();
-            System.err.println("Options:");
-            System.err.println("  --output / -o <file>       Write result to file");
-            System.err.println("  --max-iterations <N>       Override max iterations (default: 5)");
-            System.err.println("  --threshold <0.0-1.0>      Override safety threshold (default: 0.9)");
-            System.err.println("  --no-stream                Disable SSE streaming");
-            System.err.println("  --debug                    Print extra diagnostics");
-            System.err.println();
-            System.err.println("Example:");
-            System.err.println("  SafeLoopMain \"Refactor createUser to async\" --threshold 0.85");
-            System.err.println();
-            System.err.println("This uses a self-improving loop:");
-            System.err.println("  Agent proposes refactoring → Analyzer checks safety");
-            System.err.println("  → If unsafe, expand graph → Agent refines → repeat");
-            System.err.println();
-            System.err.println("Required: NEO4J_URI, NEO4J_PASSWORD");
-            System.err.println("Optional: SAFELOOP_CHAT_URL, SAFELOOP_REFACTOR_MODEL, EMBEDDING_URL");
-            System.err.println();
-            System.err.println("IMPORTANT: Your LM-Studio model must support function/tool calling");
-            System.err.println("  (e.g. Qwen 2.5, Mistral, Llama 3.1+)");
-            System.exit(1);
-            return;
-        }
+        String neo4jUri = PropertiesLoader.requireString(p, "neo4j.uri");
+        String neo4jUser = PropertiesLoader.getString(p, "neo4j.user", "neo4j");
+        String neo4jPassword = PropertiesLoader.requireString(p, "neo4j.password");
 
-        // ── Load configs ──
-        RetrievalConfig retrievalConfig = RetrievalConfig.fromEnvironment();
-        SafeLoopConfig safeConfig = SafeLoopConfig.fromEnvironment();
-
-        // Apply CLI overrides
-        if (maxIterOverride != null) {
-            safeConfig = safeConfig.withMaxIterations(maxIterOverride);
-        }
-        if (thresholdOverride != null) {
-            safeConfig = safeConfig.withSafetyThreshold(thresholdOverride);
-        }
-        if (selfReviewTempOverride != null) {
-            safeConfig = safeConfig.withSelfReviewTemperature(selfReviewTempOverride);
-        }
-        if (noStream) {
-            safeConfig = safeConfig.withStream(false);
-        }
-
-        String neo4jUri = getConfigValue("NEO4J_URI", "neo4j.uri", NEO4J_DEFAULT_URL);
-        String neo4jUser = getConfigValue("NEO4J_USER", "neo4j.user", NEO4J_DEFAULT_USER);
-        String neo4jPassword = getConfigValue("NEO4J_PASSWORD", "neo4j.password", NEO4J_DEFAULT_PASSWORD);
-
-        if (neo4jUri == null || neo4jPassword == null) {
-            System.err.println("ERROR: NEO4J_URI and NEO4J_PASSWORD must be set.");
-            System.exit(1);
-            return;
-        }
-
-        // ── Banner ──
         System.out.println("╔══════════════════════════════════════════════════════╗");
         System.out.println("║  Safe Refactoring Loop — Self-Improving Agent        ║");
         System.out.println("║  Keeps querying graph + refining until change is safe ║");
@@ -185,19 +51,14 @@ public class SafeLoopMain {
         System.out.println("SafeLoop: " + safeConfig);
         System.out.println();
 
-        // ── Build components ──
         try (Neo4jGraphReader reader = new Neo4jGraphReader(neo4jUri, neo4jUser, neo4jPassword, retrievalConfig);
              EmbeddingService embeddings = new LmStudioEmbeddingService(retrievalConfig);
              Neo4jGraphStore store = new Neo4jGraphStore(neo4jUri, neo4jUser, neo4jPassword)) {
 
-            // Ensure the vector index exists before any vector search
             reader.ensureVectorIndex();
 
             HybridRetriever retriever = new HybridRetriever(reader, embeddings, retrievalConfig);
 
-            // Build the post-apply Neo4j re-indexer if a repo root is configured.
-            // SafeLoopBundle wires it into the agent's commitPlan path and the
-            // prose-extracted apply fallback so retrievals stay current.
             GraphReindexer reindexer = null;
             String repoRoot = safeConfig.getRepoRoot();
             if (repoRoot != null && !repoRoot.isEmpty()) {
@@ -215,7 +76,6 @@ public class SafeLoopMain {
 
                 SafeLoopResult result = bundle.loop().run(query);
 
-                // ── Output ──
                 String output = result.toDisplayString();
 
                 if (outputFile != null) {
@@ -249,7 +109,6 @@ public class SafeLoopMain {
                     System.out.println(result.getRawAgentResponse());
                 }
 
-                // Exit with appropriate code
                 System.exit(result.isSafe() ? 0 : 1);
             }
 
@@ -259,13 +118,4 @@ public class SafeLoopMain {
             System.exit(1);
         }
     }
-
-    private static String getConfigValue(String envKey, String sysPropKey, String defaultValue) {
-        String value = System.getProperty(sysPropKey);
-        if (value != null && !value.isEmpty()) return value;
-        value = System.getenv(envKey);
-        if (value != null && !value.isEmpty()) return value;
-        return defaultValue;
-    }
 }
-

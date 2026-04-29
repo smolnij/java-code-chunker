@@ -8,13 +8,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Build fat JAR
 mvn clean package -q
 
-# Run chunker (repoRoot, outputDir, maxTokens)
-java -jar target/java-code-chunker-1.0-SNAPSHOT.jar "/path/to/repo" "output-dir" 512
-
-# Run with Neo4j persistence
-java -jar target/java-code-chunker-1.0-SNAPSHOT.jar "/path/to/repo" "output-dir" 512 \
-  -Dneo4j.uri=bolt://localhost:7687 -Dneo4j.password=secret
+# Each main takes exactly one arg: a properties file.
+java -jar target/java-code-chunker-1.0-SNAPSHOT.jar config/chunker.properties
 ```
+
+Every main entry point reads its configuration from a single `.properties`
+file — no CLI flags, no env vars, no `-D` system properties. Default-valued,
+heavily commented templates live in `config/`:
+
+| Main | Properties file |
+|------|-----------------|
+| `ChunkerMain` | `config/chunker.properties` |
+| `RetrievalMain` | `config/retrieval.properties` |
+| `RefactorMain` | `config/refactor.properties` |
+| `AgentRefactorMain` | `config/agent-refactor.properties` |
+| `RalphMain` | `config/ralph.properties` |
+| `SafeLoopMain` | `config/safeloop.properties` |
+| `DistributedSafeLoopMain` | `config/safeloop-distributed.properties` |
+| `EvalMain` | `config/eval.properties` |
+| `ApplyMain` | `config/apply.properties` |
+| `ReindexInspectMain` | `config/reindex-inspect.properties` |
+
+Copy the template you want, edit the per-run fields (query, repoRoot,
+neo4j.password, etc.), and pass the path as the only argument.
 
 There are no automated tests — the project uses main classes for manual verification.
 
@@ -62,23 +78,16 @@ All modes use `HybridRetriever` to fetch context from Neo4j, then drive an LM-St
 4. **`RalphMain`** — worker/judge loop (separate LLM personas)
 5. **`SafeLoopMain`** — safety-gated loop with judge verdicts
 6. **`DistributedSafeLoopMain`** — multi-machine planner + analyzer agents
-7. **`EvalMain`** — golden-task eval harness; scores retrieval + safeloop fixtures from `eval-fixtures/` against a gold set (precision@K, recall@K, MRR, analyzer.verdict). Supports `--self-check` (no Neo4j/LLM) and `--baseline` regression diffs. Compile/test verifier is stubbed pending N-1.
+7. **`EvalMain`** — golden-task eval harness; scores retrieval + safeloop fixtures from `eval-fixtures/` against a gold set (precision@K, recall@K, MRR, analyzer.verdict). Supports `eval.selfCheck=true` (no Neo4j/LLM) and `eval.baseline=...` regression diffs.
 
-### Environment Variables
+### Configuration
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `NEO4J_URI` | `bolt://localhost:7687` | Neo4j connection |
-| `NEO4J_USER` | `neo4j` | Neo4j username |
-| `NEO4J_PASSWORD` | — | Neo4j password |
-| `NEO4J_CLEAN` | `false` | Wipe DB before import |
-| `EMBEDDING_URL` | — | Embedding service endpoint |
-| `LLM_CHAT_URL` | `http://localhost:1234/v1/chat/completions` | LM-Studio chat endpoint |
-| `LLM_CHAT_MODEL` | — | Model name |
-| `LLM_TEMPERATURE` | `0.1` | Sampling temperature |
-| `LLM_MAX_TOKENS` | `4096` | Max response tokens |
-
-All env vars can also be set as JVM system properties (e.g., `-Dneo4j.uri=...`).
+All configuration lives in `config/<main>.properties` — one file per main
+entry point. Each file is self-documenting (every key has a comment block
+above it) and ships pre-populated with the same defaults the code falls
+back to when a key is omitted. Loading is implemented by
+`com.smolnij.chunker.config.PropertiesLoader`; each `Config` class exposes
+a `fromProperties(Properties)` factory.
 
 ## Key Dependencies
 

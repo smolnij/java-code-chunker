@@ -3,6 +3,7 @@ package com.smolnij.chunker.eval;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.smolnij.chunker.config.PropertiesLoader;
 import com.smolnij.chunker.eval.fixture.Fixture;
 import com.smolnij.chunker.eval.fixture.FixtureFilter;
 import com.smolnij.chunker.eval.fixture.FixtureLoader;
@@ -36,44 +37,25 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
+import java.util.Properties;
 
 /**
- * Entry point for the golden-task evaluation harness (roadmap item N-8).
- *
- * <p>Runs fixtures through either a retrieval-only or a SafeLoop runner,
- * scores the outputs against a labelled gold set, and writes a
- * machine-readable baseline + human summary to an output directory.
+ * Entry point for the golden-task evaluation harness.
  *
  * <h3>Usage:</h3>
  * <pre>
- *   java -cp java-code-chunker.jar com.smolnij.chunker.eval.EvalMain [options]
- *
- *   --fixtures-dir &lt;path&gt;    override default {@code eval-fixtures/}
- *   --id &lt;regex&gt;             include only matching fixture ids
- *   --tag &lt;tag&gt;              include only fixtures with tag (repeatable)
- *   --mode &lt;mode&gt;            retrieval | safeloop
- *   --output-dir &lt;path&gt;      default: eval-results/&lt;UTC-timestamp&gt;/
- *   --baseline &lt;jsonl&gt;       produce regression diff vs prior runs.jsonl
- *   --diff-epsilon &lt;d&gt;       default 0.05
- *   --dry-run                skip Neo4j + LLM; synthesize RunResult from gold
- *   --self-check             --dry-run + assert every metric is PASS/NOT_RUN
- *   --retrieval-only         force every fixture to mode=retrieval
- *   --limit &lt;n&gt;              first-N fixtures after filtering
- *   --fail-fast              exit nonzero on first fixture error
- *   --debug
+ *   java -cp java-code-chunker.jar com.smolnij.chunker.eval.EvalMain config/eval.properties
  * </pre>
  */
 public final class EvalMain {
 
-    public static final String NEO4J_DEFAULT_URL = "bolt://localhost:7687";
-    public static final String NEO4J_DEFAULT_USER = "neo4j";
-    public static final String NEO4J_DEFAULT_PASSWORD = "12345678";
     public static final String DEFAULT_FIXTURES_DIR = "eval-fixtures";
 
     public static void main(String[] args) {
-        EvalConfig cfg = parseArgs(args);
+        Properties p = PropertiesLoader.loadOrExit(args, "EvalMain", "config/eval.properties");
+
+        EvalConfig cfg = EvalConfig.fromProperties(p);
         if (cfg.selfCheck) cfg.dryRun = true;
 
         System.out.println("╔══════════════════════════════════════════════════════╗");
@@ -100,7 +82,7 @@ public final class EvalMain {
 
         if (selected.isEmpty()) {
             System.err.println("No fixtures matched the filter (" + fixtures.size()
-                    + " total, 0 selected). Check --fixtures-dir / --id / --tag / --mode.");
+                    + " total, 0 selected). Check eval.fixturesDir / eval.idRegex / eval.tags / eval.mode.");
             System.exit(1);
             return;
         }
@@ -120,7 +102,7 @@ public final class EvalMain {
         try {
             records = cfg.dryRun
                     ? runDryRun(selected, cfg)
-                    : runLive(selected, cfg);
+                    : runLive(selected, cfg, p);
         } catch (Exception e) {
             System.err.println("ERROR: " + e.getMessage());
             e.printStackTrace();
@@ -146,7 +128,7 @@ public final class EvalMain {
 
     private static List<EvalRecord> runDryRun(List<Fixture> fixtures, EvalConfig cfg) {
         DryRunRunner runner = new DryRunRunner();
-        Verifier verifier = pickVerifier();
+        Verifier verifier = pickVerifier(cfg);
         List<Scorer> scorers = defaultScorers();
 
         List<EvalRecord> records = new ArrayList<>(fixtures.size());
@@ -160,15 +142,15 @@ public final class EvalMain {
         return records;
     }
 
-    private static List<EvalRecord> runLive(List<Fixture> fixtures, EvalConfig cfg) throws Exception {
-        RetrievalConfig retrievalConfig = RetrievalConfig.fromEnvironment();
-        SafeLoopConfig safeLoopConfig = SafeLoopConfig.fromEnvironment();
+    private static List<EvalRecord> runLive(List<Fixture> fixtures, EvalConfig cfg, Properties p) throws Exception {
+        RetrievalConfig retrievalConfig = RetrievalConfig.fromProperties(p);
+        SafeLoopConfig safeLoopConfig = SafeLoopConfig.fromProperties(p);
 
-        String uri = getConfigValue("NEO4J_URI", "neo4j.uri", NEO4J_DEFAULT_URL);
-        String user = getConfigValue("NEO4J_USER", "neo4j.user", NEO4J_DEFAULT_USER);
-        String password = getConfigValue("NEO4J_PASSWORD", "neo4j.password", NEO4J_DEFAULT_PASSWORD);
+        String uri = PropertiesLoader.requireString(p, "neo4j.uri");
+        String user = PropertiesLoader.getString(p, "neo4j.user", "neo4j");
+        String password = PropertiesLoader.requireString(p, "neo4j.password");
 
-        Verifier verifier = pickVerifier();
+        Verifier verifier = pickVerifier(cfg);
         List<Scorer> scorers = defaultScorers();
         List<EvalRecord> records = new ArrayList<>(fixtures.size());
 
@@ -199,17 +181,9 @@ public final class EvalMain {
         return List.of(new RetrievalScorer(), new AnalyzerScorer(), new BuildScorer());
     }
 
-    /**
-     * Pick the verifier impl based on the {@code EVAL_VERIFIER} env (or
-     * {@code eval.verifier} sysprop). Defaults to {@code noop} so the
-     * real-compile path is opt-in until a fixture set is stabilised against
-     * it; flip the default in a follow-up.
-     */
-    private static Verifier pickVerifier() {
-        String choice = System.getProperty("eval.verifier");
-        if (choice == null || choice.isBlank()) choice = System.getenv("EVAL_VERIFIER");
-        if (choice == null) choice = "noop";
-        return switch (choice.trim().toLowerCase()) {
+    private static Verifier pickVerifier(EvalConfig cfg) {
+        String choice = cfg.verifier == null ? "noop" : cfg.verifier.trim().toLowerCase();
+        return switch (choice) {
             case "compiling", "compile" -> new CompilingVerifier();
             default -> new NoopVerifier();
         };
@@ -253,9 +227,6 @@ public final class EvalMain {
         JsonArray tagArr = new JsonArray();
         for (String t : cfg.tags) tagArr.add(t);
         root.add("tags", tagArr);
-        JsonArray argArr = new JsonArray();
-        for (String a : cfg.rawArgs) argArr.add(a);
-        root.add("args", argArr);
         Files.writeString(outDir.resolve("manifest.json"),
                 new GsonBuilder().setPrettyPrinting().create().toJson(root));
     }
@@ -340,103 +311,6 @@ public final class EvalMain {
         System.out.printf("  [%s] %-40s  mode=%-10s  pass=%d fail=%d err=%d n/r=%d  (%dms)%n",
                 status, f.id(), f.mode(), pass, fail, err, notRun, res.durationMs());
         if (res.isError()) System.out.println("        error: " + res.error());
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // Arg parsing
-    // ═══════════════════════════════════════════════════════════════
-
-    private static EvalConfig parseArgs(String[] args) {
-        EvalConfig cfg = new EvalConfig();
-        cfg.rawArgs = Arrays.copyOf(args, args.length);
-        List<String> tags = new ArrayList<>();
-
-        for (int i = 0; i < args.length; i++) {
-            switch (args[i]) {
-                case "--fixtures-dir" -> cfg.fixturesDir = pathArg(args, ++i);
-                case "--output-dir" -> cfg.outputDir = pathArg(args, i + 1).toAbsolutePath();
-                case "--baseline" -> cfg.baselineJsonl = pathArg(args, i + 1);
-                case "--diff-epsilon" -> cfg.diffEpsilon = doubleArg(args, i + 1, cfg.diffEpsilon);
-                case "--id" -> cfg.idRegex = stringArg(args, i + 1);
-                case "--tag" -> tags.add(stringArg(args, i + 1));
-                case "--mode" -> cfg.mode = stringArg(args, i + 1);
-                case "--limit" -> cfg.limit = intArg(args, i + 1, 0);
-                case "--dry-run" -> { cfg.dryRun = true; continue; }
-                case "--self-check" -> { cfg.selfCheck = true; continue; }
-                case "--retrieval-only" -> { cfg.retrievalOnly = true; continue; }
-                case "--fail-fast" -> { cfg.failFast = true; continue; }
-                case "--debug" -> { cfg.debug = true; continue; }
-                case "-h", "--help" -> { printHelp(); System.exit(0); }
-                default -> {
-                    if (args[i].startsWith("-")) {
-                        System.err.println("Unknown option: " + args[i]);
-                        printHelp();
-                        System.exit(1);
-                    }
-                    continue;
-                }
-            }
-            // Options that consumed a following value advance `i`.
-            if ("--fixtures-dir".equals(args[i])
-                    || "--output-dir".equals(args[i])
-                    || "--baseline".equals(args[i])
-                    || "--diff-epsilon".equals(args[i])
-                    || "--id".equals(args[i])
-                    || "--tag".equals(args[i])
-                    || "--mode".equals(args[i])
-                    || "--limit".equals(args[i])) {
-                i++;
-            }
-        }
-        cfg.tags = List.copyOf(tags);
-        return cfg;
-    }
-
-    private static Path pathArg(String[] args, int idx) {
-        if (idx >= args.length) { System.err.println("Missing path argument"); System.exit(1); }
-        return Path.of(args[idx]);
-    }
-
-    private static String stringArg(String[] args, int idx) {
-        if (idx >= args.length) { System.err.println("Missing string argument"); System.exit(1); }
-        return args[idx];
-    }
-
-    private static int intArg(String[] args, int idx, int def) {
-        if (idx >= args.length) return def;
-        try { return Integer.parseInt(args[idx]); }
-        catch (NumberFormatException e) { return def; }
-    }
-
-    private static double doubleArg(String[] args, int idx, double def) {
-        if (idx >= args.length) return def;
-        try { return Double.parseDouble(args[idx]); }
-        catch (NumberFormatException e) { return def; }
-    }
-
-    private static String getConfigValue(String envKey, String sysPropKey, String defaultValue) {
-        String v = System.getProperty(sysPropKey);
-        if (v != null && !v.isEmpty()) return v;
-        v = System.getenv(envKey);
-        if (v != null && !v.isEmpty()) return v;
-        return defaultValue;
-    }
-
-    private static void printHelp() {
-        System.out.println("Usage: EvalMain [options]");
-        System.out.println("  --fixtures-dir <path>    Override fixture directory");
-        System.out.println("  --id <regex>             Include only matching fixture ids");
-        System.out.println("  --tag <tag>              Include only fixtures with tag (repeatable)");
-        System.out.println("  --mode <mode>            retrieval | safeloop");
-        System.out.println("  --output-dir <path>      Default: eval-results/<UTC-timestamp>/");
-        System.out.println("  --baseline <jsonl>       Regression diff vs prior runs.jsonl");
-        System.out.println("  --diff-epsilon <d>       Default 0.05");
-        System.out.println("  --dry-run                Skip Neo4j + LLM; synthesize results");
-        System.out.println("  --self-check             --dry-run + assert every metric PASS/NOT_RUN");
-        System.out.println("  --retrieval-only         Force fixtures to mode=retrieval");
-        System.out.println("  --limit <n>              First-N fixtures after filtering");
-        System.out.println("  --fail-fast              Exit nonzero on first fixture error");
-        System.out.println("  --debug");
     }
 
     private EvalMain() {}

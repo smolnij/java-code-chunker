@@ -1,0 +1,57 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "name": "patch_plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ops", "rationale"],
+  "properties": {
+    "ops": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "fq_class_name",
+          "method_name",
+          "original_signature",
+          "new_code",
+          "file_path",
+          "import_decl",
+          "rel_path",
+          "content",
+          "group_id",
+          "artifact_id",
+          "version",
+          "scope"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "replace_method",
+              "add_method",
+              "delete_method",
+              "add_import",
+              "create_file",
+              "add_maven_dependency"
+            ]
+          },
+          "fq_class_name": { "type": "string" },
+          "method_name": { "type": "string" },
+          "original_signature": { "type": "string" },
+          "new_code": { "type": "string" },
+          "file_path": { "type": "string" },
+          "import_decl": { "type": "string" },
+          "rel_path": { "type": "string" },
+          "content": { "type": "string" },
+          "group_id": { "type": "string" },
+          "artifact_id": { "type": "string" },
+          "version": { "type": "string" },
+          "scope": { "type": "string" }
+        }
+      }
+    },
+    "rationale": { "type": "string" }
+  }
+}
