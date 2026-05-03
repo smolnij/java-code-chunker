@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "retrieval-anchor-resolver-fallback",
+  "description": "Retrieve the anchor-resolution surface — every fixture's gold.anchor flows through findMethodExact, whose CONTAINS-fallback path was the source of the anchor-mismatch failures called out in commit ccb52e2. No prior fixture pinned this resolver.",
+  "mode": "retrieval",
+  "query": "How does the Neo4j graph reader resolve a method anchor when the FQN does not match exactly — class#method qualifier, simple name, and substring fallback?",
+  "topK": 8,
+  "gold": {
+    "anchor": "com.smolnij.chunker.retrieval.Neo4jGraphReader#findMethodExact(String)",
+    "relevant": [
+      "com.smolnij.chunker.retrieval.Neo4jGraphReader#findMethodExact(String)",
+      "com.smolnij.chunker.retrieval.Neo4jGraphReader#findClass(String)",
+      "com.smolnij.chunker.retrieval.HybridRetriever#retrieve(String)"
+    ]
+  },
+  "expected": {
+    "analyzer": null,
+    "compile": null,
+    "tests": []
+  },
+  "tags": ["self-eval", "retrieval", "resolver"],
+  "timeoutSeconds": 120
+}

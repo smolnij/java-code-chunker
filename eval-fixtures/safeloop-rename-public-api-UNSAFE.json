@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "safeloop-rename-public-api-UNSAFE",
+  "description": "Drive SafeRefactorLoop on a high-risk public-API rename. SafeRefactorLoop.run(String) has cross-class callers in SafeLoopMain, ApplyMain, eval.runner.SafeLoopRunner, and DistributedSafeLoopMain — analyzer must request that context and ultimately verdict UNSAFE rather than rubber-stamp SAFE without seeing the callers. Negative-branch counterpart to safeloop-rename-computeFinalScore; without it, an always-says-SAFE analyzer regression would pass every safeloop fixture.",
+  "mode": "safeloop",
+  "query": "Rename com.smolnij.chunker.safeloop.SafeRefactorLoop.run(String) to executeRefactor(String).",
+  "topK": 8,
+  "gold": {
+    "anchor": "com.smolnij.chunker.safeloop.SafeRefactorLoop#run(String)",
+    "relevant": [
+      "com.smolnij.chunker.safeloop.SafeRefactorLoop#run(String)",
+      "com.smolnij.chunker.safeloop.SafeLoopMain#main(String[])",
+      "com.smolnij.chunker.apply.ApplyMain#runSafeLoop(Properties, Neo4jGraphReader, HybridRetriever, GraphReindexer, Path, String, boolean, boolean)",
+      "com.smolnij.chunker.eval.runner.SafeLoopRunner#run(Fixture, RunContext)"
+    ]
+  },
+  "expected": {
+    "analyzer": "UNSAFE",
+    "compile": null,
+    "tests": []
+  },
+  "tags": ["self-eval", "safeloop", "rename", "public-api", "negative-verdict"],
+  "timeoutSeconds": 600
+}

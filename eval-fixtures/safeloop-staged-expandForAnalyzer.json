@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "safeloop-staged-expandForAnalyzer",
+  "description": "Retrieve the staged-plan branch of expandForAnalyzer. The 2-arg overload (List<String>, StagedPlanIndex) resolves analyzer-requested chunks that the agent has staged in the current plan but Neo4j has not re-indexed yet — keystone of multi-iteration safeloop convergence. Currently exercised by zero golden fixtures.",
+  "mode": "retrieval",
+  "query": "How does SafeLoopTools resolve analyzer-requested chunk ids that were created by the current plan but are not yet present in the Neo4j graph?",
+  "topK": 8,
+  "gold": {
+    "anchor": "com.smolnij.chunker.safeloop.SafeLoopTools#expandForAnalyzer(List<String>, StagedPlanIndex)",
+    "relevant": [
+      "com.smolnij.chunker.safeloop.SafeLoopTools#expandForAnalyzer(List<String>, StagedPlanIndex)",
+      "com.smolnij.chunker.safeloop.SafeLoopTools#expandForAnalyzer(List<String>)",
+      "com.smolnij.chunker.safeloop.SafeLoopTools#initialRetrieve(String)"
+    ]
+  },
+  "expected": {
+    "analyzer": null,
+    "compile": null,
+    "tests": []
+  },
+  "tags": ["self-eval", "retrieval", "safeloop-context", "staged-plan"],
+  "timeoutSeconds": 120
+}

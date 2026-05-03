@@ -6,9 +6,9 @@
   "query": "How does CallGraphExtractor record forward and reverse call edges?",
   "topK": 6,
   "gold": {
-    "anchor": "com.smolnij.chunker.callgraph.CallGraphExtractor#extractCalls(MethodDeclaration, String)",
+    "anchor": "com.smolnij.chunker.callgraph.CallGraphExtractor#extractCalls(Node, String)",
     "relevant": [
-      "com.smolnij.chunker.callgraph.CallGraphExtractor#extractCalls(MethodDeclaration, String)",
+      "com.smolnij.chunker.callgraph.CallGraphExtractor#extractCalls(Node, String)",
       "com.smolnij.chunker.callgraph.CallGraphExtractor#getCallsFrom(String)",
       "com.smolnij.chunker.callgraph.CallGraphExtractor#getCallersOf(String)"
     ]

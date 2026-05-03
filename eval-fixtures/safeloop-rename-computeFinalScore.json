@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "safeloop-rename-computeFinalScore",
-  "description": "Drive SafeRefactorLoop on a low-risk rename. RetrievalResult.computeFinalScore has exactly one caller (HybridRetriever.rerank); SafeLoop should produce a SAFE verdict.",
+  "description": "Drive SafeRefactorLoop on a low-risk rename. RetrievalResult.computeFinalScore has exactly one caller (HybridRetriever.retrieve); SafeLoop should produce a SAFE verdict.",
   "mode": "safeloop",
   "query": "Rename com.smolnij.chunker.retrieval.RetrievalResult.computeFinalScore to recomputeScore.",
   "topK": 8,

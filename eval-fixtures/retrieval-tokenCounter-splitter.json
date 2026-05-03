@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "retrieval-tokenCounter-splitter",
+  "description": "Retrieve the splitter pipeline inside TokenCounter — splitIfNeeded entry, AST-aware statement splitter, line-boundary fallback, and chunk assembler. Pairs with safeloop-extract-tokenCounter-helper so anchor drift on the same target is caught by both fixtures.",
+  "mode": "retrieval",
+  "query": "How does TokenCounter split a method body that exceeds the per-chunk token budget while preserving the method signature?",
+  "topK": 8,
+  "gold": {
+    "anchor": "com.smolnij.chunker.tokenizer.TokenCounter#splitIfNeeded(String)",
+    "relevant": [
+      "com.smolnij.chunker.tokenizer.TokenCounter#splitIfNeeded(String)",
+      "com.smolnij.chunker.tokenizer.TokenCounter#splitByStatementsPreservingSignature(MethodDeclaration, BlockStmt, String)",
+      "com.smolnij.chunker.tokenizer.TokenCounter#splitAtLineBoundaries(String)",
+      "com.smolnij.chunker.tokenizer.TokenCounter#assembleMethodChunk(String, String, String)"
+    ]
+  },
+  "expected": {
+    "analyzer": null,
+    "compile": null,
+    "tests": []
+  },
+  "tags": ["self-eval", "retrieval", "tokenizer"],
+  "timeoutSeconds": 120
+}
