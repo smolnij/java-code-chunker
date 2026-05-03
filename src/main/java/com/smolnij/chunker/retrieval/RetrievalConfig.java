@@ -44,6 +44,11 @@ public class RetrievalConfig {
     private double calleesPct = 0.25;
     private double typeNeighborsPct = 0.20;
 
+    // Verbose resolver / scoring traces (e.g. ranked candidate table at the
+    // CONTAINS-fallback @class-boundary site). Default true to preserve the
+    // existing diagnostic output.
+    private boolean trace = true;
+
     public static RetrievalConfig fromProperties(Properties p) {
         RetrievalConfig cfg = new RetrievalConfig();
 
@@ -74,6 +79,8 @@ public class RetrievalConfig {
         cfg.callersPct = PropertiesLoader.getDouble(p, "retrieval.callersPct", cfg.callersPct);
         cfg.calleesPct = PropertiesLoader.getDouble(p, "retrieval.calleesPct", cfg.calleesPct);
         cfg.typeNeighborsPct = PropertiesLoader.getDouble(p, "retrieval.typeNeighborsPct", cfg.typeNeighborsPct);
+
+        cfg.trace = PropertiesLoader.getBoolean(p, "retrieval.trace", cfg.trace);
 
         return cfg;
     }
@@ -110,6 +117,9 @@ public class RetrievalConfig {
 
     public int getMaxPathsReturned() { return maxPathsReturned; }
     public int getMaxTopologyEdges() { return maxTopologyEdges; }
+
+    public boolean isTrace() { return trace; }
+    public RetrievalConfig withTrace(boolean v) { this.trace = v; return this; }
 
     public RetrievalConfig withMaxDepth(int v) { this.maxDepth = v; return this; }
     public RetrievalConfig withTopK(int v) { this.topK = v; return this; }

@@ -392,6 +392,57 @@ public final class EvalMain {
         System.out.printf("  [%s] %-40s  mode=%-10s  pass=%d fail=%d err=%d n/r=%d  (%dms)%n",
                 status, f.id(), f.mode(), pass, fail, err, notRun, res.durationMs());
         if (res.isError()) System.out.println("        error: " + res.error());
+        emitAnchorMismatchTrace(f, res);
+    }
+
+    /**
+     * When a fixture has a known {@code gold.anchor} and the resolver picked a
+     * different anchor, emit a single grep-friendly trace line so the failure
+     * is visible from one line in the eval log. Includes the rank of the picked
+     * anchor (typically 1) and the rank of the gold anchor in the retrieved
+     * top-K (or {@code not-in-topK} if absent), and a best-effort {@code reason}.
+     */
+    private static void emitAnchorMismatchTrace(Fixture f, RunResult res) {
+        if (f.gold() == null) return;
+        String gold = f.gold().anchor();
+        if (gold == null || gold.isBlank()) return;
+        String picked = res.anchorId();
+        if (picked == null || picked.equals(gold)) return;
+
+        int pickedRank = -1;
+        int goldRank = -1;
+        for (RetrievedChunk c : res.retrieved()) {
+            if (pickedRank < 0 && c.chunkId().equals(picked)) pickedRank = c.rank();
+            if (goldRank < 0 && c.chunkId().equals(gold)) goldRank = c.rank();
+        }
+        String pickedRankStr = pickedRank > 0 ? String.valueOf(pickedRank) : "n/a";
+        String goldRankStr = goldRank > 0 ? String.valueOf(goldRank) : "not-in-topK";
+
+        // Heuristic reason. The most common signal we have without re-instrumenting
+        // the resolver is "gold and picked share a class name segment" — that points
+        // at the CONTAINS @class-boundary fan-in tie-break. Otherwise it's a generic
+        // anchor mismatch (likely vector-fallback drift).
+        String reason;
+        String pickedClass = classSegment(picked);
+        String goldClass = classSegment(gold);
+        if (!pickedClass.isEmpty() && pickedClass.equals(goldClass)) {
+            reason = "fallback-fan-in";
+        } else if (goldRank < 0) {
+            reason = "gold-not-retrieved";
+        } else {
+            reason = "anchor-mismatch";
+        }
+
+        System.out.printf("        [trace] anchor.mismatch fixture=%s picked=%s gold=%s picked.rank=%s gold.rank=%s reason=%s%n",
+                f.id(), picked, gold, pickedRankStr, goldRankStr, reason);
+    }
+
+    private static String classSegment(String chunkId) {
+        if (chunkId == null) return "";
+        int hash = chunkId.indexOf('#');
+        String head = hash > 0 ? chunkId.substring(0, hash) : chunkId;
+        int lastDot = head.lastIndexOf('.');
+        return lastDot >= 0 ? head.substring(lastDot + 1) : head;
     }
 
     private EvalMain() {}

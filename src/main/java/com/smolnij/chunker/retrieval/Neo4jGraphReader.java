@@ -200,11 +200,62 @@ public class Neo4jGraphReader implements AutoCloseable {
                 System.out.println("    [resolver] '" + identifier + "' → '" + id
                         + "' (CONTAINS fallback @class boundary, " + total + " candidate" + (total == 1 ? "" : "s")
                         + ", picked highest fan-in=" + fanIn + ")");
+                if (config.isTrace() && total > 1) {
+                    traceContainsFallbackCandidates(session, boundaryFragment, id);
+                }
                 return id;
             }
 
             System.out.println("    [resolver] '" + identifier + "' unresolved");
             return null;
+        }
+    }
+
+    /**
+     * Under {@code retrieval.trace=true}, dump the full ranked-candidate table that
+     * fed the CONTAINS @class-boundary fallback. Lets a reader see the candidates
+     * the resolver considered (and rejected) — which would otherwise be hidden
+     * behind the single-line "picked highest fan-in=N" summary, masking bad picks
+     * like {@code reset()} or {@code buildEmbeddingText} winning by trivial tie-break.
+     */
+    private void traceContainsFallbackCandidates(Session session, String boundaryFragment, String pickedId) {
+        final int traceLimit = 10;
+        List<Record> rows = session.executeRead(tx -> {
+            Result r = tx.run(
+                "MATCH (m:Method) WHERE m.chunkId CONTAINS $fragment " +
+                    "OPTIONAL MATCH (m)<-[:CALLS]-(caller:Method) " +
+                    "WITH m, count(DISTINCT caller) AS fanIn " +
+                    "OPTIONAL MATCH (m)-[:CALLS]->(callee:Method) " +
+                    "WITH m, fanIn, count(DISTINCT callee) AS fanOut, " +
+                    "     CASE WHEN m.methodName = '<init>' OR m.methodName = '<clinit>' THEN 0 ELSE 1 END AS isMethod " +
+                    "RETURN m.chunkId AS id, fanIn, fanOut, isMethod, m.methodName AS name " +
+                    "ORDER BY isMethod DESC, fanIn DESC, m.chunkId " +
+                    "LIMIT $lim",
+                Map.of("fragment", boundaryFragment, "lim", traceLimit)
+            );
+            List<Record> out = new ArrayList<>();
+            while (r.hasNext()) out.add(r.next());
+            return out;
+        });
+        if (rows.isEmpty()) return;
+        System.out.println("    [trace] CONTAINS-fallback ranked candidates (top " + rows.size() + "):");
+        for (int i = 0; i < rows.size(); i++) {
+            Record row = rows.get(i);
+            String cid = row.get("id").asString();
+            long fanIn = row.get("fanIn").asLong();
+            long fanOut = row.get("fanOut").asLong();
+            boolean isCtor = row.get("isMethod").asLong() == 0L;
+            String tag = cid.equals(pickedId) ? "PICKED" : "rejected";
+            String reason;
+            if (cid.equals(pickedId)) {
+                reason = "highest-fan-in";
+            } else if (isCtor) {
+                reason = "<init>/<clinit> deprioritized";
+            } else {
+                reason = "lower-fan-in";
+            }
+            System.out.printf("      #%-2d %-9s fanIn=%-3d fanOut=%-3d %s  (%s)%n",
+                i + 1, tag, fanIn, fanOut, cid, reason);
         }
     }
 

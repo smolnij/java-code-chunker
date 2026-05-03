@@ -279,8 +279,14 @@ public class RefactorAgent {
                 // OpenAI field via customParameters — those are flattened straight
                 // into the request body by @JsonAnyGetter on ChatCompletionRequest.
                 .customParameters(Map.of("response_format", Map.of("type", "text")))
-                .logRequests(true)
-                .logResponses(true);
+                // logRequests/logResponses route the full HTTP body through SLF4J, whose
+                // appender writes via a Writer that is not synchronized with System.out.
+                // That produced the byte-level interleaving seen in worklog_eval
+                // (e.g. "🔨 Apply tool #135:trace commitPlan…" — our println split mid-line
+                // by an SLF4J write of "[TRACE:" from the chat response). We log via our
+                // own traceChat() helper instead, so the LangChain4j HTTP logger stays off.
+                .logRequests(false)
+                .logResponses(false);
 
         // Set model name if specified
         String modelName = config.getChatModel();

@@ -69,7 +69,28 @@ public class ApplyTools {
      */
     private int consecutiveEmptyCommitAttempts = 0;
 
+    /**
+     * Threshold at which {@link #commitPlan} treats repeated empty calls as a
+     * livelocked agent and aborts the iteration by throwing. Counts 1..(N-1)
+     * still return escalating error strings so a healthy agent can recover; the
+     * Nth empty call sets {@link #aborted} and raises {@link RuntimeException}.
+     * Catches the failure mode seen in worklog_eval where the agent emitted
+     * 200 consecutive {@code commitPlan(0 staged op(s))} calls over ~4.5 hours.
+     */
+    public static final int MAX_CONSECUTIVE_EMPTY_COMMITS = 4;
+
+    /**
+     * Sticky flag set once the no-op loop guard has fired. Every subsequent
+     * tool entry throws so LangChain4j cannot keep dispatching to a doomed
+     * iteration. Cleared by {@link #resetIterationStats()}.
+     */
+    private boolean aborted = false;
+
     private void traceCall(String toolName, String args) {
+        if (aborted) {
+            throw new RuntimeException("ApplyTools aborted (no-op loop guard tripped); refusing "
+                + toolName);
+        }
         applyCallCount++;
         System.out.println("  🔨 Apply tool #" + applyCallCount + ": " + toolName + "(" + args + ")");
     }
@@ -174,6 +195,12 @@ public class ApplyTools {
         opsCommittedThisIteration = 0;
         commitAttemptsThisIteration = 0;
         consecutiveEmptyCommitAttempts = 0;
+        aborted = false;
+    }
+
+    /** True once the no-op loop guard has fired and the iteration must end. */
+    public boolean isAborted() {
+        return aborted;
     }
 
     /** Number of ops successfully committed since the last {@link #resetIterationStats()}. */
@@ -353,6 +380,14 @@ public class ApplyTools {
         commitAttemptsThisIteration++;
         if (draftOps.isEmpty()) {
             consecutiveEmptyCommitAttempts++;
+            if (consecutiveEmptyCommitAttempts >= MAX_CONSECUTIVE_EMPTY_COMMITS) {
+                aborted = true;
+                String abortMsg = "ABORT: commitPlan called " + consecutiveEmptyCommitAttempts
+                    + " consecutive times with 0 staged ops — agent is in a no-op loop.";
+                traceReturn(abortMsg);
+                System.out.println("  ‼ " + abortMsg + " Aborting iteration.");
+                throw new RuntimeException(abortMsg);
+            }
             String errorMsg;
             if (consecutiveEmptyCommitAttempts == 1) {
                 errorMsg = "commitPlan: no staged edits to apply.";
@@ -360,8 +395,9 @@ public class ApplyTools {
                 errorMsg = "STOP: commitPlan called twice with 0 staged ops. Stage an edit first "
                     + "(stageReplaceMethod / stageAddMethod) or call discardDraft if task is complete.";
             } else {
-                errorMsg = "ERROR: commitPlan called " + consecutiveEmptyCommitAttempts + " times with 0 staged ops. "
-                    + "Loop detected. Use discardDraft to signal completion, or stage actual edits.";
+                errorMsg = "FINAL WARNING: commitPlan called " + consecutiveEmptyCommitAttempts
+                    + " times with 0 staged ops. The next empty call will abort this iteration. "
+                    + "Use discardDraft to signal completion, or stage actual edits.";
             }
             return traceReturn(errorMsg);
         }

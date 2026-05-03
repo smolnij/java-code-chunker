@@ -1,11 +1,18 @@
 /usage
-Get errors tool
+- Rechunk
+- Run Eval with debug
+Analyze eval log
+- Get errors tool
+Move config to file
 How should chunks be improved? (without LLM summary)
 Which new graph edges can improve efficiency
 Which tools can be added considering new graph?
-Improve chunks with LLM summary
+More deterministic refactor tools
+Analyze for JSON communication
+- Improve chunks with LLM summary
 The deferred items in the plan stay deferred
 How re-indexer must be updated considering new tools and chunks structure
+  **P-O6. Memory of prior attempts**
 
 # java-code-chunker — Future Plan
 

@@ -324,6 +324,7 @@ public class SafeRefactorLoop {
                 ApplyTools iterApply = agent.getApplyTools();
                 if (iterApply != null) iterApply.resetIterationStats();
 
+                String agentInput;
                 if (iteration == 0) {
                     // First iteration: send the original query + pre-fetched context
                     String enhancedQuery = userQuery;
@@ -331,14 +332,36 @@ public class SafeRefactorLoop {
                         enhancedQuery = userQuery + "\n\nHere is additional context from the code graph:\n\n"
                             + preContext;
                     }
-                    lastAgentResponse = agent.getAssistant().chat(enhancedQuery);
+                    agentInput = enhancedQuery;
                 } else {
                     // Subsequent iterations: ask the agent to refine based on safety feedback
                     SafetyVerdict lastVerdict = verdictHistory.get(verdictHistory.size() - 1);
-                    String refinementPrompt = buildRefinementPrompt(
+                    agentInput = buildRefinementPrompt(
                             lastVerdict, iteration, lastAstDiffReport,
                             lastScoredDiffs, lastCrossDiff, lastAstSafetyScore);
-                    lastAgentResponse = agent.getAssistant().chat(refinementPrompt);
+                }
+                long agentStartNanos = System.nanoTime();
+                try {
+                    lastAgentResponse = agent.getAssistant().chat(agentInput);
+                } catch (RuntimeException agentErr) {
+                    long elapsedMs = (System.nanoTime() - agentStartNanos) / 1_000_000L;
+                    if (iterApply != null && iterApply.isAborted()) {
+                        System.out.println("  ‼ [iter " + (iteration + 1) + "] agent.chat aborted by ApplyTools no-op guard"
+                                + " after " + elapsedMs + "ms — ending iteration early.");
+                        lastAgentResponse = "(aborted by no-op loop guard after "
+                            + iterApply.getConsecutiveEmptyCommitAttempts() + " consecutive empty commitPlan calls)";
+                    } else {
+                        throw agentErr;
+                    }
+                }
+                long agentElapsedMs = (System.nanoTime() - agentStartNanos) / 1_000_000L;
+                if (config.isTrace()) {
+                    System.out.println("  [trace:LLM phase=refactor iter=" + (iteration + 1)
+                        + "/" + config.getMaxIterations()
+                        + " in.chars=" + agentInput.length()
+                        + " out.chars=" + (lastAgentResponse == null ? 0 : lastAgentResponse.length())
+                        + " latencyMs=" + agentElapsedMs
+                        + " tool_calls=" + agentTools.getToolCallCount() + "]");
                 }
 
                 System.out.println("  Agent responded (" + agentTools.getToolCallCount() + " tool calls)");
@@ -1299,18 +1322,27 @@ public class SafeRefactorLoop {
 
     private String traceChat(String label, ChatService chat, String systemPrompt, String userPrompt,
                              StructuredOutputSpec spec) {
+        int sysLen = systemPrompt == null ? 0 : systemPrompt.length();
+        int userLen = userPrompt == null ? 0 : userPrompt.length();
         if (config.isTrace()) {
-            System.out.println("  │ [TRACE:" + label + "] SYSTEM PROMPT (" + systemPrompt.length() + " chars):");
-            System.out.println(systemPrompt.replace("\n", "\n  │   "));
-            System.out.println("  │ [TRACE:" + label + "] USER PROMPT (" + userPrompt.length() + " chars):");
-            System.out.println(userPrompt.replace("\n", "\n  │   "));
+            System.out.println("  │ [TRACE:" + label + "] SYSTEM PROMPT (" + sysLen + " chars):");
+            System.out.println((systemPrompt == null ? "" : systemPrompt).replace("\n", "\n  │   "));
+            System.out.println("  │ [TRACE:" + label + "] USER PROMPT (" + userLen + " chars):");
+            System.out.println((userPrompt == null ? "" : userPrompt).replace("\n", "\n  │   "));
         }
+        long startNanos = System.nanoTime();
         String response = spec != null
             ? chat.chat(systemPrompt, userPrompt, spec)
             : chat.chat(systemPrompt, userPrompt);
+        long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
+        int respLen = response == null ? 0 : response.length();
         if (config.isTrace()) {
-            System.out.println("  │ [TRACE:" + label + "] FULL RESPONSE (" + response);
-            System.out.println(response.replace("\n", "\n  │   "));
+            System.out.println("  │ [TRACE:" + label + "] LLM call: in.chars=" + (sysLen + userLen)
+                + " out.chars=" + respLen
+                + " latencyMs=" + elapsedMs
+                + (spec != null ? " structured=" + spec.name() : ""));
+            System.out.println("  │ [TRACE:" + label + "] FULL RESPONSE (" + respLen + " chars):");
+            System.out.println((response == null ? "" : response).replace("\n", "\n  │   "));
         }
         return response;
     }
