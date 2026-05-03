@@ -62,6 +62,13 @@ public class ApplyTools {
      */
     private int commitAttemptsThisIteration = 0;
 
+    /**
+     * Counter for consecutive calls to commitPlan when draftOps is empty.
+     * Reset when a successful commit, discard, or any stage* call happens.
+     * Used to detect and break out of tool-call loops early.
+     */
+    private int consecutiveEmptyCommitAttempts = 0;
+
     private void traceCall(String toolName, String args) {
         applyCallCount++;
         System.out.println("  🔨 Apply tool #" + applyCallCount + ": " + toolName + "(" + args + ")");
@@ -166,6 +173,7 @@ public class ApplyTools {
     public void resetIterationStats() {
         opsCommittedThisIteration = 0;
         commitAttemptsThisIteration = 0;
+        consecutiveEmptyCommitAttempts = 0;
     }
 
     /** Number of ops successfully committed since the last {@link #resetIterationStats()}. */
@@ -176,6 +184,11 @@ public class ApplyTools {
     /** Number of {@code commitPlan} calls (any outcome) since the last {@link #resetIterationStats()}. */
     public int getCommitAttemptsThisIteration() {
         return commitAttemptsThisIteration;
+    }
+
+    /** Consecutive calls to commitPlan when draftOps was empty. Used to detect tool-call loops. */
+    public int getConsecutiveEmptyCommitAttempts() {
+        return consecutiveEmptyCommitAttempts;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -194,6 +207,7 @@ public class ApplyTools {
                                      @P("Original method signature") String originalSignature,
                                      @P("Full new method declaration (Java source)") String newCode) {
         traceCall("stageReplaceMethod", fqClassName + "#" + methodName);
+        consecutiveEmptyCommitAttempts = 0;
         draftOps.add(new EditOp.ReplaceMethod(fqClassName, methodName, originalSignature, newCode));
         return traceReturn("staged replace_method " + fqClassName + "#" + methodName
             + " (ops so far: " + draftOps.size() + ")");
@@ -338,8 +352,20 @@ public class ApplyTools {
         traceCall("commitPlan", draftOps.size() + " staged op(s)");
         commitAttemptsThisIteration++;
         if (draftOps.isEmpty()) {
-            return traceReturn("commitPlan: no staged edits to apply.");
+            consecutiveEmptyCommitAttempts++;
+            String errorMsg;
+            if (consecutiveEmptyCommitAttempts == 1) {
+                errorMsg = "commitPlan: no staged edits to apply.";
+            } else if (consecutiveEmptyCommitAttempts == 2) {
+                errorMsg = "STOP: commitPlan called twice with 0 staged ops. Stage an edit first "
+                    + "(stageReplaceMethod / stageAddMethod) or call discardDraft if task is complete.";
+            } else {
+                errorMsg = "ERROR: commitPlan called " + consecutiveEmptyCommitAttempts + " times with 0 staged ops. "
+                    + "Loop detected. Use discardDraft to signal completion, or stage actual edits.";
+            }
+            return traceReturn(errorMsg);
         }
+        consecutiveEmptyCommitAttempts = 0;
 
         int opsBeingCommitted = draftOps.size();
         PatchPlan plan = new PatchPlan(
@@ -412,6 +438,7 @@ public class ApplyTools {
         traceCall("discardDraft", draftOps.size() + " staged op(s)");
         int n = draftOps.size();
         draftOps.clear();
+        consecutiveEmptyCommitAttempts = 0;
         return traceReturn("discarded " + n + " staged op(s).");
     }
 }

@@ -183,7 +183,7 @@ public class RefactorAgent {
             builder = builder.tools(tools);
         }
         this.assistant = builder
-                .maxSequentialToolsInvocations(MAX_SEQUENTIAL_TOOLS_EXECUTIONS)
+                .maxSequentialToolsInvocations(config.getMaxToolCalls() > 0 ? config.getMaxToolCalls() : MAX_SEQUENTIAL_TOOLS_EXECUTIONS)
                 .build();
     }
 

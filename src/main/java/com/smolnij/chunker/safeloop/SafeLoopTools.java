@@ -236,6 +236,15 @@ public class SafeLoopTools {
             System.out.println("  [analyzer-expand] caller passed no IDs");
         }
 
+        if (config.isTrace()) {
+            System.out.println("  [analyzer-expand summary] requested=" + requestedIds.size()
+                    + "  resolved=" + (newIds.size() + alreadyPresent.size())
+                    + "  new=" + newIds.size()
+                    + "  already_present=" + alreadyPresent.size()
+                    + "  unresolved=" + unresolved.size()
+                    + "  staged=" + stagedHits.size());
+        }
+
         String graphContext = hydrateAndTrack(newIds, "Analyzer-requested expansion");
         if (stagedHits.isEmpty()) {
             return graphContext;

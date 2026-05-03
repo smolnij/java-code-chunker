@@ -347,6 +347,20 @@ public class SafeRefactorLoop {
                 System.out.println("  └───────────────────────────────────────────────────");
                 System.out.println();
 
+                if (config.isTrace() && iterApply != null) {
+                    System.out.println("  [phase3 done] agent_tools=" + agentTools.getToolCallCount()
+                            + "  staged_ops=" + iterApply.getOpsCommittedThisIteration()
+                            + "  commitPlan_attempts=" + iterApply.getCommitAttemptsThisIteration()
+                            + "  consecutive_empty=" + iterApply.getConsecutiveEmptyCommitAttempts());
+                }
+
+                if (iterApply != null && iterApply.getCommitAttemptsThisIteration() > 0
+                        && iterApply.getOpsCommittedThisIteration() == 0) {
+                    System.out.println("  ⚠ [iter " + (iteration + 1) + "] Agent called commitPlan "
+                            + iterApply.getCommitAttemptsThisIteration() + " time(s) but staged 0 ops. "
+                            + "Possible \"task already done\" scenario.");
+                }
+
                 // ── Phase 3.5: SELF-REVIEW (reflexion-style) ──
                 // Ask a low-temperature self-reviewer to list the three weakest
                 // assumptions in the agent's previous edit and request any missing
@@ -376,22 +390,67 @@ public class SafeRefactorLoop {
 
                         // Build a compact human-readable summary for immediate agent memory
                         String compactSummary = buildCompactSelfReviewSummary(selfReviewRaw);
+
+                        if (config.isTrace()) {
+                            System.out.println("  ── Phase 3.5 injection 1/3 [SELF_REVIEW_SUMMARY] ─────────────────");
+                        }
+                        int toolsBefore1 = agentTools.getToolCallCount();
+                        int commitEmptyBefore1 = iterApply != null ? iterApply.getConsecutiveEmptyCommitAttempts() : 0;
+
                         agent.getAssistant().chat("SELF_REVIEW_SUMMARY:\n\n" + compactSummary);
 
+                        if (config.isTrace()) {
+                            int toolsDelta = agentTools.getToolCallCount() - toolsBefore1;
+                            int emptyDelta = (iterApply != null ? iterApply.getConsecutiveEmptyCommitAttempts() : 0) - commitEmptyBefore1;
+                            System.out.println("  [3.5 done] injection=1  tool_calls_delta=" + toolsDelta + "  commitPlan_empty_delta=" + emptyDelta);
+                        }
+
                         // Make the stored structured review discoverable to the agent
+                        if (config.isTrace()) {
+                            System.out.println("  ── Phase 3.5 injection 2/3 [SELF_REVIEW_STORED] ──────────────────");
+                        }
+                        int toolsBefore2 = agentTools.getToolCallCount();
+                        int commitEmptyBefore2 = iterApply != null ? iterApply.getConsecutiveEmptyCommitAttempts() : 0;
+
                         agent.getAssistant().chat("SELF_REVIEW_STORED: fetchSelfReview() and fetchSelfReviewContext() are available as tools.");
+
+                        if (config.isTrace()) {
+                            int toolsDelta = agentTools.getToolCallCount() - toolsBefore2;
+                            int emptyDelta = (iterApply != null ? iterApply.getConsecutiveEmptyCommitAttempts() : 0) - commitEmptyBefore2;
+                            System.out.println("  [3.5 done] injection=2  tool_calls_delta=" + toolsDelta + "  commitPlan_empty_delta=" + emptyDelta);
+                        }
 
                         // Parse structured self-review to a deterministic list of missing identifiers
                         List<String> deterministicMissing = RefactorUtils.parseMissingFromSelfReview(selfReviewRaw, 10);
+
+                        if (config.isTrace() && !deterministicMissing.isEmpty()) {
+                            System.out.println("  [self-review parse] missing_ids=" + deterministicMissing.size()
+                                    + "  (ids: " + String.join(", ", deterministicMissing.stream().limit(3).toList())
+                                    + (deterministicMissing.size() > 3 ? ", ..." : "") + ")");
+                        }
+
                         if (!deterministicMissing.isEmpty()) {
                             // Hydrate code context for these missing items and store for agent access
                             String newContext = loopTools.expandForAnalyzer(deterministicMissing);
                             if (!newContext.isEmpty()) {
                                 agentTools.storeSelfReviewContext(newContext);
+
+                                if (config.isTrace()) {
+                                    System.out.println("  ── Phase 3.5 injection 3/3 [CONTEXT_EXPANSION] ──────────────────");
+                                }
+                                int toolsBefore3 = agentTools.getToolCallCount();
+                                int commitEmptyBefore3 = iterApply != null ? iterApply.getConsecutiveEmptyCommitAttempts() : 0;
+
                                 agent.getAssistant().chat(
                                     "Additional context retrieved for self-review MISSING items:\n\n" + compactSummary
                                         + "\n\n(See tool fetchSelfReviewContext() for hydrated code.)"
                                 );
+
+                                if (config.isTrace()) {
+                                    int toolsDelta = agentTools.getToolCallCount() - toolsBefore3;
+                                    int emptyDelta = (iterApply != null ? iterApply.getConsecutiveEmptyCommitAttempts() : 0) - commitEmptyBefore3;
+                                    System.out.println("  [3.5 done] injection=3  tool_calls_delta=" + toolsDelta + "  commitPlan_empty_delta=" + emptyDelta);
+                                }
                                 System.out.println("  → Expanded graph for self-review MISSING: +" + loopTools.getLastExpansionChunks().size() + " methods");
 
                                 // Immediately call the analyzer with the hydrated missing-context (quick-check)
@@ -551,13 +610,26 @@ public class SafeRefactorLoop {
                 String taskCompletionFull = buildTaskCompletionStats(agent.getApplyTools());
                 String compilationStatusFull = buildCompilationStatus(agent.getApplyTools());
                 String analyzerPrompt = buildAnalyzerPrompt(userQuery, lastAgentResponse, iteration, astDiffReport, taskCompletionFull, compilationStatusFull);
+
+                if (config.isTrace()) {
+                    System.out.println("  [analyzer] prompt_chars=" + analyzerPrompt.length());
+                }
+
                 System.out.println("  ┌─ Analyzer ─────────────────────────────────────");
                 StructuredOutputSpec analyzerSpec = analyzerSpec(config.getStructuredOutput());
+
+                long analyzerStartTime = System.currentTimeMillis();
                 String analyzerResponse = analyzerSpec != null
                     ? traceChat("Analyzer", analyzerChat, ANALYZER_SYSTEM_PROMPT, analyzerPrompt, analyzerSpec)
                     : traceChat("Analyzer", analyzerChat, ANALYZER_SYSTEM_PROMPT, analyzerPrompt);
+                long analyzerDurationMs = System.currentTimeMillis() - analyzerStartTime;
+
                 System.out.println("  │ " + truncateForLog(analyzerResponse, 300).replace("\n", "\n  │ "));
                 System.out.println("  └───────────────────────────────────────────────────");
+
+                if (config.isTrace()) {
+                    System.out.println("  [analyzer] response_ms=" + analyzerDurationMs + "  response_chars=" + analyzerResponse.length());
+                }
 
                 SafetyVerdict verdict = SafetyVerdict.parse(analyzerResponse);
                 if (analyzerSpec != null) {
