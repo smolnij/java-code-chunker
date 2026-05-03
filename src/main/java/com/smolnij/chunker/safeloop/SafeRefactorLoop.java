@@ -1575,32 +1575,123 @@ public class SafeRefactorLoop {
      * proposal).
      */
     private CrossMethodDiff analyzeCrossMethod(String agentResponse) {
+        boolean trace = config.isTrace();
         try {
             Set<String> chunkIds = new java.util.LinkedHashSet<>();
 
             // Include everything the loop has already retrieved — these are the
             // methods in scope and are the baseline for deletion detection.
-            chunkIds.addAll(loopTools.getRetrievedNodeIds());
+            Set<String> retrieved = loopTools.getRetrievedNodeIds();
+            chunkIds.addAll(retrieved);
 
             // Resolve every method-name appearing in the response too, in case
             // the agent produced code for a method we haven't fetched yet.
-            for (String block : extractCodeBlocks(agentResponse)) {
-                String methodName = extractMethodNameFromCode(block);
-                if (methodName == null || methodName.isEmpty()) continue;
-                String resolved = loopTools.resolveMethodForDiff(methodName);
-                if (resolved != null) chunkIds.add(resolved);
+            List<String> blocks = extractCodeBlocks(agentResponse);
+            int parsedNames = 0;
+            int resolvedNames = 0;
+            int unresolvedNames = 0;
+            int unparseableBlocks = 0;
+            Set<String> newlyResolved = new java.util.LinkedHashSet<>();
+
+            if (trace) {
+                System.out.println("  │ [trace:ASTDIFF blocks=" + blocks.size()
+                    + " retrievedScope=" + retrieved.size()
+                    + " responseChars=" + (agentResponse == null ? 0 : agentResponse.length()) + "]");
             }
 
-            if (chunkIds.isEmpty()) return CrossMethodDiff.empty();
+            for (int i = 0; i < blocks.size(); i++) {
+                String block = blocks.get(i);
+                String methodName = extractMethodNameFromCode(block);
+                String head = preview(block, 80);
+                if (methodName == null || methodName.isEmpty()) {
+                    unparseableBlocks++;
+                    if (trace) {
+                        System.out.println("  │ [trace:ASTDIFF block#" + i
+                            + " chars=" + block.length()
+                            + " name=NONE_PARSED head=\"" + head + "\"]");
+                    }
+                    continue;
+                }
+                parsedNames++;
+                String resolved = loopTools.resolveMethodForDiff(methodName);
+                if (resolved != null) {
+                    if (chunkIds.add(resolved)) newlyResolved.add(resolved);
+                    resolvedNames++;
+                    if (trace) {
+                        System.out.println("  │ [trace:ASTDIFF block#" + i
+                            + " name=" + methodName + " resolved=" + resolved
+                            + " head=\"" + head + "\"]");
+                    }
+                } else {
+                    unresolvedNames++;
+                    if (trace) {
+                        System.out.println("  │ [trace:ASTDIFF block#" + i
+                            + " name=" + methodName + " resolved=NONE"
+                            + " head=\"" + head + "\"]");
+                    }
+                }
+            }
+
+            if (trace) {
+                System.out.println("  │ [trace:ASTDIFF parse parsed=" + parsedNames
+                    + " resolved=" + resolvedNames
+                    + " unresolved=" + unresolvedNames
+                    + " unparseable=" + unparseableBlocks
+                    + " newlyResolved=" + newlyResolved.size() + "]");
+            }
+
+            if (chunkIds.isEmpty()) {
+                if (trace) {
+                    System.out.println("  │ [trace:ASTDIFF empty reason=NO_CHUNK_IDS"
+                        + " hint=" + (blocks.isEmpty() ? "no_code_blocks_in_response"
+                                       : (parsedNames == 0 ? "no_method_names_parsed"
+                                                           : "no_names_resolved_and_no_retrieved_scope")) + "]");
+                }
+                return CrossMethodDiff.empty();
+            }
 
             Map<String, CodeChunk> chunks = loopTools.fetchChunksForDiff(chunkIds);
-            if (chunks.isEmpty()) return CrossMethodDiff.empty();
+            if (trace) {
+                System.out.println("  │ [trace:ASTDIFF fetch requested=" + chunkIds.size()
+                    + " fetched=" + chunks.size() + "]");
+            }
+            if (chunks.isEmpty()) {
+                if (trace) {
+                    System.out.println("  │ [trace:ASTDIFF empty reason=FETCH_RETURNED_EMPTY]");
+                }
+                return CrossMethodDiff.empty();
+            }
 
-            return diffEngine.analyze(new ArrayList<>(chunks.values()), agentResponse);
+            CrossMethodDiff result = diffEngine.analyze(new ArrayList<>(chunks.values()), agentResponse);
+            if (trace) {
+                System.out.println("  │ [trace:ASTDIFF analyze methodDiffs=" + result.getMethodDiffs().size()
+                    + " invariantViolations=" + result.hasInvariantViolations()
+                    + " empty=" + result.isEmpty() + "]");
+                if (result.isEmpty() && !chunks.isEmpty()) {
+                    System.out.println("  │ [trace:ASTDIFF empty reason=ENGINE_RETURNED_EMPTY"
+                        + " hint=proposed_methods_did_not_match_originals_by_name]");
+                }
+            }
+            return result;
         } catch (Exception e) {
             System.out.println("    WARN: AST diff failed: " + e.getMessage());
+            if (trace) {
+                System.out.println("  │ [trace:ASTDIFF empty reason=EXCEPTION cls="
+                    + e.getClass().getSimpleName() + "]");
+            }
             return CrossMethodDiff.empty();
         }
+    }
+
+    /** First {@code limit} characters of {@code s}, single-line, with controls escaped. */
+    private static String preview(String s, int limit) {
+        if (s == null) return "";
+        String trimmed = s.length() > limit ? s.substring(0, limit) : s;
+        return trimmed.replace("\\", "\\\\")
+                      .replace("\"", "\\\"")
+                      .replace("\n", "\\n")
+                      .replace("\r", "\\r")
+                      .replace("\t", " ");
     }
 
     /**
