@@ -195,6 +195,27 @@ public class SafeRefactorLoop {
     private Consumer<String> progressCallback;
 
     /**
+     * T14: per-iteration timing accumulator. Set at the start of each Phase 3
+     * iteration and cleared when the iteration ends. {@link #traceChat} and
+     * the phase-timing helpers consult it to attribute work to the active
+     * iteration; null outside the loop body so pre-/post-loop work is not
+     * mis-attributed.
+     */
+    private IterStats currentIterStats;
+    private final List<IterStats> iterStatsLog = new ArrayList<>();
+    private long retrieveMsTotal;
+    private long applyMsTotal;
+
+    /**
+     * T13: active-phase tracker. {@link #beginPhase(String, String)} auto-closes
+     * the previous phase, so the multiple {@code break}/{@code continue} exits
+     * inside the iteration loop don't need explicit close calls.
+     */
+    private String activePhaseLabel;
+    private String activePhaseBucket;
+    private long activePhaseStartNanos;
+
+    /**
      * Construct with AST diff support for structural validation in Phase 4.
      * Both {@code diffEngine} and {@code diffScorer} are required — AST diffing
      * is the cheapest empirical correctness signal and runs locally.
@@ -281,19 +302,18 @@ public class SafeRefactorLoop {
             // ══════════════════════════════════════════════════════
             // Phase 1: PLANNING — Initial retrieval + target identification
             // ══════════════════════════════════════════════════════
-            System.out.println("━━━ Phase 1: Planning & Initial Retrieval ━━━━━━━━━━━");
+            beginPhase("━━━ Phase 1: Planning & Initial Retrieval ━━━━━━━━━━━", "retrieve");
 
             List<RetrievalResult> initialResults = loopTools.initialRetrieve(userQuery);
             System.out.println("  Retrieved " + initialResults.size() + " initial chunks");
 
             String anchorId = loopTools.findAnchorId(initialResults);
             System.out.println("  Anchor method: " + (anchorId != null ? anchorId : "(none)"));
-            System.out.println();
 
             // ══════════════════════════════════════════════════════
             // Phase 2: GRAPH PRE-FETCH — Ensure minimum coverage
             // ══════════════════════════════════════════════════════
-            System.out.println("━━━ Phase 2: Graph Coverage Enforcement ━━━━━━━━━━━━━");
+            beginPhase("━━━ Phase 2: Graph Coverage Enforcement ━━━━━━━━━━━━━", "retrieve");
 
             String preContext = "";
             if (anchorId != null) {
@@ -308,7 +328,6 @@ public class SafeRefactorLoop {
                 System.out.println("  ⚠ No anchor method found, skipping coverage enforcement");
             }
             System.out.println("  Total nodes in context: " + loopTools.getTotalNodesRetrieved());
-            System.out.println();
 
             // ══════════════════════════════════════════════════════
             // Phase 3→5: REFACTOR → VALIDATE → DECIDE (iterative)
@@ -317,8 +336,10 @@ public class SafeRefactorLoop {
             for (int iteration = 0; iteration < config.getMaxIterations(); iteration++) {
                 String iterLabel = "Iteration " + (iteration + 1) + "/" + config.getMaxIterations();
 
+                currentIterStats = new IterStats(iteration + 1);
+
                 // ── Phase 3: REFACTOR ──
-                System.out.println("━━━ " + iterLabel + ": Phase 3 — Refactoring ━━━━━━━━━━━");
+                beginPhase("━━━ " + iterLabel + ": Phase 3 — Refactoring ━━━━━━━━━━━", "refactor");
 
                 agentTools.resetToolCallCount();
                 ApplyTools iterApply = agent.getApplyTools();
@@ -355,11 +376,14 @@ public class SafeRefactorLoop {
                     }
                 }
                 long agentElapsedMs = (System.nanoTime() - agentStartNanos) / 1_000_000L;
+                recordLlmCall("Refactor-agent", agentElapsedMs);
                 if (config.isTrace()) {
-                    System.out.println("  [trace:LLM phase=refactor iter=" + (iteration + 1)
+                    System.out.println("  [trace:LLM label=Refactor-agent phase=refactor iter=" + (iteration + 1)
                         + "/" + config.getMaxIterations()
-                        + " in.chars=" + agentInput.length()
+                        + " model=" + (agent.getModel() == null ? "?" : agent.getModel())
+                        + " in.chars=" + agentInput.length() + " in.tokens~=" + approxTokens(agentInput.length())
                         + " out.chars=" + (lastAgentResponse == null ? 0 : lastAgentResponse.length())
+                        + " out.tokens~=" + approxTokens(lastAgentResponse == null ? 0 : lastAgentResponse.length())
                         + " latencyMs=" + agentElapsedMs
                         + " tool_calls=" + agentTools.getToolCallCount() + "]");
                 }
@@ -389,7 +413,7 @@ public class SafeRefactorLoop {
                 // assumptions in the agent's previous edit and request any missing
                 // context. Inject the result into the agent's memory to reduce
                 // analyzer round-trips (cheap LLM call).
-                System.out.println("━━━ " + iterLabel + ": Phase 3.5 — Self-review (low-temperature) ━━━━━━━━━");
+                beginPhase("━━━ " + iterLabel + ": Phase 3.5 — Self-review (low-temperature) ━━━━━━━━━", "self-review");
                 try {
                     double reviewTemp = Math.max(0.0, Math.min(0.5, config.getSelfReviewTemperature()));
 
@@ -497,6 +521,9 @@ public class SafeRefactorLoop {
                                         System.out.println("  → Quick analyzer judged SAFE — short-circuiting loop");
                                         SafetyVerdict finalVerdict = quickVerdict;
                                         boolean isSafe = finalVerdict != null && finalVerdict.isSafe(config.getSafetyThreshold());
+                                        closeActivePhase();
+                                        commitIterStats();
+                                        printIterationTable();
                                         return new SafeLoopResult(
                                             userQuery,
                                             lastAgentResponse,
@@ -528,9 +555,8 @@ public class SafeRefactorLoop {
                 } catch (Exception e) {
                     System.out.println("  ⚠ Self-review failed: " + e.getMessage());
                 }
-                System.out.println();
                 // ── Phase 3.8: COMPILE & TEST VERIFICATION ──
-                System.out.println("━━━ " + iterLabel + ": Phase 3.8 — Compile/Test Verification ━━━━━");
+                beginPhase("━━━ " + iterLabel + ": Phase 3.8 — Compile/Test Verification ━━━━━", "verify");
                 try {
                     CompileVerifier compileVerifier = new CompileVerifier();
                     Optional<String> compileErr = compileVerifier.verifyWithMaven(lastAgentResponse);
@@ -549,6 +575,8 @@ public class SafeRefactorLoop {
                         verdictHistory.add(compileVerdict);
 
                         System.out.println("  → Short-circuiting iteration due to compile failure\n");
+                        closeActivePhase();
+                        commitIterStats();
                         continue; // let the agent refine
                     } else {
                         System.out.println("  → ✓ Compile check passed");
@@ -572,6 +600,8 @@ public class SafeRefactorLoop {
                             SafetyVerdict testVerdict = SafetyVerdict.parse(synthT);
                             verdictHistory.add(testVerdict);
                             System.out.println("  → Short-circuiting iteration due to test failures\n");
+                            closeActivePhase();
+                            commitIterStats();
                             continue;
                         } else {
                             System.out.println("  → ✓ Tests passed");
@@ -580,9 +610,8 @@ public class SafeRefactorLoop {
                 } catch (Exception e) {
                     System.out.println("  ⚠ Verification phase failed: " + e.getMessage());
                 }
-                System.out.println();
                 // ── Phase 4: VALIDATE ──
-                System.out.println("━━━ " + iterLabel + ": Phase 4 — Safety Validation ━━━━━");
+                beginPhase("━━━ " + iterLabel + ": Phase 4 — Safety Validation ━━━━━", "validate");
 
                 // Phase 4a: AST diff scoring (deterministic)
                 System.out.println("  ┌─ AST Diff ────────────────────────────────────────");
@@ -681,7 +710,7 @@ public class SafeRefactorLoop {
                 System.out.println("  → " + verdict);
 
                 // ── Phase 5: DECIDE ──
-                System.out.println("━━━ " + iterLabel + ": Phase 5 — Decision ━━━━━━━━━━━━━");
+                beginPhase("━━━ " + iterLabel + ": Phase 5 — Decision ━━━━━━━━━━━━━", "decide");
 
                 // Check: SAFE?
                 if (verdict.isSafe(config.getSafetyThreshold())) {
@@ -689,6 +718,8 @@ public class SafeRefactorLoop {
                         + " ≥ threshold " + String.format("%.2f", config.getSafetyThreshold()));
                     System.out.println();
                     terminalReason = SafeLoopResult.TerminalReason.SAFE;
+                    closeActivePhase();
+                    commitIterStats();
                     break;
                 }
 
@@ -699,6 +730,8 @@ public class SafeRefactorLoop {
                         System.out.println("  → ✗ STAGNANT — same risks as previous iteration, stopping");
                         System.out.println();
                         terminalReason = SafeLoopResult.TerminalReason.STAGNANT;
+                        closeActivePhase();
+                        commitIterStats();
                         break;
                     }
                 }
@@ -719,6 +752,8 @@ public class SafeRefactorLoop {
                             System.out.println("  → ✗ CONVERGED — no new graph nodes available, stopping");
                             System.out.println();
                             terminalReason = SafeLoopResult.TerminalReason.CONVERGED;
+                            closeActivePhase();
+                            commitIterStats();
                             break;
                         }
                         System.out.println("  → ⚠ No new nodes, but continuing (stopOnNoNewNodes=false)");
@@ -739,7 +774,13 @@ public class SafeRefactorLoop {
 
                 System.out.println("  → Looping for refinement...");
                 System.out.println();
+                closeActivePhase();
+                commitIterStats();
             }
+            // T13: ensure any phase still open at loop exit (max-iterations path) is closed.
+            closeActivePhase();
+            // T14: commit iter stats if a break path didn't already (defensive).
+            commitIterStats();
 
             // ── Build final result ──
             SafetyVerdict finalVerdict = verdictHistory.isEmpty() ? null : verdictHistory.get(verdictHistory.size() - 1);
@@ -773,13 +814,13 @@ public class SafeRefactorLoop {
             // through to the prose-extracted apply pass below if the loop is SAFE.
             boolean agentAppliedOk = toolResult != null && toolResult.isSuccess();
             if (agentAppliedOk) {
-                System.out.println("━━━ Phase 6: Apply ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                beginPhase("━━━ Phase 6: Apply ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "apply");
                 System.out.println("  → Agent applied via CHANGES tools (analyzer-gated).");
                 System.out.println(toolResult.toReport().replace("\n", "\n  "));
                 System.out.println();
                 result.withApplyResult(toolResult.getChangedFiles(), toolResult.toReport());
             } else if (toolResult != null && config.isApply() && isSafe) {
-                System.out.println("━━━ Phase 6: Apply ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                beginPhase("━━━ Phase 6: Apply ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "apply");
                 System.out.println("  → Agent's commitPlan FAILED (" + toolResult.getErrors().size()
                     + " error(s)). Falling back to prose-extracted apply.");
                 System.out.println(toolResult.toReport().replace("\n", "\n  "));
@@ -788,26 +829,35 @@ public class SafeRefactorLoop {
             } else if (toolResult != null) {
                 // Agent attempted apply, it failed, and we either don't have isApply
                 // or verdict isn't SAFE — record the failure rather than swallowing it.
-                System.out.println("━━━ Phase 6: Apply ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                beginPhase("━━━ Phase 6: Apply ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "apply");
                 System.out.println("  → Agent's commitPlan FAILED, no fallback (apply="
                     + config.isApply() + ", safe=" + isSafe + ").");
                 System.out.println(toolResult.toReport().replace("\n", "\n  "));
                 System.out.println();
                 result.withApplyResult(List.of(), toolResult.toReport());
             } else if (config.isApply() && isSafe) {
+                beginPhase("━━━ Phase 6: Apply ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "apply");
                 applyPatch(result, lastAgentResponse);
             } else if (config.isApply()) {
-                System.out.println("━━━ Phase 6: Apply ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                beginPhase("━━━ Phase 6: Apply ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "apply");
                 System.out.println("  → Skipped — verdict not SAFE (" + terminalReason + ")");
                 System.out.println();
             }
 
+            // T13: close any phase still open so its elapsed line is printed.
+            closeActivePhase();
+            // T14: print the per-iteration timing table — the headline replacement
+            // for the opaque (NNNNms) total reported by the eval harness.
+            printIterationTable();
             return result;
 
         } catch (Exception e) {
             System.err.println("  ✗ ERROR: " + e.getMessage());
             e.printStackTrace();
 
+            closeActivePhase();
+            commitIterStats();
+            printIterationTable();
             return new SafeLoopResult(
                 userQuery, "", "Error: " + e.getMessage(),
                 false, 0.0,
@@ -1324,6 +1374,7 @@ public class SafeRefactorLoop {
                              StructuredOutputSpec spec) {
         int sysLen = systemPrompt == null ? 0 : systemPrompt.length();
         int userLen = userPrompt == null ? 0 : userPrompt.length();
+        int inChars = sysLen + userLen;
         if (config.isTrace()) {
             System.out.println("  │ [TRACE:" + label + "] SYSTEM PROMPT (" + sysLen + " chars):");
             System.out.println((systemPrompt == null ? "" : systemPrompt).replace("\n", "\n  │   "));
@@ -1336,15 +1387,178 @@ public class SafeRefactorLoop {
             : chat.chat(systemPrompt, userPrompt);
         long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
         int respLen = response == null ? 0 : response.length();
+        // T5: per-call LLM trace summary. ~4 chars/token is the standard
+        // tokenizer-free approximation; precise token counts would require
+        // running cl100k_base over both bodies which is too costly per call.
+        String model = chat == null ? null : chat.getModel();
+        Double temp = chat == null ? null : chat.getTemperature();
+        String summary = "[trace:LLM label=" + label
+            + " model=" + (model == null ? "?" : model)
+            + (temp == null ? "" : " temp=" + String.format(java.util.Locale.ROOT, "%.2f", temp))
+            + " in.chars=" + inChars + " in.tokens~=" + approxTokens(inChars)
+            + " out.chars=" + respLen + " out.tokens~=" + approxTokens(respLen)
+            + " latencyMs=" + elapsedMs
+            + (spec != null ? " structured=" + spec.name() : "")
+            + "]";
         if (config.isTrace()) {
-            System.out.println("  │ [TRACE:" + label + "] LLM call: in.chars=" + (sysLen + userLen)
-                + " out.chars=" + respLen
-                + " latencyMs=" + elapsedMs
-                + (spec != null ? " structured=" + spec.name() : ""));
+            System.out.println("  │ " + summary);
             System.out.println("  │ [TRACE:" + label + "] FULL RESPONSE (" + respLen + " chars):");
             System.out.println((response == null ? "" : response).replace("\n", "\n  │   "));
         }
+        // Latency tracking always runs so T14's per-iteration table is correct
+        // even when trace is off — the LLM call summary is the one user-visible
+        // line we'd like to keep but the proposal scopes T5 to trace mode.
+        recordLlmCall(label, elapsedMs);
         return response;
+    }
+
+    private static int approxTokens(int chars) {
+        return (chars + 3) / 4;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // T13/T14: phase timing + per-iteration aggregation
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Begin a phase: auto-close the previous one, print the banner, and
+     * record the start nanos for the new phase.
+     *
+     * @param banner the "━━━ Phase … ━━━" header line
+     * @param bucket "refactor" | "self-review" | "verify" | "validate" | "decide" | "retrieve" | "apply" | "" — bucket the elapsed ms is attributed to
+     */
+    private void beginPhase(String banner, String bucket) {
+        closeActivePhase();
+        System.out.println(banner);
+        activePhaseLabel = stripBannerOrnaments(banner);
+        activePhaseBucket = bucket;
+        activePhaseStartNanos = System.nanoTime();
+    }
+
+    /**
+     * Close the currently-active phase: print "━━━ … done in Xms ━━━" and
+     * attribute the elapsed ms to the per-iteration bucket (or the global
+     * retrieve/apply totals when no iteration is active).
+     */
+    private void closeActivePhase() {
+        if (activePhaseLabel == null) return;
+        long ms = (System.nanoTime() - activePhaseStartNanos) / 1_000_000L;
+        System.out.println("━━━ " + activePhaseLabel + " — done in " + ms + "ms ━━━");
+        String bucket = activePhaseBucket;
+        activePhaseLabel = null;
+        activePhaseBucket = null;
+        if (bucket == null || bucket.isEmpty()) return;
+        if (currentIterStats != null) {
+            switch (bucket) {
+                case "refactor"    -> currentIterStats.refactorMs += ms;
+                case "self-review" -> currentIterStats.selfReviewMs += ms;
+                case "verify"      -> currentIterStats.verifyMs += ms;
+                case "validate"    -> currentIterStats.validateMs += ms;
+                case "decide"      -> currentIterStats.decideMs += ms;
+                default -> { /* ignored for iter table */ }
+            }
+        } else {
+            switch (bucket) {
+                case "retrieve" -> retrieveMsTotal += ms;
+                case "apply"    -> applyMsTotal += ms;
+                default -> { /* not tracked at the global level */ }
+            }
+        }
+    }
+
+    /** Strip leading "━━━ " and trailing "━━━…" from a banner so the close line stays tidy. */
+    private static String stripBannerOrnaments(String banner) {
+        if (banner == null) return "";
+        String s = banner;
+        int start = 0;
+        while (start < s.length() && (s.charAt(start) == '━' || s.charAt(start) == ' ')) start++;
+        int end = s.length();
+        while (end > start && (s.charAt(end - 1) == '━' || s.charAt(end - 1) == ' ')) end--;
+        return s.substring(start, end);
+    }
+
+    /** Commit the active iteration's stats (called at iteration boundary). */
+    private void commitIterStats() {
+        if (currentIterStats == null) return;
+        currentIterStats.toolCalls = agentTools.getToolCallCount();
+        ApplyTools at = agent.getApplyTools();
+        if (at != null) {
+            currentIterStats.commitAttempts = at.getCommitAttemptsThisIteration();
+            currentIterStats.stagedOpsCommitted = at.getOpsCommittedThisIteration();
+        }
+        iterStatsLog.add(currentIterStats);
+        currentIterStats = null;
+    }
+
+    /** Attribute LLM call latency to the active iteration (no-op outside the loop). */
+    private void recordLlmCall(String label, long latencyMs) {
+        if (currentIterStats == null) return;
+        currentIterStats.llmMs += latencyMs;
+        currentIterStats.llmCalls += 1;
+    }
+
+    /**
+     * Per-iteration accumulator. One row per iteration is printed at the end
+     * of the fixture (T14) — a grep-friendly conversion of the opaque
+     * (16118003ms) total into actionable per-iteration signal.
+     */
+    private static final class IterStats {
+        final int iter;
+        long llmMs;
+        int llmCalls;
+        long refactorMs;
+        long selfReviewMs;
+        long verifyMs;
+        long validateMs;
+        long decideMs;
+        int toolCalls;
+        int commitAttempts;
+        int stagedOpsCommitted;
+
+        IterStats(int iter) { this.iter = iter; }
+
+        long phaseMsTotal() {
+            return refactorMs + selfReviewMs + verifyMs + validateMs + decideMs;
+        }
+
+        // Best-effort no-op count: any commitPlan attempt that didn't stage ops
+        // is a no-op. Approximation — assumes at most one successful commit per
+        // iteration (true under the SAFE-then-break flow but not strictly).
+        int noops() {
+            return Math.max(0, commitAttempts - (stagedOpsCommitted > 0 ? 1 : 0));
+        }
+
+        String render() {
+            return "[trace] iter=" + iter
+                + " llm.ms=" + llmMs + " llm.calls=" + llmCalls
+                + " refactor.ms=" + refactorMs
+                + " selfReview.ms=" + selfReviewMs
+                + " verify.ms=" + verifyMs
+                + " validate.ms=" + validateMs
+                + " decide.ms=" + decideMs
+                + " phaseTotal.ms=" + phaseMsTotal()
+                + " tools=" + toolCalls
+                + " commitAttempts=" + commitAttempts
+                + " staged.ops.committed=" + stagedOpsCommitted
+                + " noops=" + noops();
+        }
+    }
+
+    /**
+     * Print the per-iteration table at end of fixture (T14). Always emitted —
+     * this is the headline timing breakdown referenced by the proposal,
+     * meant to replace the opaque single-line wall clock in the eval log.
+     */
+    private void printIterationTable() {
+        if (iterStatsLog.isEmpty() && retrieveMsTotal == 0L && applyMsTotal == 0L) return;
+        System.out.println("━━━ Iteration timing table ━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        System.out.println("  [trace] retrieve.ms=" + retrieveMsTotal
+            + " apply.ms=" + applyMsTotal
+            + " (Phase 1+2 / Phase 6 — outside the iteration loop)");
+        for (IterStats s : iterStatsLog) {
+            System.out.println("  " + s.render());
+        }
+        System.out.println();
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1456,7 +1670,8 @@ public class SafeRefactorLoop {
      * {@link PatchApplier} against it. Records the outcome on the result.
      */
     private void applyPatch(SafeLoopResult result, String agentResponse) {
-        System.out.println("━━━ Phase 6: Apply ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        // Banner is printed by the caller via beginPhase("Phase 6: …", "apply")
+        // so phase timing wraps the entire apply block.
 
         String repoRootStr = config.getRepoRoot();
         if (repoRootStr == null || repoRootStr.isEmpty()) {

@@ -242,6 +242,11 @@ public class RefactorAgent {
         return tools;
     }
 
+    /** Underlying chat model identifier — surfaced for trace summary lines (T5). */
+    public String getModel() {
+        return config == null ? null : config.getChatModel();
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // Chat model builder
     // ═══════════════════════════════════════════════════════════════

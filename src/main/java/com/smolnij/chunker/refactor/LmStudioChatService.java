@@ -84,6 +84,16 @@ public class LmStudioChatService implements ChatService {
             .build();
     }
 
+    @Override
+    public String getModel() {
+        return model;
+    }
+
+    @Override
+    public Double getTemperature() {
+        return temperature;
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // Non-streaming chat
     // ═══════════════════════════════════════════════════════════════

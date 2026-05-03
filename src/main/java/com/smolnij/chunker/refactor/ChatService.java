@@ -60,5 +60,11 @@ public interface ChatService extends AutoCloseable {
     default void close() throws Exception {
         // no-op by default
     }
+
+    /** Model identifier reported in trace summary lines, or {@code null} if unknown. */
+    default String getModel() { return null; }
+
+    /** Sampling temperature reported in trace summary lines, or {@code null} if unknown. */
+    default Double getTemperature() { return null; }
 }
 
