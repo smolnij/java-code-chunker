@@ -155,9 +155,11 @@ public class HybridRetriever {
         // Extract candidate identifiers from the query
         List<String> candidates = extractIdentifiers(userQuery);
 
-        // Try exact match for each candidate
+        // Try exact match for each candidate. Pass the query embedding so the resolver
+        // can break CONTAINS-fallback ties by semantic similarity instead of alphabetical
+        // / fan-in heuristics.
         for (String candidate : candidates) {
-            String found = graphReader.findMethodExact(candidate);
+            String found = graphReader.findMethodExact(candidate, queryEmbedding);
             if (found != null) {
                 System.out.println("  [anchor] '" + found + "' source=identifier('" + candidate + "')");
                 return found;

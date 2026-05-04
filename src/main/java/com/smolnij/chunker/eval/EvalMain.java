@@ -407,13 +407,33 @@ public final class EvalMain {
         String gold = f.gold().anchor();
         if (gold == null || gold.isBlank()) return;
         String picked = res.anchorId();
-        if (picked == null || picked.equals(gold)) return;
+        if (picked == null) return;
+        // Normalize using the same rules the metric scorer applies (drop #partN, then
+        // strip the parameter list for a loose match). Without this the trace contradicts
+        // the metric — e.g. picked=Foo#run(String)#part1 vs gold=Foo#run(String) reports
+        // anchor.mismatch even though retrieval.anchor.hit PASSes.
+        String pickedNorm = RetrievalScorer.stripPartSuffix(picked);
+        String goldNorm = RetrievalScorer.stripPartSuffix(gold);
+        if (goldNorm.equals(pickedNorm)) return;
+        if (RetrievalScorer.stripParamList(goldNorm).equals(RetrievalScorer.stripParamList(pickedNorm))) return;
 
         int pickedRank = -1;
         int goldRank = -1;
         for (RetrievedChunk c : res.retrieved()) {
-            if (pickedRank < 0 && c.chunkId().equals(picked)) pickedRank = c.rank();
-            if (goldRank < 0 && c.chunkId().equals(gold)) goldRank = c.rank();
+            String cid = RetrievalScorer.stripPartSuffix(c.chunkId());
+            if (pickedRank < 0 && cid.equals(pickedNorm)) pickedRank = c.rank();
+            if (goldRank < 0 && cid.equals(goldNorm)) goldRank = c.rank();
+        }
+        // Loose-match fallback for goldRank so param-drift doesn't read as not-in-topK.
+        if (goldRank < 0) {
+            String goldLoose = RetrievalScorer.stripParamList(goldNorm);
+            for (RetrievedChunk c : res.retrieved()) {
+                String cid = RetrievalScorer.stripParamList(RetrievalScorer.stripPartSuffix(c.chunkId()));
+                if (cid.equals(goldLoose)) {
+                    goldRank = c.rank();
+                    break;
+                }
+            }
         }
         String pickedRankStr = pickedRank > 0 ? String.valueOf(pickedRank) : "n/a";
         String goldRankStr = goldRank > 0 ? String.valueOf(goldRank) : "not-in-topK";

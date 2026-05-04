@@ -85,6 +85,18 @@ public class Neo4jGraphReader implements AutoCloseable {
      * @return the chunkId if found, or {@code null}
      */
     public String findMethodExact(String rawIdentifier) {
+        return findMethodExact(rawIdentifier, null);
+    }
+
+    /**
+     * Same as {@link #findMethodExact(String)}, but when the CONTAINS @class-boundary
+     * fallback has multiple candidates, breaks the tie by cosine similarity between
+     * {@code queryEmbedding} and each candidate's stored embedding instead of the
+     * fan-in/alphabetical heuristic. Falls back to fan-in when embeddings are
+     * missing for all candidates. Also enables a fuzzy class-name expansion pass
+     * (e.g. {@code "Neo4j"} → {@code "Neo4jGraphReader"}) before giving up.
+     */
+    public String findMethodExact(String rawIdentifier, float[] queryEmbedding) {
         // Normalize prose-form 'Class.method' (or 'pkg.Class.method') into the canonical
         // 'Class#method' form. Users naturally write Java identifiers with '.' separators
         // in queries; without this rewrite the resolver falls through to CONTAINS or
@@ -169,46 +181,200 @@ public class Neo4jGraphReader implements AutoCloseable {
             // i.e. require the input to be followed by '#' (a class boundary). This prevents
             // a substring like "Ralph" from hitting unrelated methods like RalphMain.run.
             //
-            // When multiple methods inside the class match, pick the centroid:
-            //   - deprioritize <init>/<clinit> (rarely what the user means by naming the class alone)
-            //   - prefer the method with the highest fan-in (most callers) — the "main entry" of the class
-            //   - tie-break on chunkId for determinism
+            // Pick the centroid among the matched class-internal methods:
+            //   - deprioritize <init>/<clinit>
+            //   - if a query embedding is available AND at least one candidate has a stored
+            //     embedding, pick by argmax cosine(queryEmbedding, candidate)
+            //   - otherwise fall back to the older fan-in heuristic (alphabetical tie-break)
             String boundaryFragment = identifier + "#";
-            Record containsRec = session.executeRead(tx -> {
-                Result r = tx.run(
-                    "MATCH (m:Method) WHERE m.chunkId CONTAINS $fragment " +
-                        "OPTIONAL MATCH (m)<-[:CALLS]-(caller:Method) " +
-                        "WITH m, count(DISTINCT caller) AS fanIn, " +
-                        "     CASE WHEN m.methodName = '<init>' OR m.methodName = '<clinit>' THEN 0 ELSE 1 END AS isMethod " +
-                        "RETURN m.chunkId AS id, fanIn, isMethod " +
-                        "ORDER BY isMethod DESC, fanIn DESC, m.chunkId " +
-                        "LIMIT 1",
-                    Map.of("fragment", boundaryFragment)
-                );
-                return r.hasNext() ? r.next() : null;
-            });
-            if (containsRec != null) {
-                long total = session.executeRead(tx -> {
-                    Result r = tx.run(
-                        "MATCH (m:Method) WHERE m.chunkId CONTAINS $fragment RETURN count(m) AS c",
-                        Map.of("fragment", boundaryFragment)
-                    );
-                    return r.hasNext() ? r.next().get("c").asLong() : 1L;
-                });
-                String id = containsRec.get("id").asString();
-                long fanIn = containsRec.get("fanIn").asLong();
-                System.out.println("    [resolver] '" + identifier + "' → '" + id
-                        + "' (CONTAINS fallback @class boundary, " + total + " candidate" + (total == 1 ? "" : "s")
-                        + ", picked highest fan-in=" + fanIn + ")");
-                if (config.isTrace() && total > 1) {
-                    traceContainsFallbackCandidates(session, boundaryFragment, id);
-                }
-                return id;
-            }
+            String picked = pickContainsFallback(session, identifier, boundaryFragment, queryEmbedding);
+            if (picked != null) return picked;
+
+            // Fuzzy class-name expansion: if the identifier looks like a class name fragment
+            // (e.g. "Neo4j" when the actual class is "Neo4jGraphReader"), try expanding it
+            // through :Class.simpleName STARTS WITH / CONTAINS, and run the CONTAINS-fallback
+            // against each candidate class's chunkIds. This rescues queries that mention a
+            // truncated class name and would otherwise fall through to a global vector search.
+            String fuzzy = pickFuzzyClassName(session, identifier, queryEmbedding);
+            if (fuzzy != null) return fuzzy;
 
             System.out.println("    [resolver] '" + identifier + "' unresolved");
             return null;
         }
+    }
+
+    /**
+     * Run the CONTAINS @class-boundary fallback for {@code boundaryFragment} and pick a
+     * winner. When {@code queryEmbedding} is non-null and any candidate has a stored
+     * embedding, pick argmax cosine similarity; otherwise fall back to the legacy
+     * fan-in heuristic.
+     *
+     * @return the picked chunkId, or {@code null} if no candidates exist.
+     */
+    private String pickContainsFallback(Session session,
+                                        String identifier,
+                                        String boundaryFragment,
+                                        float[] queryEmbedding) {
+        // Pull all candidates with the cheap structural fields needed for the fan-in path
+        List<Record> candidates = session.executeRead(tx -> {
+            Result r = tx.run(
+                "MATCH (m:Method) WHERE m.chunkId CONTAINS $fragment " +
+                    "OPTIONAL MATCH (m)<-[:CALLS]-(caller:Method) " +
+                    "WITH m, count(DISTINCT caller) AS fanIn, " +
+                    "     CASE WHEN m.methodName = '<init>' OR m.methodName = '<clinit>' THEN 0 ELSE 1 END AS isMethod " +
+                    "RETURN m.chunkId AS id, fanIn, isMethod",
+                Map.of("fragment", boundaryFragment)
+            );
+            List<Record> out = new ArrayList<>();
+            while (r.hasNext()) out.add(r.next());
+            return out;
+        });
+        if (candidates.isEmpty()) return null;
+
+        // Prefer non-<init>/<clinit> when at least one real method exists
+        boolean anyRealMethod = candidates.stream().anyMatch(rec -> rec.get("isMethod").asLong() == 1L);
+        List<Record> pool = anyRealMethod
+            ? candidates.stream().filter(rec -> rec.get("isMethod").asLong() == 1L).toList()
+            : candidates;
+
+        long total = candidates.size();
+        Record pickedRec = null;
+        String reason;
+        Map<String, Double> simByCandidate = Collections.emptyMap();
+
+        if (queryEmbedding != null && pool.size() > 1) {
+            List<String> ids = pool.stream().map(rec -> rec.get("id").asString()).toList();
+            Map<String, float[]> embeddings = getStoredEmbeddings(ids);
+            if (!embeddings.isEmpty()) {
+                simByCandidate = new LinkedHashMap<>();
+                double bestSim = Double.NEGATIVE_INFINITY;
+                Record bestRec = null;
+                for (Record rec : pool) {
+                    String id = rec.get("id").asString();
+                    float[] emb = embeddings.get(id);
+                    if (emb == null) continue;
+                    double sim = LmStudioEmbeddingService.cosineSimilarity(queryEmbedding, emb);
+                    simByCandidate.put(id, sim);
+                    if (sim > bestSim) {
+                        bestSim = sim;
+                        bestRec = rec;
+                    }
+                }
+                if (bestRec != null) {
+                    pickedRec = bestRec;
+                }
+            }
+        }
+
+        if (pickedRec != null) {
+            reason = "highest-semSim";
+        } else {
+            // Legacy fan-in fallback (used when no embedding available, or only one candidate).
+            // Sort by fanIn DESC, then chunkId ASC for determinism.
+            pickedRec = pool.stream()
+                .sorted((a, b) -> {
+                    int c = Long.compare(b.get("fanIn").asLong(), a.get("fanIn").asLong());
+                    if (c != 0) return c;
+                    return a.get("id").asString().compareTo(b.get("id").asString());
+                })
+                .findFirst().orElse(pool.get(0));
+            reason = "highest-fan-in";
+        }
+
+        String id = pickedRec.get("id").asString();
+        long fanIn = pickedRec.get("fanIn").asLong();
+        StringBuilder summary = new StringBuilder();
+        summary.append("    [resolver] '").append(identifier).append("' → '").append(id)
+            .append("' (CONTAINS fallback @class boundary, ").append(total)
+            .append(" candidate").append(total == 1 ? "" : "s").append(", picked ").append(reason);
+        if ("highest-semSim".equals(reason)) {
+            Double sim = simByCandidate.get(id);
+            if (sim != null) summary.append(String.format("=%.4f", sim));
+        } else {
+            summary.append("=").append(fanIn);
+        }
+        summary.append(")");
+        System.out.println(summary);
+        if (config.isTrace() && total > 1) {
+            traceContainsFallbackCandidates(session, boundaryFragment, id, simByCandidate);
+        }
+        return id;
+    }
+
+    /**
+     * Find :Class nodes whose simpleName begins with or contains the identifier, and
+     * try the CONTAINS-fallback against each. When multiple class candidates exist,
+     * pick the one whose CONTAINS-fallback winner has the highest semantic similarity
+     * to the query (when an embedding is available). Returns the winning method id
+     * or {@code null} if no classes match.
+     */
+    private String pickFuzzyClassName(Session session, String identifier, float[] queryEmbedding) {
+        if (identifier == null || identifier.isBlank()) return null;
+        // Only bother when the identifier looks like a class-name fragment (starts with uppercase)
+        if (!Character.isUpperCase(identifier.charAt(0))) return null;
+        // Skip identifiers that already contain a # — those are class#method forms handled above
+        if (identifier.indexOf('#') >= 0) return null;
+
+        List<String> simpleNames = session.executeRead(tx -> {
+            Result r = tx.run(
+                "MATCH (c) WHERE (c:Class OR c:Interface) " +
+                    "  AND (c.simpleName STARTS WITH $id OR c.simpleName CONTAINS $id) " +
+                    "  AND c.simpleName <> $id " +
+                    "RETURN DISTINCT c.simpleName AS name " +
+                    "ORDER BY name",
+                Map.of("id", identifier)
+            );
+            List<String> out = new ArrayList<>();
+            while (r.hasNext()) out.add(r.next().get("name").asString());
+            return out;
+        });
+        if (simpleNames.isEmpty()) return null;
+
+        System.out.println("    [resolver] fuzzy class-name expansion '" + identifier + "' → "
+            + simpleNames + " (" + simpleNames.size() + " candidate"
+            + (simpleNames.size() == 1 ? "" : "s") + ")");
+
+        String bestId = null;
+        double bestSim = Double.NEGATIVE_INFINITY;
+        long bestFanIn = -1;
+        String bestClass = null;
+        for (String simpleName : simpleNames) {
+            String fragment = simpleName + "#";
+            String candidateId = pickContainsFallback(session, identifier + " (via " + simpleName + ")",
+                fragment, queryEmbedding);
+            if (candidateId == null) continue;
+            // Score the picked id against the query
+            if (queryEmbedding != null) {
+                Map<String, float[]> emb = getStoredEmbeddings(List.of(candidateId));
+                float[] e = emb.get(candidateId);
+                if (e != null) {
+                    double sim = LmStudioEmbeddingService.cosineSimilarity(queryEmbedding, e);
+                    if (sim > bestSim) {
+                        bestSim = sim;
+                        bestId = candidateId;
+                        bestClass = simpleName;
+                    }
+                    continue;
+                }
+            }
+            // No embedding — fall back to fan-in
+            int fanIn = getCallerCount(candidateId);
+            if (fanIn > bestFanIn) {
+                bestFanIn = fanIn;
+                if (bestId == null || bestSim == Double.NEGATIVE_INFINITY) {
+                    bestId = candidateId;
+                    bestClass = simpleName;
+                }
+            }
+        }
+
+        if (bestId != null) {
+            String how = bestSim > Double.NEGATIVE_INFINITY
+                ? String.format("fuzzy-class semSim=%.4f via '%s'", bestSim, bestClass)
+                : "fuzzy-class fan-in via '" + bestClass + "'";
+            System.out.println("    [resolver] '" + identifier + "' → '" + bestId + "' (" + how + ")");
+        }
+        return bestId;
     }
 
     /**
@@ -218,8 +384,17 @@ public class Neo4jGraphReader implements AutoCloseable {
      * behind the single-line "picked highest fan-in=N" summary, masking bad picks
      * like {@code reset()} or {@code buildEmbeddingText} winning by trivial tie-break.
      */
-    private void traceContainsFallbackCandidates(Session session, String boundaryFragment, String pickedId) {
+    private void traceContainsFallbackCandidates(Session session,
+                                                  String boundaryFragment,
+                                                  String pickedId,
+                                                  Map<String, Double> simByCandidate) {
         final int traceLimit = 10;
+        boolean usedSem = simByCandidate != null && !simByCandidate.isEmpty();
+        // When ranking by semSim, sort the trace by semSim DESC so the picked entry leads
+        // and the rejection reasons line up with the actual decision.
+        String orderBy = usedSem
+            ? "ORDER BY isMethod DESC, m.chunkId "
+            : "ORDER BY isMethod DESC, fanIn DESC, m.chunkId ";
         List<Record> rows = session.executeRead(tx -> {
             Result r = tx.run(
                 "MATCH (m:Method) WHERE m.chunkId CONTAINS $fragment " +
@@ -229,7 +404,7 @@ public class Neo4jGraphReader implements AutoCloseable {
                     "WITH m, fanIn, count(DISTINCT callee) AS fanOut, " +
                     "     CASE WHEN m.methodName = '<init>' OR m.methodName = '<clinit>' THEN 0 ELSE 1 END AS isMethod " +
                     "RETURN m.chunkId AS id, fanIn, fanOut, isMethod, m.methodName AS name " +
-                    "ORDER BY isMethod DESC, fanIn DESC, m.chunkId " +
+                    orderBy +
                     "LIMIT $lim",
                 Map.of("fragment", boundaryFragment, "lim", traceLimit)
             );
@@ -238,6 +413,19 @@ public class Neo4jGraphReader implements AutoCloseable {
             return out;
         });
         if (rows.isEmpty()) return;
+        if (usedSem) {
+            // Re-order the rows by descending semSim (entries without a sim go to the end)
+            rows = new ArrayList<>(rows);
+            rows.sort((a, b) -> {
+                String ai = a.get("id").asString();
+                String bi = b.get("id").asString();
+                double sa = simByCandidate.getOrDefault(ai, Double.NEGATIVE_INFINITY);
+                double sb = simByCandidate.getOrDefault(bi, Double.NEGATIVE_INFINITY);
+                int c = Double.compare(sb, sa);
+                if (c != 0) return c;
+                return ai.compareTo(bi);
+            });
+        }
         System.out.println("    [trace] CONTAINS-fallback ranked candidates (top " + rows.size() + "):");
         for (int i = 0; i < rows.size(); i++) {
             Record row = rows.get(i);
@@ -248,14 +436,21 @@ public class Neo4jGraphReader implements AutoCloseable {
             String tag = cid.equals(pickedId) ? "PICKED" : "rejected";
             String reason;
             if (cid.equals(pickedId)) {
-                reason = "highest-fan-in";
+                reason = usedSem ? "highest-semSim" : "highest-fan-in";
             } else if (isCtor) {
                 reason = "<init>/<clinit> deprioritized";
             } else {
-                reason = "lower-fan-in";
+                reason = usedSem ? "lower-semSim" : "lower-fan-in";
             }
-            System.out.printf("      #%-2d %-9s fanIn=%-3d fanOut=%-3d %s  (%s)%n",
-                i + 1, tag, fanIn, fanOut, cid, reason);
+            String simCol;
+            if (usedSem) {
+                Double sim = simByCandidate.get(cid);
+                simCol = sim == null ? "semSim=  -    " : String.format("semSim=%.4f ", sim);
+            } else {
+                simCol = "";
+            }
+            System.out.printf("      #%-2d %-9s %sfanIn=%-3d fanOut=%-3d %s  (%s)%n",
+                i + 1, tag, simCol, fanIn, fanOut, cid, reason);
         }
     }
 

@@ -144,7 +144,7 @@ public final class RetrievalScorer implements Scorer {
     }
 
     /** Drop a trailing {@code #partN} segment added by the token-aware splitter. */
-    static String stripPartSuffix(String chunkId) {
+    public static String stripPartSuffix(String chunkId) {
         if (chunkId == null) return null;
         int hash = chunkId.lastIndexOf('#');
         if (hash < 0) return chunkId;
@@ -157,7 +157,7 @@ public final class RetrievalScorer implements Scorer {
     }
 
     /** Drop the parameter list so {@code Foo#bar(int, String)} becomes {@code Foo#bar}. */
-    static String stripParamList(String chunkId) {
+    public static String stripParamList(String chunkId) {
         if (chunkId == null) return null;
         int paren = chunkId.indexOf('(');
         return paren < 0 ? chunkId : chunkId.substring(0, paren);
