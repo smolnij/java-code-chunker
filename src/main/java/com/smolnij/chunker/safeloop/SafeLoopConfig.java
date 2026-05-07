@@ -37,7 +37,7 @@ public class SafeLoopConfig {
 
     private int maxChunks = 8;
     private int chatMemorySize = 60;
-    private int maxToolCalls = 200;
+    private int maxToolCalls = 30;
 
     private int minCallerDepth = 1;
     private int minCalleeDepth = 1;
