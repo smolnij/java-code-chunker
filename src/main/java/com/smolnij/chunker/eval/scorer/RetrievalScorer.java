@@ -12,12 +12,7 @@ import java.util.Set;
 
 /**
  * Retrieval-quality metrics: precision@K, recall@K, anchor-hit, MRR.
- *
- * <p>Metric names use a literal {@code @K} suffix (not the actual retrieved
- * count) so per-fixture rows aggregate cleanly in {@code SummaryReporter} and
- * diff cleanly in {@code BaselineDiffReporter} across fixtures with different
- * {@code topK} budgets. The actual retrieved size and gold size are recorded
- * in the metric {@code note} (e.g. {@code "2/8 (k=8, gold=4)"}).
+ * K is the actual retrieved list size (bounded by fixture.topK if set).
  *
  * <p>chunkIds are normalized before set comparison to absorb two known sources
  * of lexical drift between the chunker and hand-written fixture gold lists:
@@ -36,35 +31,29 @@ public final class RetrievalScorer implements Scorer {
     @Override
     public String name() { return "retrieval"; }
 
-    private static final String M_PRECISION = "retrieval.precision@K";
-    private static final String M_RECALL = "retrieval.recall@K";
-    private static final String M_PRECISION_LOOSE = "retrieval.precision_loose@K";
-    private static final String M_RECALL_LOOSE = "retrieval.recall_loose@K";
-    private static final String M_MRR = "retrieval.mrr";
-    private static final String M_ANCHOR = "retrieval.anchor.hit";
-
     @Override
     public List<Metric> score(Fixture fixture, RunResult result,
                               VerifierResult compile, VerifierResult tests) {
         if (result.isError()) {
             return List.of(
-                Metric.error(M_PRECISION, result.error()),
-                Metric.error(M_RECALL, result.error()),
-                Metric.error(M_ANCHOR, result.error()),
-                Metric.error(M_MRR, result.error())
+                Metric.error("retrieval.precision@K", result.error()),
+                Metric.error("retrieval.recall@K", result.error()),
+                Metric.error("retrieval.anchor.hit", result.error()),
+                Metric.error("retrieval.mrr", result.error())
             );
         }
 
         List<RetrievedChunk> retrieved = result.retrieved();
         List<String> gold = fixture.gold().relevant();
         int k = retrieved.size();
+        String suffix = "@" + k;
 
         if (gold.isEmpty()) {
             return List.of(
-                Metric.notRun(M_PRECISION, "gold.relevant empty"),
-                Metric.notRun(M_RECALL, "gold.relevant empty"),
+                Metric.notRun("retrieval.precision" + suffix, "gold.relevant empty"),
+                Metric.notRun("retrieval.recall" + suffix, "gold.relevant empty"),
                 anchorMetric(fixture, result),
-                Metric.notRun(M_MRR, "gold.relevant empty")
+                Metric.notRun("retrieval.mrr", "gold.relevant empty")
             );
         }
 
@@ -110,23 +99,18 @@ public final class RetrievalScorer implements Scorer {
             }
         }
 
-        Integer fixtureK = fixture.topK();
-        String budget = fixtureK == null ? "k=" + k : "k=" + k + ",budget=" + fixtureK;
-
         List<Metric> metrics = new ArrayList<>();
-        metrics.add(numeric(M_PRECISION, precisionStrict,
-                hitsStrict + "/" + k + " (" + budget + ", gold=" + goldStrict.size() + ")"));
-        metrics.add(numeric(M_RECALL, recallStrict,
-                hitsStrict + "/" + goldStrict.size() + " (" + budget + ")"));
+        metrics.add(numeric("retrieval.precision" + suffix, precisionStrict, hitsStrict + "/" + k));
+        metrics.add(numeric("retrieval.recall" + suffix, recallStrict, hitsStrict + "/" + goldStrict.size()));
         metrics.add(anchorMetric(fixture, result));
-        metrics.add(numeric(M_MRR, mrr, mrr == 0.0 ? "no gold in top-K (" + budget + ")" : budget));
+        metrics.add(numeric("retrieval.mrr", mrr, mrr == 0.0 ? "no gold in top-K" : null));
 
         // Loose variants surface param-type drift between fixture gold and chunker output.
         if (precisionLoose != precisionStrict || recallLoose != recallStrict) {
-            metrics.add(numeric(M_PRECISION_LOOSE, precisionLoose,
-                hitsLoose + "/" + k + " (param-list ignored, " + budget + ")"));
-            metrics.add(numeric(M_RECALL_LOOSE, recallLoose,
-                hitsLoose + "/" + goldLoose.size() + " (param-list ignored, " + budget + ")"));
+            metrics.add(numeric("retrieval.precision_loose" + suffix, precisionLoose,
+                hitsLoose + "/" + k + " (param-list ignored)"));
+            metrics.add(numeric("retrieval.recall_loose" + suffix, recallLoose,
+                hitsLoose + "/" + goldLoose.size() + " (param-list ignored)"));
         }
         return metrics;
     }
@@ -140,7 +124,7 @@ public final class RetrievalScorer implements Scorer {
     private static Metric anchorMetric(Fixture fixture, RunResult result) {
         String expected = fixture.gold().anchor();
         if (expected == null || expected.isBlank()) {
-            return Metric.notRun(M_ANCHOR, "no gold.anchor");
+            return Metric.notRun("retrieval.anchor.hit", "no gold.anchor");
         }
         String expectedNorm = stripPartSuffix(expected);
         String actualNorm = stripPartSuffix(result.anchorId());
@@ -149,13 +133,13 @@ public final class RetrievalScorer implements Scorer {
                 && actualNorm != null
                 && stripParamList(expectedNorm).equals(stripParamList(actualNorm));
         if (strict) {
-            return Metric.pass(M_ANCHOR, 1.0, "matched " + expected);
+            return Metric.pass("retrieval.anchor.hit", 1.0, "matched " + expected);
         }
         if (loose) {
-            return Metric.pass(M_ANCHOR, 1.0,
+            return Metric.pass("retrieval.anchor.hit", 1.0,
                     "matched (param-list ignored) " + expected + " ~ " + result.anchorId());
         }
-        return Metric.fail(M_ANCHOR, 0.0,
+        return Metric.fail("retrieval.anchor.hit", 0.0,
                 "expected " + expected + ", got " + result.anchorId());
     }
 

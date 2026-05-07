@@ -21,7 +21,6 @@ public final class EvalConfig {
     public boolean selfCheck = false;
     public boolean retrievalOnly = false;
     public boolean failFast = false;
-    public boolean failFastOnMetric = false;
     public int limit = 0;                   // 0 = no limit
     public boolean debug = false;
     public String verifier = "noop";        // noop | compiling
@@ -45,7 +44,6 @@ public final class EvalConfig {
         cfg.selfCheck = PropertiesLoader.getBoolean(p, "eval.selfCheck", cfg.selfCheck);
         cfg.retrievalOnly = PropertiesLoader.getBoolean(p, "eval.retrievalOnly", cfg.retrievalOnly);
         cfg.failFast = PropertiesLoader.getBoolean(p, "eval.failFast", cfg.failFast);
-        cfg.failFastOnMetric = PropertiesLoader.getBoolean(p, "eval.failFastOnMetric", cfg.failFastOnMetric);
         cfg.limit = PropertiesLoader.getInt(p, "eval.limit", cfg.limit);
         cfg.debug = PropertiesLoader.getBoolean(p, "eval.debug", cfg.debug);
         cfg.verifier = PropertiesLoader.getString(p, "eval.verifier", cfg.verifier);

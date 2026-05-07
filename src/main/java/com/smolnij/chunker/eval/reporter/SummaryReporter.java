@@ -5,7 +5,6 @@ import com.smolnij.chunker.eval.scorer.Metric;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -61,56 +60,7 @@ public final class SummaryReporter implements Reporter {
         }
         sb.append('\n');
 
-        appendFailureLedger(sb, records);
-
         Files.writeString(outDir.resolve(FILENAME), sb.toString());
-    }
-
-    /**
-     * One line per fixture with at least one FAIL/ERROR metric, naming the first
-     * failing metric and its note. Lets a reader find the failures without
-     * grepping {@code runs.jsonl}. Process-level errors (runner threw) sort first.
-     */
-    private static void appendFailureLedger(StringBuilder sb, List<EvalRecord> records) {
-        List<String> erroredFixtures = new ArrayList<>();
-        List<String> failedFixtures = new ArrayList<>();
-        for (EvalRecord rec : records) {
-            String fid = rec.fixture().id();
-            String mode = rec.result().mode();
-            if (rec.result().isError()) {
-                erroredFixtures.add(String.format("  %-40s  mode=%-10s  ERROR  %s",
-                        trim(fid, 40), mode, oneLine(rec.result().error())));
-                continue;
-            }
-            int fails = 0, errs = 0;
-            Metric firstBad = null;
-            for (Metric m : rec.metrics()) {
-                if (Metric.FAIL.equals(m.status())) {
-                    fails++;
-                    if (firstBad == null) firstBad = m;
-                } else if (Metric.ERROR.equals(m.status())) {
-                    errs++;
-                    if (firstBad == null) firstBad = m;
-                }
-            }
-            if (firstBad != null) {
-                failedFixtures.add(String.format("  %-40s  mode=%-10s  fail=%d err=%d  first=%s: %s",
-                        trim(fid, 40), mode, fails, errs, firstBad.name(),
-                        oneLine(firstBad.note())));
-            }
-        }
-        if (erroredFixtures.isEmpty() && failedFixtures.isEmpty()) return;
-
-        sb.append("── Failed fixtures ─────────────────────────────────────\n");
-        for (String line : erroredFixtures) sb.append(line).append('\n');
-        for (String line : failedFixtures) sb.append(line).append('\n');
-        sb.append('\n');
-    }
-
-    private static String oneLine(String s) {
-        if (s == null) return "";
-        s = s.replace('\n', ' ').replace('\r', ' ').trim();
-        return s.length() > 100 ? s.substring(0, 97) + "…" : s;
     }
 
     private static String trim(String s, int max) {
