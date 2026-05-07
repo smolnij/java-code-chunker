@@ -11,6 +11,7 @@ import org.neo4j.driver.summary.ResultSummary;
 import org.neo4j.driver.summary.SummaryCounters;
 
 import com.smolnij.chunker.retrieval.EmbeddingService;
+import com.smolnij.chunker.retrieval.EmbeddingText;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -124,15 +125,10 @@ public class Neo4jGraphStore implements AutoCloseable {
 
         System.out.println("Computing and storing embeddings for " + methods.size() + " methods...");
 
-        // Build texts to embed
         List<String> texts = new ArrayList<>();
         List<String> chunkIds = new ArrayList<>();
         for (CodeChunk chunk : methods) {
-            StringBuilder sb = new StringBuilder();
-            sb.append(chunk.getClassName()).append(" ");
-            sb.append(chunk.getMethodSignature()).append("\n");
-            sb.append(chunk.getCode());
-            texts.add(sb.toString());
+            texts.add(EmbeddingText.forChunk(chunk));
             chunkIds.add(chunk.getChunkId());
         }
 

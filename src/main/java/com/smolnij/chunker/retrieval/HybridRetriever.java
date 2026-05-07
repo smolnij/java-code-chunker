@@ -155,6 +155,11 @@ public class HybridRetriever {
         // Extract candidate identifiers from the query
         List<String> candidates = extractIdentifiers(userQuery);
 
+        // Stash the raw query so the trace path inside Neo4jGraphReader can compute
+        // query↔candidate token overlap and emit a [trace] query.embedded line. Trace-
+        // only — never read by the ranking algorithm.
+        graphReader.setPendingQueryText(userQuery);
+
         // Try exact match for each candidate. Pass the query embedding so the resolver
         // can break CONTAINS-fallback ties by semantic similarity instead of alphabetical
         // / fan-in heuristics.
@@ -620,16 +625,8 @@ public class HybridRetriever {
     // Helpers
     // ═══════════════════════════════════════════════════════════════
 
-    /**
-     * Build the text to embed for a code chunk.
-     * Combines method signature + code for a richer embedding.
-     */
     private String buildEmbeddingText(CodeChunk chunk) {
-        StringBuilder sb = new StringBuilder();
-        sb.append(chunk.getClassName()).append(" ");
-        sb.append(chunk.getMethodSignature()).append("\n");
-        sb.append(chunk.getCode());
-        return sb.toString();
+        return EmbeddingText.forChunk(chunk);
     }
 
     // ═══════════════════════════════════════════════════════════════

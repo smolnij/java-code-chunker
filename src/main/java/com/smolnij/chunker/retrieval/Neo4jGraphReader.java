@@ -25,11 +25,50 @@ public class Neo4jGraphReader implements AutoCloseable {
     private final Driver driver;
     private final RetrievalConfig config;
 
+    // ── Trace plumbing for the eval harness ─────────────────────────────
+    // pendingQueryText: set by HybridRetriever before findMethodExact so the trace
+    // can compute query↔candidate name overlap without changing the public API.
+    // lastFallbackStats: snapshot of the last CONTAINS-fallback pool, in pool order,
+    // so EvalMain.emitAnchorMismatchTrace can emit a [trace] anchor.delta line
+    // comparing picked vs gold without re-querying Neo4j.
+    private String pendingQueryText;
+    private final List<CandidateStats> lastFallbackStats = new ArrayList<>();
+
     public Neo4jGraphReader(String uri, String user, String password, RetrievalConfig config) {
         this.driver = GraphDatabase.driver(uri, AuthTokens.basic(user, password));
         driver.verifyConnectivity();
         this.config = config;
     }
+
+    /** Set by the retriever immediately before {@link #findMethodExact} so trace
+     *  output can compute query↔candidate token overlap. Trace-only — never
+     *  influences ranking. */
+    public void setPendingQueryText(String queryText) { this.pendingQueryText = queryText; }
+
+    /** Snapshot of the most recent CONTAINS @class-boundary fallback pools, in the
+     *  order trace emitted them — when {@link #pickFuzzyClassName} considers
+     *  multiple classes the union of all per-class pools is concatenated here.
+     *  Cleared at the start of each {@link #findMethodExact(String, float[])} call.
+     *  Read by EvalMain to emit [trace] anchor.delta lines. */
+    public List<CandidateStats> getLastFallbackStats() { return List.copyOf(lastFallbackStats); }
+
+    /**
+     * Per-candidate trace data captured during the CONTAINS-fallback pool walk.
+     * Survives only until the next resolver call. {@link #embedSnippet} is the
+     * first 120 chars of {@code methodSignature + " " + code} (escaped, single-line);
+     * it approximates {@code HybridRetriever.buildEmbeddingText} closely enough to
+     * make the lexical-name-leak hypothesis falsifiable without a graph reindex.
+     */
+    public record CandidateStats(
+            String chunkId,
+            double semSim,        // NaN when no stored embedding for this candidate
+            long fanIn,
+            long extFanIn,
+            long fanOut,
+            long tokens,
+            int nameOverlap,
+            String nameOverlapTerms,
+            String embedSnippet) { }
 
     // ═══════════════════════════════════════════════════════════════
     // Vector index management
@@ -97,6 +136,9 @@ public class Neo4jGraphReader implements AutoCloseable {
      * (e.g. {@code "Neo4j"} → {@code "Neo4jGraphReader"}) before giving up.
      */
     public String findMethodExact(String rawIdentifier, float[] queryEmbedding) {
+        // Reset trace-state for this resolver call so EvalMain can read a clean
+        // snapshot of the CONTAINS-fallback pool that informed *this* anchor pick.
+        this.lastFallbackStats.clear();
         // Normalize prose-form 'Class.method' (or 'pkg.Class.method') into the canonical
         // 'Class#method' form. Users naturally write Java identifiers with '.' separators
         // in queries; without this rewrite the resolver falls through to CONTAINS or
@@ -215,14 +257,19 @@ public class Neo4jGraphReader implements AutoCloseable {
                                         String identifier,
                                         String boundaryFragment,
                                         float[] queryEmbedding) {
-        // Pull all candidates with the cheap structural fields needed for the fan-in path
+        // Pull all candidates with the structural fields needed for both the
+        // legacy fan-in fallback AND the Phase-2 composite rerank: extFanIn
+        // (cross-class callers) and tokenCount feed the epsilon-window
+        // structural rerank below.
         List<Record> candidates = session.executeRead(tx -> {
             Result r = tx.run(
                 "MATCH (m:Method) WHERE m.chunkId CONTAINS $fragment " +
                     "OPTIONAL MATCH (m)<-[:CALLS]-(caller:Method) " +
                     "WITH m, count(DISTINCT caller) AS fanIn, " +
+                    "     count(DISTINCT CASE WHEN caller.fqClassName <> m.fqClassName THEN caller END) AS extFanIn, " +
                     "     CASE WHEN m.methodName = '<init>' OR m.methodName = '<clinit>' THEN 0 ELSE 1 END AS isMethod " +
-                    "RETURN m.chunkId AS id, fanIn, isMethod",
+                    "RETURN m.chunkId AS id, fanIn, extFanIn, " +
+                    "       coalesce(m.tokenCount, 0) AS tokens, isMethod",
                 Map.of("fragment", boundaryFragment)
             );
             List<Record> out = new ArrayList<>();
@@ -267,7 +314,20 @@ public class Neo4jGraphReader implements AutoCloseable {
         }
 
         if (pickedRec != null) {
-            reason = "highest-semSim";
+            // Phase-2: epsilon-window structural rerank. When multiple candidates
+            // fall within EPSILON cosine of the top semSim, blend in cheap
+            // structural priors (extFanIn>0, tokens<TINY, #partN). The α≤ε bound
+            // (extFanInBonus ≤ tiebreakEpsilon) means a candidate outside the
+            // window can never overtake one inside on priors alone — strong-cosine
+            // wins are protected; only close-margin flips like reset()-over-extractCalls
+            // get reconsidered. Disabled when tiebreakEpsilon=0.
+            Record reranked = applyStructuralRerank(pool, pickedRec, simByCandidate);
+            if (reranked != pickedRec) {
+                pickedRec = reranked;
+                reason = "composite-rerank";
+            } else {
+                reason = "highest-semSim";
+            }
         } else {
             // Legacy fan-in fallback (used when no embedding available, or only one candidate).
             // Sort by fanIn DESC, then chunkId ASC for determinism.
@@ -287,7 +347,7 @@ public class Neo4jGraphReader implements AutoCloseable {
         summary.append("    [resolver] '").append(identifier).append("' → '").append(id)
             .append("' (CONTAINS fallback @class boundary, ").append(total)
             .append(" candidate").append(total == 1 ? "" : "s").append(", picked ").append(reason);
-        if ("highest-semSim".equals(reason)) {
+        if ("highest-semSim".equals(reason) || "composite-rerank".equals(reason)) {
             Double sim = simByCandidate.get(id);
             if (sim != null) summary.append(String.format("=%.4f", sim));
         } else {
@@ -299,6 +359,123 @@ public class Neo4jGraphReader implements AutoCloseable {
             traceContainsFallbackCandidates(session, boundaryFragment, id, simByCandidate);
         }
         return id;
+    }
+
+    /**
+     * Phase-2 epsilon-window structural rerank.
+     *
+     * <p>When multiple candidates fall within {@code tiebreakEpsilon} cosine of
+     * the top semSim, score each by {@code semSim + α·(extFanIn>0) − β·(tokens<TINY)
+     * − γ·isPart} and pick argmax. The α ≤ ε bound guarantees a candidate outside
+     * the window can never overtake one inside on priors alone — strong-cosine
+     * wins are protected; only close-margin flips like {@code reset()} over
+     * {@code extractCalls} get reconsidered. Disabled (returns input unchanged)
+     * when {@code tiebreakEpsilon ≤ 0} or fewer than 2 candidates have a stored
+     * embedding.
+     */
+    private Record applyStructuralRerank(List<Record> pool,
+                                         Record argmaxSim,
+                                         Map<String, Double> simByCandidate) {
+        double eps = config.getFallbackTiebreakEpsilon();
+        if (eps <= 0 || simByCandidate == null || simByCandidate.size() < 2) return argmaxSim;
+        String topId = argmaxSim.get("id").asString();
+        Double topSemBox = simByCandidate.get(topId);
+        if (topSemBox == null) return argmaxSim;
+        double topSem = topSemBox;
+
+        // Build window of candidates whose semSim is within eps of topSem.
+        // Sorted by descending semSim for stable trace output.
+        List<Record> window = new ArrayList<>();
+        for (Record rec : pool) {
+            Double s = simByCandidate.get(rec.get("id").asString());
+            if (s != null && topSem - s <= eps) window.add(rec);
+        }
+        window.sort((a, b) -> {
+            double sa = simByCandidate.getOrDefault(a.get("id").asString(), Double.NEGATIVE_INFINITY);
+            double sb = simByCandidate.getOrDefault(b.get("id").asString(), Double.NEGATIVE_INFINITY);
+            return Double.compare(sb, sa);
+        });
+
+        if (window.size() < 2) {
+            if (config.isTrace()) {
+                System.out.printf("    [trace] no rerank: top semSim wins by margin > eps=%.3f%n", eps);
+            }
+            return argmaxSim;
+        }
+
+        double alpha = config.getFallbackExtFanInBonus();
+        double beta = config.getFallbackTinyMethodPenalty();
+        double gamma = config.getFallbackPartSuffixPenalty();
+        int tinyTokens = config.getFallbackTinyMethodTokenThreshold();
+
+        // id -> [composite, extBonus, tinyPenalty, partPenalty]
+        Map<String, double[]> components = new LinkedHashMap<>();
+        Record bestRec = null;
+        double bestComposite = Double.NEGATIVE_INFINITY;
+        for (Record rec : window) {
+            String id = rec.get("id").asString();
+            double sim = simByCandidate.get(id);
+            long extFanIn = rec.get("extFanIn").asLong();
+            long tokens = rec.get("tokens").asLong();
+            double extBonus = extFanIn > 0 ? alpha : 0.0;
+            double tinyPenalty = tokens < tinyTokens ? beta : 0.0;
+            double partPenalty = isPartChunk(id) ? gamma : 0.0;
+            double composite = sim + extBonus - tinyPenalty - partPenalty;
+            components.put(id, new double[]{composite, extBonus, tinyPenalty, partPenalty});
+            if (composite > bestComposite) {
+                bestComposite = composite;
+                bestRec = rec;
+            }
+        }
+        if (bestRec == null) return argmaxSim;
+
+        if (config.isTrace()) {
+            emitRerankTrace(window, argmaxSim, bestRec, simByCandidate, components, eps, pool.size());
+        }
+        return bestRec;
+    }
+
+    private static boolean isPartChunk(String chunkId) {
+        return chunkId != null && chunkId.matches(".*#part\\d+$");
+    }
+
+    /**
+     * Emit the {@code [trace] CONTAINS-fallback structural rerank} table that
+     * decomposes each window candidate's composite score into its prior
+     * contributions, plus a final flipped/confirmed line. Reading one of these
+     * blocks should make every rerank decision falsifiable.
+     */
+    private static void emitRerankTrace(List<Record> window,
+                                        Record argmaxSim,
+                                        Record composedBest,
+                                        Map<String, Double> simByCandidate,
+                                        Map<String, double[]> components,
+                                        double eps,
+                                        int poolSize) {
+        String semWinner = argmaxSim.get("id").asString();
+        String compositeWinner = composedBest.get("id").asString();
+        System.out.printf("    [trace] CONTAINS-fallback structural rerank (window=%d of %d, eps=%.3f)%n",
+                window.size(), poolSize, eps);
+        for (int i = 0; i < window.size(); i++) {
+            Record rec = window.get(i);
+            String id = rec.get("id").asString();
+            double sim = simByCandidate.getOrDefault(id, Double.NaN);
+            double[] c = components.get(id);
+            double composite = c[0];
+            double extBonus = c[1];
+            double tinyPenalty = c[2];
+            double partPenalty = c[3];
+            String tag = id.equals(compositeWinner) ? "picked" : "reject";
+            System.out.printf(
+                    "       #%-2d %-6s composite=%.4f = semSim %.4f +ext %.2f -tiny %.2f -part %.2f   %s%n",
+                    i + 1, tag, composite, sim, extBonus, tinyPenalty, partPenalty, id);
+        }
+        if (compositeWinner.equals(semWinner)) {
+            System.out.println("    [trace] rerank confirmed semSim-winner (no flip)");
+        } else {
+            System.out.println("    [trace] rerank flipped semSim-winner '" + semWinner
+                    + "' → composite-winner '" + compositeWinner + "'");
+        }
     }
 
     /**
@@ -338,6 +515,12 @@ public class Neo4jGraphReader implements AutoCloseable {
         double bestSim = Double.NEGATIVE_INFINITY;
         long bestFanIn = -1;
         String bestClass = null;
+        // Per-class winners tracked for the [trace] fuzzy-class winner consolidation
+        // line — surfaces the cross-class comparison that pickFuzzyClassName silently
+        // collapses into a single "→ X" pick.
+        record ClassWinner(String simpleName, String chunkId, double semSim, long fanIn) {}
+        List<ClassWinner> classWinners = new ArrayList<>();
+
         for (String simpleName : simpleNames) {
             String fragment = simpleName + "#";
             String candidateId = pickContainsFallback(session, identifier + " (via " + simpleName + ")",
@@ -349,6 +532,7 @@ public class Neo4jGraphReader implements AutoCloseable {
                 float[] e = emb.get(candidateId);
                 if (e != null) {
                     double sim = LmStudioEmbeddingService.cosineSimilarity(queryEmbedding, e);
+                    classWinners.add(new ClassWinner(simpleName, candidateId, sim, -1L));
                     if (sim > bestSim) {
                         bestSim = sim;
                         bestId = candidateId;
@@ -359,6 +543,7 @@ public class Neo4jGraphReader implements AutoCloseable {
             }
             // No embedding — fall back to fan-in
             int fanIn = getCallerCount(candidateId);
+            classWinners.add(new ClassWinner(simpleName, candidateId, Double.NaN, fanIn));
             if (fanIn > bestFanIn) {
                 bestFanIn = fanIn;
                 if (bestId == null || bestSim == Double.NEGATIVE_INFINITY) {
@@ -366,6 +551,21 @@ public class Neo4jGraphReader implements AutoCloseable {
                     bestClass = simpleName;
                 }
             }
+        }
+
+        if (config.isTrace() && classWinners.size() > 1 && bestId != null) {
+            StringBuilder line = new StringBuilder("    [trace] fuzzy-class winner: ");
+            for (int i = 0; i < classWinners.size(); i++) {
+                ClassWinner w = classWinners.get(i);
+                if (i > 0) line.append(", ");
+                if (!Double.isNaN(w.semSim())) {
+                    line.append(String.format("%s.semSim=%.4f", w.simpleName(), w.semSim()));
+                } else {
+                    line.append(w.simpleName()).append(".fanIn=").append(w.fanIn());
+                }
+            }
+            line.append(" → ").append(bestId);
+            System.out.println(line);
         }
 
         if (bestId != null) {
@@ -383,30 +583,42 @@ public class Neo4jGraphReader implements AutoCloseable {
      * the resolver considered (and rejected) — which would otherwise be hidden
      * behind the single-line "picked highest fan-in=N" summary, masking bad picks
      * like {@code reset()} or {@code buildEmbeddingText} winning by trivial tie-break.
+     *
+     * <p>Also populates {@link #lastFallbackStats} so the eval harness can emit a
+     * {@code [trace] anchor.delta} line comparing picked vs gold without re-querying
+     * Neo4j. No truncation: every candidate in the pool is shown, by design — the
+     * old top-10 cap was hiding {@code retrieve(String)} for the hybrid-rerank
+     * fixture, which is exactly the data point that needed to be visible.
      */
     private void traceContainsFallbackCandidates(Session session,
                                                   String boundaryFragment,
                                                   String pickedId,
                                                   Map<String, Double> simByCandidate) {
-        final int traceLimit = 10;
         boolean usedSem = simByCandidate != null && !simByCandidate.isEmpty();
-        // When ranking by semSim, sort the trace by semSim DESC so the picked entry leads
-        // and the rejection reasons line up with the actual decision.
         String orderBy = usedSem
             ? "ORDER BY isMethod DESC, m.chunkId "
             : "ORDER BY isMethod DESC, fanIn DESC, m.chunkId ";
         List<Record> rows = session.executeRead(tx -> {
+            // extFanIn = callers from a different fqClassName — separates public-API entry
+            // points from intra-class helpers. The CONTAINS-fallback bug surfaced by the
+            // 5/9 retrieval.anchor.hit failures was the picker preferring helpers whose
+            // names literally repeat the query (e.g. splitByStatementsPreservingSignature
+            // over splitIfNeeded); extFanIn would have shown the entry point clearly.
+            // methodSignature + code feed the embed-text snippet so the reader can see
+            // *what was embedded*, which is the only way to explain the cosine flip.
             Result r = tx.run(
                 "MATCH (m:Method) WHERE m.chunkId CONTAINS $fragment " +
                     "OPTIONAL MATCH (m)<-[:CALLS]-(caller:Method) " +
-                    "WITH m, count(DISTINCT caller) AS fanIn " +
+                    "WITH m, count(DISTINCT caller) AS fanIn, " +
+                    "     count(DISTINCT CASE WHEN caller.fqClassName <> m.fqClassName THEN caller END) AS extFanIn " +
                     "OPTIONAL MATCH (m)-[:CALLS]->(callee:Method) " +
-                    "WITH m, fanIn, count(DISTINCT callee) AS fanOut, " +
+                    "WITH m, fanIn, extFanIn, count(DISTINCT callee) AS fanOut, " +
                     "     CASE WHEN m.methodName = '<init>' OR m.methodName = '<clinit>' THEN 0 ELSE 1 END AS isMethod " +
-                    "RETURN m.chunkId AS id, fanIn, fanOut, isMethod, m.methodName AS name " +
-                    orderBy +
-                    "LIMIT $lim",
-                Map.of("fragment", boundaryFragment, "lim", traceLimit)
+                    "RETURN m.chunkId AS id, fanIn, extFanIn, fanOut, isMethod, " +
+                    "       coalesce(m.tokenCount, 0) AS tokens, m.methodName AS name, " +
+                    "       coalesce(m.methodSignature, '') AS sig, coalesce(m.code, '') AS code " +
+                    orderBy,
+                Map.of("fragment", boundaryFragment)
             );
             List<Record> out = new ArrayList<>();
             while (r.hasNext()) out.add(r.next());
@@ -414,7 +626,6 @@ public class Neo4jGraphReader implements AutoCloseable {
         });
         if (rows.isEmpty()) return;
         if (usedSem) {
-            // Re-order the rows by descending semSim (entries without a sim go to the end)
             rows = new ArrayList<>(rows);
             rows.sort((a, b) -> {
                 String ai = a.get("id").asString();
@@ -426,13 +637,25 @@ public class Neo4jGraphReader implements AutoCloseable {
                 return ai.compareTo(bi);
             });
         }
-        System.out.println("    [trace] CONTAINS-fallback ranked candidates (top " + rows.size() + "):");
+
+        Set<String> queryTerms = tokenizeForOverlap(this.pendingQueryText);
+        if (this.pendingQueryText != null && !this.pendingQueryText.isBlank()) {
+            System.out.println("    [trace] query.embedded[0..120]: \""
+                + truncateSingleLine(this.pendingQueryText, 120) + "\"");
+        }
+
+        System.out.println("    [trace] CONTAINS-fallback ranked candidates (" + rows.size() + " total):");
+        List<CandidateStats> snapshot = new ArrayList<>(rows.size());
         for (int i = 0; i < rows.size(); i++) {
             Record row = rows.get(i);
             String cid = row.get("id").asString();
             long fanIn = row.get("fanIn").asLong();
+            long extFanIn = row.get("extFanIn").asLong();
             long fanOut = row.get("fanOut").asLong();
+            long tokens = row.get("tokens").asLong();
             boolean isCtor = row.get("isMethod").asLong() == 0L;
+            String sig = row.get("sig").asString();
+            String code = row.get("code").asString();
             String tag = cid.equals(pickedId) ? "PICKED" : "rejected";
             String reason;
             if (cid.equals(pickedId)) {
@@ -443,16 +666,89 @@ public class Neo4jGraphReader implements AutoCloseable {
                 reason = usedSem ? "lower-semSim" : "lower-fan-in";
             }
             String simCol;
+            double semSim = Double.NaN;
             if (usedSem) {
                 Double sim = simByCandidate.get(cid);
-                simCol = sim == null ? "semSim=  -    " : String.format("semSim=%.4f ", sim);
+                if (sim != null) {
+                    semSim = sim;
+                    simCol = String.format("semSim=%.4f ", sim);
+                } else {
+                    simCol = "semSim=  -    ";
+                }
             } else {
                 simCol = "";
             }
-            System.out.printf("      #%-2d %-9s %sfanIn=%-3d fanOut=%-3d %s  (%s)%n",
-                i + 1, tag, simCol, fanIn, fanOut, cid, reason);
+
+            // Mirror of EmbeddingText.forChunk: code only, with signature
+            // fallback when code is blank.
+            String embedSource = (code != null && !code.isBlank()) ? code : sig;
+            String embedSnippet = truncateSingleLine(embedSource, 120);
+
+            // nameOverlap: how many query content-tokens appear in the candidate's
+            // identifier set. Falsifiable signal for the "name leak" hypothesis.
+            Set<String> candTerms = tokenizeForOverlap(sig);
+            List<String> hits = new ArrayList<>();
+            int overlap = 0;
+            for (String t : queryTerms) {
+                if (candTerms.contains(t)) { overlap++; if (hits.size() < 6) hits.add(t); }
+            }
+            String overlapTerms = hits.isEmpty() ? "" : String.join(",", hits);
+
+            System.out.printf(
+                "      #%-2d %-9s %sfanIn=%-3d extFanIn=%-3d fanOut=%-3d tokens=%-4d nameOverlap=%-2d %s  (%s)%n",
+                i + 1, tag, simCol, fanIn, extFanIn, fanOut, tokens, overlap, cid, reason);
+            if (!overlapTerms.isEmpty()) {
+                System.out.println("            overlap: " + overlapTerms);
+            }
+            if (!embedSnippet.isEmpty()) {
+                System.out.println("            embedded[0..120]: \"" + embedSnippet + "\"");
+            }
+
+            snapshot.add(new CandidateStats(cid, semSim, fanIn, extFanIn, fanOut, tokens,
+                    overlap, overlapTerms, embedSnippet));
         }
+        // Append the per-class pool to the running snapshot. Multiple calls (one per
+        // class candidate in pickFuzzyClassName) accumulate; EvalMain's anchor.delta
+        // lookup-by-chunkId works on the union.
+        this.lastFallbackStats.addAll(snapshot);
     }
+
+    /** Truncate to N chars, escape \\n/\\r/\\t and collapse interior whitespace,
+     *  so the trace stays one line per candidate. */
+    private static String truncateSingleLine(String s, int limit) {
+        if (s == null) return "";
+        String flat = s.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ').trim();
+        // collapse runs of whitespace
+        flat = flat.replaceAll("\\s+", " ");
+        return flat.length() <= limit ? flat : flat.substring(0, limit) + "…";
+    }
+
+    /** Lower-cased identifier-token set for query↔candidate overlap. Splits on
+     *  camelCase boundaries and non-alphanumeric chars; drops short / common
+     *  noise tokens that would inflate every overlap score. */
+    private static Set<String> tokenizeForOverlap(String s) {
+        if (s == null || s.isBlank()) return Set.of();
+        // split on non-alnum
+        String[] segs = s.split("[^A-Za-z0-9]+");
+        Set<String> out = new LinkedHashSet<>();
+        for (String seg : segs) {
+            if (seg.isEmpty()) continue;
+            // split camelCase
+            for (String tok : seg.split("(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")) {
+                String lo = tok.toLowerCase(Locale.ROOT);
+                if (lo.length() < 3) continue;
+                if (STOPWORDS.contains(lo)) continue;
+                out.add(lo);
+            }
+        }
+        return out;
+    }
+
+    private static final Set<String> STOPWORDS = Set.of(
+            "the", "and", "for", "with", "that", "this", "from", "into", "when",
+            "while", "what", "which", "where", "how", "does", "method", "class",
+            "object", "string", "void", "int", "long", "list", "map", "set",
+            "true", "false", "null", "new", "return", "type", "node");
 
     // ═══════════════════════════════════════════════════════════════
     // Class-level lookup (for getClassOverview tool)

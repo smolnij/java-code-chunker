@@ -49,6 +49,21 @@ public class RetrievalConfig {
     // existing diagnostic output.
     private boolean trace = true;
 
+    // Phase 2 — CONTAINS-fallback structural rerank. When multiple candidates
+    // fall within `tiebreakEpsilon` cosine of the top semSim, re-rank by a
+    // composite score that adds structural priors: `+ extFanInBonus` for
+    // candidates with at least one cross-class caller (top-level entry point),
+    // `- tinyMethodPenalty` for trivially small methods (helpers/resets),
+    // `- partSuffixPenalty` for #partN body-fragment chunks. The α ≤ ε bound
+    // (extFanInBonus ≤ tiebreakEpsilon) guarantees the rerank can only flip
+    // candidates already inside the window — strong-cosine wins are protected.
+    // Set tiebreakEpsilon=0 to disable.
+    private double fallbackTiebreakEpsilon = 0.08;
+    private double fallbackExtFanInBonus = 0.05;
+    private double fallbackTinyMethodPenalty = 0.03;
+    private int fallbackTinyMethodTokenThreshold = 20;
+    private double fallbackPartSuffixPenalty = 0.02;
+
     public static RetrievalConfig fromProperties(Properties p) {
         RetrievalConfig cfg = new RetrievalConfig();
 
@@ -81,6 +96,17 @@ public class RetrievalConfig {
         cfg.typeNeighborsPct = PropertiesLoader.getDouble(p, "retrieval.typeNeighborsPct", cfg.typeNeighborsPct);
 
         cfg.trace = PropertiesLoader.getBoolean(p, "retrieval.trace", cfg.trace);
+
+        cfg.fallbackTiebreakEpsilon = PropertiesLoader.getDouble(p,
+                "retrieval.fallback.tiebreakEpsilon", cfg.fallbackTiebreakEpsilon);
+        cfg.fallbackExtFanInBonus = PropertiesLoader.getDouble(p,
+                "retrieval.fallback.extFanInBonus", cfg.fallbackExtFanInBonus);
+        cfg.fallbackTinyMethodPenalty = PropertiesLoader.getDouble(p,
+                "retrieval.fallback.tinyMethodPenalty", cfg.fallbackTinyMethodPenalty);
+        cfg.fallbackTinyMethodTokenThreshold = PropertiesLoader.getInt(p,
+                "retrieval.fallback.tinyMethodTokenThreshold", cfg.fallbackTinyMethodTokenThreshold);
+        cfg.fallbackPartSuffixPenalty = PropertiesLoader.getDouble(p,
+                "retrieval.fallback.partSuffixPenalty", cfg.fallbackPartSuffixPenalty);
 
         return cfg;
     }
@@ -120,6 +146,12 @@ public class RetrievalConfig {
 
     public boolean isTrace() { return trace; }
     public RetrievalConfig withTrace(boolean v) { this.trace = v; return this; }
+
+    public double getFallbackTiebreakEpsilon() { return fallbackTiebreakEpsilon; }
+    public double getFallbackExtFanInBonus() { return fallbackExtFanInBonus; }
+    public double getFallbackTinyMethodPenalty() { return fallbackTinyMethodPenalty; }
+    public int getFallbackTinyMethodTokenThreshold() { return fallbackTinyMethodTokenThreshold; }
+    public double getFallbackPartSuffixPenalty() { return fallbackPartSuffixPenalty; }
 
     public RetrievalConfig withMaxDepth(int v) { this.maxDepth = v; return this; }
     public RetrievalConfig withTopK(int v) { this.topK = v; return this; }

@@ -29,6 +29,7 @@ import com.smolnij.chunker.eval.result.RetrievedChunk;
 import com.smolnij.chunker.eval.verifier.NoopVerifier;
 import com.smolnij.chunker.eval.verifier.Verifier;
 import com.smolnij.chunker.eval.verifier.VerifierResult;
+import com.smolnij.chunker.retrieval.Neo4jGraphReader.CandidateStats;
 import com.smolnij.chunker.retrieval.RetrievalConfig;
 import com.smolnij.chunker.safeloop.SafeLoopConfig;
 import com.smolnij.chunker.util.Errors;
@@ -64,6 +65,7 @@ public final class EvalMain {
         System.out.println("║  Golden-Task Evaluation Harness                      ║");
         System.out.println("║  Retrieval + SafeLoop scoring                        ║");
         System.out.println("╚══════════════════════════════════════════════════════╝");
+        printBuildBanner();
         System.out.println();
 
         List<Fixture> fixtures;
@@ -142,7 +144,7 @@ public final class EvalMain {
             RunResult res = runner.run(effective, null);
             EvalRecord rec = score(effective, res, verifier, scorers);
             records.add(rec);
-            printFixtureLine(effective, res, rec);
+            printFixtureLine(effective, res, rec, null);
             if (cfg.debug) printFixtureDebug(effective, rec);
             if (cfg.failFast && res.isError()) break;
         }
@@ -168,7 +170,7 @@ public final class EvalMain {
                 RunResult res = runner.run(effective, ctx);
                 EvalRecord rec = score(effective, res, verifier, scorers);
                 records.add(rec);
-                printFixtureLine(effective, res, rec);
+                printFixtureLine(effective, res, rec, ctx);
                 if (cfg.debug) printFixtureDebug(effective, rec);
                 if (cfg.failFast && res.isError()) break;
             }
@@ -323,6 +325,34 @@ public final class EvalMain {
         }
     }
 
+    /**
+     * Print the running JAR's path, mtime, and the repo's git short SHA so a
+     * stale fat-JAR (caller forgot {@code mvn package}) is impossible to miss.
+     * All discovery is best-effort — failures are swallowed to a single dash.
+     */
+    private static void printBuildBanner() {
+        String jar = "?";
+        String mtime = "?";
+        try {
+            java.net.URL src = EvalMain.class.getProtectionDomain().getCodeSource().getLocation();
+            Path path = Path.of(src.toURI());
+            jar = path.toString();
+            mtime = Files.getLastModifiedTime(path).toInstant().toString();
+        } catch (Exception ignored) {}
+        String git = "?";
+        try {
+            Process p = new ProcessBuilder("git", "rev-parse", "--short", "HEAD")
+                    .redirectErrorStream(true).start();
+            if (p.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                git = new String(p.getInputStream().readAllBytes()).trim();
+                if (git.isEmpty()) git = "?";
+            } else {
+                p.destroy();
+            }
+        } catch (Exception ignored) {}
+        System.out.println("EvalMain build: jar=" + jar + " mtime=" + mtime + " git=" + git);
+    }
+
     private static void printDebugConfig(EvalConfig cfg, List<Fixture> selected) {
         System.out.println();
         System.out.println("── Debug: Resolved Config ──────────────────────────────");
@@ -378,7 +408,7 @@ public final class EvalMain {
         System.out.println();
     }
 
-    private static void printFixtureLine(Fixture f, RunResult res, EvalRecord rec) {
+    private static void printFixtureLine(Fixture f, RunResult res, EvalRecord rec, RunContext ctx) {
         int pass = 0, fail = 0, err = 0, notRun = 0;
         for (Metric m : rec.metrics()) {
             switch (m.status()) {
@@ -392,7 +422,12 @@ public final class EvalMain {
         System.out.printf("  [%s] %-40s  mode=%-10s  pass=%d fail=%d err=%d n/r=%d  (%dms)%n",
                 status, f.id(), f.mode(), pass, fail, err, notRun, res.durationMs());
         if (res.isError()) System.out.println("        error: " + res.error());
-        emitAnchorMismatchTrace(f, res);
+        // Snapshot the resolver's per-candidate stats while the reader still holds them.
+        // Subsequent fixtures will overwrite the reader's lastFallbackStats, so we have
+        // to capture before moving on. Empty in dry-run / non-trace.
+        List<CandidateStats> stats = (ctx == null)
+                ? List.of() : ctx.reader().getLastFallbackStats();
+        emitAnchorMismatchTrace(f, res, stats);
     }
 
     /**
@@ -402,7 +437,7 @@ public final class EvalMain {
      * anchor (typically 1) and the rank of the gold anchor in the retrieved
      * top-K (or {@code not-in-topK} if absent), and a best-effort {@code reason}.
      */
-    private static void emitAnchorMismatchTrace(Fixture f, RunResult res) {
+    private static void emitAnchorMismatchTrace(Fixture f, RunResult res, List<CandidateStats> stats) {
         if (f.gold() == null) return;
         String gold = f.gold().anchor();
         if (gold == null || gold.isBlank()) return;
@@ -455,6 +490,55 @@ public final class EvalMain {
 
         System.out.printf("        [trace] anchor.mismatch fixture=%s picked=%s gold=%s picked.rank=%s gold.rank=%s reason=%s%n",
                 f.id(), picked, gold, pickedRankStr, goldRankStr, reason);
+
+        // [trace] anchor.delta — pairs picked + gold with their CONTAINS-fallback
+        // pool stats (semSim, tokens, extFanIn, nameOverlap). Only emitted when the
+        // resolver actually went through the CONTAINS-fallback path, i.e. when stats
+        // are populated. Looks up by exact chunkId first, then loose match (drop
+        // #partN suffix and parameter list) so e.g. picked="X#part1" pairs with the
+        // gold's underlying method.
+        if (stats != null && !stats.isEmpty()) {
+            CandidateStats pickedStats = lookupStats(stats, picked);
+            CandidateStats goldStats = lookupStats(stats, gold);
+            if (pickedStats != null || goldStats != null) {
+                System.out.printf("        [trace] anchor.delta fixture=%s picked=%s gold=%s%n",
+                        f.id(), picked, gold);
+                System.out.println("            picked: " + formatStats(pickedStats));
+                System.out.println("            gold:   " + formatStats(goldStats));
+                if (pickedStats != null && goldStats != null
+                        && !Double.isNaN(pickedStats.semSim()) && !Double.isNaN(goldStats.semSim())) {
+                    System.out.printf("            Δsem=%+.4f  ΔnameOverlap=%+d  Δtokens=%+d  ΔextFanIn=%+d%n",
+                            pickedStats.semSim() - goldStats.semSim(),
+                            pickedStats.nameOverlap() - goldStats.nameOverlap(),
+                            pickedStats.tokens() - goldStats.tokens(),
+                            pickedStats.extFanIn() - goldStats.extFanIn());
+                } else if (goldStats == null) {
+                    System.out.println("            note: gold not in CONTAINS-fallback pool — embedding-text or chunking defect, not a ranking-policy bug");
+                }
+            }
+        }
+    }
+
+    private static CandidateStats lookupStats(List<CandidateStats> stats, String chunkId) {
+        if (chunkId == null) return null;
+        for (CandidateStats c : stats) if (chunkId.equals(c.chunkId())) return c;
+        // Loose match: drop #partN, then drop parameter list. Same normalization
+        // RetrievalScorer uses for anchor.hit, so the trace agrees with the metric.
+        String norm = com.smolnij.chunker.eval.scorer.RetrievalScorer.stripParamList(
+                com.smolnij.chunker.eval.scorer.RetrievalScorer.stripPartSuffix(chunkId));
+        for (CandidateStats c : stats) {
+            String cn = com.smolnij.chunker.eval.scorer.RetrievalScorer.stripParamList(
+                    com.smolnij.chunker.eval.scorer.RetrievalScorer.stripPartSuffix(c.chunkId()));
+            if (norm.equals(cn)) return c;
+        }
+        return null;
+    }
+
+    private static String formatStats(CandidateStats c) {
+        if (c == null) return "(not in CONTAINS pool)";
+        String sem = Double.isNaN(c.semSim()) ? "n/a" : String.format("%.4f", c.semSim());
+        return String.format("semSim=%s tokens=%d extFanIn=%d fanIn=%d nameOverlap=%d (%s)",
+                sem, c.tokens(), c.extFanIn(), c.fanIn(), c.nameOverlap(), c.nameOverlapTerms());
     }
 
     private static String classSegment(String chunkId) {
