@@ -23,6 +23,7 @@ import com.smolnij.chunker.eval.scorer.AnalyzerScorer;
 import com.smolnij.chunker.eval.scorer.BuildScorer;
 import com.smolnij.chunker.eval.scorer.Metric;
 import com.smolnij.chunker.eval.scorer.RetrievalScorer;
+import com.smolnij.chunker.eval.scorer.SafeLoopScorer;
 import com.smolnij.chunker.eval.scorer.Scorer;
 import com.smolnij.chunker.eval.verifier.CompilingVerifier;
 import com.smolnij.chunker.eval.result.RetrievedChunk;
@@ -42,6 +43,11 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Entry point for the golden-task evaluation harness.
@@ -56,6 +62,7 @@ public final class EvalMain {
     public static final String DEFAULT_FIXTURES_DIR = "eval-fixtures";
 
     public static void main(String[] args) {
+        Instant runStartedAt = Instant.now();
         Properties p = PropertiesLoader.loadOrExit(args, "EvalMain", "config/eval.properties");
 
         EvalConfig cfg = EvalConfig.fromProperties(p);
@@ -117,7 +124,7 @@ public final class EvalMain {
         }
 
         try {
-            writeManifest(outputDir, cfg, selected.size(), fixtures.size());
+            writeManifest(outputDir, cfg, selected.size(), fixtures.size(), runStartedAt);
             runReporters(outputDir, cfg, records);
         } catch (IOException e) {
             System.err.println("ERROR: failed to write reports — " + Errors.format(e));
@@ -141,12 +148,12 @@ public final class EvalMain {
         List<EvalRecord> records = new ArrayList<>(fixtures.size());
         for (Fixture f : fixtures) {
             Fixture effective = cfg.retrievalOnly ? withMode(f, "retrieval") : f;
-            RunResult res = runner.run(effective, null);
+            RunResult res = runWithTimeout(runner, effective, null);
             EvalRecord rec = score(effective, res, verifier, scorers);
             records.add(rec);
             printFixtureLine(effective, res, rec, null);
             if (cfg.debug) printFixtureDebug(effective, rec);
-            if (cfg.failFast && res.isError()) break;
+            if (shouldFailFast(cfg, res, rec)) break;
         }
         return records;
     }
@@ -167,28 +174,94 @@ public final class EvalMain {
             for (Fixture f : fixtures) {
                 Fixture effective = cfg.retrievalOnly ? withMode(f, "retrieval") : f;
                 ModeRunner runner = pickRunner(effective.mode());
-                RunResult res = runner.run(effective, ctx);
+                RunResult res = runWithTimeout(runner, effective, ctx);
                 EvalRecord rec = score(effective, res, verifier, scorers);
                 records.add(rec);
                 printFixtureLine(effective, res, rec, ctx);
                 if (cfg.debug) printFixtureDebug(effective, rec);
-                if (cfg.failFast && res.isError()) break;
+                if (shouldFailFast(cfg, res, rec)) break;
             }
         }
         return records;
+    }
+
+    private static final int DEFAULT_FIXTURE_TIMEOUT_SECONDS = 600;
+
+    /**
+     * Run a fixture under a wall-clock budget so a livelocked LLM/loop can't
+     * wedge the whole eval. Honours {@code fixture.timeoutSeconds} when set;
+     * falls back to {@value #DEFAULT_FIXTURE_TIMEOUT_SECONDS}s otherwise.
+     */
+    private static RunResult runWithTimeout(ModeRunner runner, Fixture fixture, RunContext ctx) {
+        Integer t = fixture.timeoutSeconds();
+        int seconds = (t == null || t <= 0) ? DEFAULT_FIXTURE_TIMEOUT_SECONDS : t;
+
+        Instant startedAt = Instant.now();
+        long t0 = System.currentTimeMillis();
+
+        ExecutorService exec = Executors.newSingleThreadExecutor(r -> {
+            Thread th = new Thread(r, "eval-fixture-" + fixture.id());
+            th.setDaemon(true);
+            return th;
+        });
+        Future<RunResult> future = exec.submit(() -> runner.run(fixture, ctx));
+        try {
+            return future.get(seconds, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            future.cancel(true);
+            long duration = System.currentTimeMillis() - t0;
+            return new RunResult(
+                    fixture.id(), runner.modeName(), startedAt, duration,
+                    null, List.of(), null,
+                    "timeout after " + seconds + "s");
+        } catch (Exception e) {
+            long duration = System.currentTimeMillis() - t0;
+            return new RunResult(
+                    fixture.id(), runner.modeName(), startedAt, duration,
+                    null, List.of(), null,
+                    Errors.format(e));
+        } finally {
+            exec.shutdownNow();
+        }
+    }
+
+    private static boolean shouldFailFast(EvalConfig cfg, RunResult res, EvalRecord rec) {
+        if (!cfg.failFast) return false;
+        if (res.isError()) return true;
+        if (!cfg.failFastOnMetric) return false;
+        for (Metric m : rec.metrics()) {
+            if (Metric.FAIL.equals(m.status()) || Metric.ERROR.equals(m.status())) return true;
+        }
+        return false;
     }
 
     private static ModeRunner pickRunner(String mode) {
         return switch (mode.toLowerCase()) {
             case "retrieval" -> new RetrievalRunner();
             case "safeloop" -> new SafeLoopRunner();
-            default -> throw new IllegalStateException("unsupported mode: " + mode
-                    + " (runner not wired in this PR)");
+            // Don't kill the run when a fixture references a mode we haven't wired
+            // — record the failure on that one fixture and let the rest proceed.
+            default -> new UnknownModeRunner(mode);
         };
     }
 
+    /**
+     * No-op runner used when a fixture's mode is not recognized. Returns a
+     * {@link RunResult} carrying the failure as {@code error}, so reporters
+     * record the fixture and {@link #decideExitCode} flags it.
+     */
+    private record UnknownModeRunner(String mode) implements ModeRunner {
+        @Override public String modeName() { return mode; }
+        @Override public RunResult run(Fixture fixture, RunContext ctx) {
+            return new RunResult(
+                    fixture.id(), mode, Instant.now(), 0L,
+                    null, List.of(), null,
+                    "unsupported mode: " + mode);
+        }
+    }
+
     private static List<Scorer> defaultScorers() {
-        return List.of(new RetrievalScorer(), new AnalyzerScorer(), new BuildScorer());
+        return List.of(new RetrievalScorer(), new AnalyzerScorer(), new SafeLoopScorer(), new BuildScorer());
     }
 
     private static Verifier pickVerifier(EvalConfig cfg) {
@@ -217,11 +290,12 @@ public final class EvalMain {
     // Reporting
     // ═══════════════════════════════════════════════════════════════
 
-    private static void writeManifest(Path outDir, EvalConfig cfg, int runFixtures, int totalFixtures)
-            throws IOException {
+    private static void writeManifest(Path outDir, EvalConfig cfg, int runFixtures, int totalFixtures,
+                                      Instant runStartedAt) throws IOException {
         Files.createDirectories(outDir);
         JsonObject root = new JsonObject();
-        root.addProperty("startedAt", Instant.now().toString());
+        root.addProperty("startedAt", runStartedAt.toString());
+        root.addProperty("finishedAt", Instant.now().toString());
         root.addProperty("totalFixtures", totalFixtures);
         root.addProperty("runFixtures", runFixtures);
         root.addProperty("dryRun", cfg.dryRun);
@@ -243,17 +317,40 @@ public final class EvalMain {
 
     private static void runReporters(Path outDir, EvalConfig cfg, List<EvalRecord> records)
             throws IOException {
-        List<Reporter> reporters = new ArrayList<>();
-        reporters.add(new JsonlReporter());
-        reporters.add(new SummaryReporter());
-        reporters.add(new JsonSummaryReporter());
+        // JsonlReporter is the source of truth — failure here aborts. Every other
+        // reporter is best-effort: a broken baseline path or summary file should not
+        // lose the JSONL or the manifest.
+        new JsonlReporter().write(outDir, records);
+
+        List<Reporter> bestEffort = new ArrayList<>();
+        bestEffort.add(new SummaryReporter());
+        bestEffort.add(new JsonSummaryReporter());
         if (cfg.baselineJsonl != null) {
-            reporters.add(new BaselineDiffReporter(cfg.baselineJsonl, cfg.diffEpsilon));
+            bestEffort.add(new BaselineDiffReporter(cfg.baselineJsonl, cfg.diffEpsilon));
         }
-        for (Reporter r : reporters) r.write(outDir, records);
+        for (Reporter r : bestEffort) {
+            try {
+                r.write(outDir, records);
+            } catch (Exception e) {
+                System.err.println("WARN: reporter " + r.getClass().getSimpleName()
+                        + " failed — " + Errors.format(e));
+            }
+        }
         System.out.println();
         System.out.println("✓ Results written to " + outDir.toAbsolutePath());
     }
+
+    // Distinct exit codes so CI can branch on the failure mode:
+    //   0 — success
+    //   1 — at least one fixture errored during execution
+    //   2 — empty graph (every live fixture returned 0 chunks)
+    //   3 — self-check FAIL/ERROR metrics
+    //   4 — regression vs baseline
+    static final int EXIT_OK = 0;
+    static final int EXIT_FIXTURE_ERROR = 1;
+    static final int EXIT_EMPTY_GRAPH = 2;
+    static final int EXIT_SELF_CHECK_FAILED = 3;
+    static final int EXIT_REGRESSION = 4;
 
     private static int decideExitCode(List<EvalRecord> records, EvalConfig cfg, Path outDir) {
         int errors = 0;
@@ -270,9 +367,9 @@ public final class EvalMain {
                 .allMatch(r -> r.result().retrieved().isEmpty() && !r.result().isError());
         if (emptyGraph) {
             System.err.println();
-            System.err.println("EXIT 2: every fixture returned 0 retrieved chunks.");
+            System.err.println("EXIT " + EXIT_EMPTY_GRAPH + ": every fixture returned 0 retrieved chunks.");
             System.err.println("        Neo4j graph appears empty. Run ChunkerMain on the target repo first.");
-            return 2;
+            return EXIT_EMPTY_GRAPH;
         }
 
         if (cfg.selfCheck) {
@@ -290,27 +387,29 @@ public final class EvalMain {
             }
             if (failed > 0) {
                 System.err.println();
-                System.err.println("EXIT 1: self-check failed (" + failed + " FAIL/ERROR metrics)");
+                System.err.println("EXIT " + EXIT_SELF_CHECK_FAILED
+                        + ": self-check failed (" + failed + " FAIL/ERROR metrics)");
                 System.err.print(sb);
-                return 1;
+                return EXIT_SELF_CHECK_FAILED;
             }
             System.out.println("✓ self-check passed");
         }
 
         if (errors > 0) {
             System.err.println();
-            System.err.println("EXIT 1: " + errors + " of " + records.size()
+            System.err.println("EXIT " + EXIT_FIXTURE_ERROR + ": " + errors + " of " + records.size()
                     + " fixture(s) errored during execution:");
             System.err.print(errorDetail);
-            return 1;
+            return EXIT_FIXTURE_ERROR;
         }
         if (cfg.baselineJsonl != null && regressionDetected(outDir)) {
             System.err.println();
-            System.err.println("EXIT 1: regression detected vs baseline " + cfg.baselineJsonl
+            System.err.println("EXIT " + EXIT_REGRESSION + ": regression detected vs baseline "
+                    + cfg.baselineJsonl
                     + " (see " + outDir.resolve(BaselineDiffReporter.JSON_FILENAME) + ")");
-            return 1;
+            return EXIT_REGRESSION;
         }
-        return 0;
+        return EXIT_OK;
     }
 
     private static boolean regressionDetected(Path outDir) {
@@ -320,7 +419,11 @@ public final class EvalMain {
             String json = Files.readString(diff);
             JsonObject o = new com.google.gson.Gson().fromJson(json, JsonObject.class);
             return o.has("regressions") && o.getAsJsonArray("regressions").size() > 0;
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            // Don't silently bypass regression checking — a malformed diff.json means
+            // the diff reporter itself is broken; surface it so CI doesn't go green by mistake.
+            System.err.println("WARN: could not parse " + diff + " for regression check — "
+                    + e.getClass().getSimpleName() + ": " + e.getMessage());
             return false;
         }
     }
@@ -431,18 +534,38 @@ public final class EvalMain {
     }
 
     /**
-     * When a fixture has a known {@code gold.anchor} and the resolver picked a
-     * different anchor, emit a single grep-friendly trace line so the failure
-     * is visible from one line in the eval log. Includes the rank of the picked
-     * anchor (typically 1) and the rank of the gold anchor in the retrieved
-     * top-K (or {@code not-in-topK} if absent), and a best-effort {@code reason}.
+     * Emit grep-friendly trace lines for the three diagnosable retrieval failure
+     * shapes, so debugging doesn't require scrolling through ranking dumps:
+     * <ul>
+     *   <li>{@code [trace] retrieval.empty} — resolver/expansion produced 0 chunks.</li>
+     *   <li>{@code [trace] anchor.unresolved} — gold anchor known but resolver returned null.</li>
+     *   <li>{@code [trace] anchor.mismatch} — resolver picked the wrong chunk; reports
+     *       both ranks and a best-effort {@code reason}.</li>
+     * </ul>
      */
     private static void emitAnchorMismatchTrace(Fixture f, RunResult res, List<CandidateStats> stats) {
         if (f.gold() == null) return;
         String gold = f.gold().anchor();
-        if (gold == null || gold.isBlank()) return;
+        boolean haveGoldAnchor = gold != null && !gold.isBlank();
+        boolean haveGoldRelevant = !f.gold().relevant().isEmpty();
         String picked = res.anchorId();
-        if (picked == null) return;
+
+        // B1: any non-error fixture with gold but zero retrieval is a silent zero today.
+        if (res.retrieved().isEmpty() && (haveGoldAnchor || haveGoldRelevant) && !res.isError()) {
+            String q = f.query() == null ? "" : f.query();
+            if (q.length() > 80) q = q.substring(0, 77) + "…";
+            System.out.printf("        [trace] retrieval.empty fixture=%s anchor=%s query=\"%s\"%n",
+                    f.id(), picked == null ? "null" : picked, q);
+        }
+
+        if (!haveGoldAnchor) return;
+
+        // B2: resolver returned null for a fixture whose gold.anchor is known.
+        if (picked == null) {
+            System.out.printf("        [trace] anchor.unresolved fixture=%s gold=%s retrieved.size=%d reason=resolver-returned-null%n",
+                    f.id(), gold, res.retrieved().size());
+            return;
+        }
         // Normalize using the same rules the metric scorer applies (drop #partN, then
         // strip the parameter list for a loose match). Without this the trace contradicts
         // the metric — e.g. picked=Foo#run(String)#part1 vs gold=Foo#run(String) reports
