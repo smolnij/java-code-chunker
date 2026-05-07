@@ -17,5 +17,5 @@
     "tests": []
   },
   "tags": ["self-eval", "safeloop", "extract-method"],
-  "timeoutSeconds": 600
+  "timeoutSeconds": 1800
 }

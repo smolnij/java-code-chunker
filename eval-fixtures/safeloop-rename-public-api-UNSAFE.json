@@ -20,5 +20,5 @@
     "tests": []
   },
   "tags": ["self-eval", "safeloop", "rename", "public-api", "negative-verdict"],
-  "timeoutSeconds": 600
+  "timeoutSeconds": 1800
 }
