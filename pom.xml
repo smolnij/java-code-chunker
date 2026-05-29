@@ -8,13 +8,20 @@
     <groupId>com.smolnij</groupId>
     <artifactId>java-code-chunker</artifactId>
     <version>1.0-SNAPSHOT</version>
-    <packaging>jar</packaging>
+    <packaging>pom</packaging>
 
-    <name>Java Code Chunker for LM-Studio</name>
+    <name>Java Code Chunker (parent)</name>
     <description>
         Hierarchical Java code chunking and indexing tool using JavaParser with Symbol Solver.
         Produces method-level chunks with call graph edges for graph-aware LLM retrieval.
+        Multi-module reactor: the `chunker` module is the standalone chunking tool;
+        the `app` module hosts the LLM-driven refactoring/eval mains that build on it.
     </description>
+
+    <modules>
+        <module>chunker</module>
+        <module>app</module>
+    </modules>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -25,119 +32,104 @@
         <gson.version>2.12.1</gson.version>
         <neo4j.driver.version>5.27.0</neo4j.driver.version>
         <langchain4j.version>1.13.0</langchain4j.version>
+        <httpclient5.version>5.4.3</httpclient5.version>
     </properties>
 
-    <dependencies>
-        <!-- JavaParser with Symbol Solver for AST parsing + fully-qualified resolution -->
-        <dependency>
-            <groupId>com.github.javaparser</groupId>
-            <artifactId>javaparser-symbol-solver-core</artifactId>
-            <version>${javaparser.version}</version>
-        </dependency>
+    <dependencyManagement>
+        <dependencies>
+            <!-- Sibling module so the app can depend on the chunker without repeating the version -->
+            <dependency>
+                <groupId>com.smolnij</groupId>
+                <artifactId>chunker</artifactId>
+                <version>${project.version}</version>
+            </dependency>
 
-        <!-- Token counting (tiktoken-compatible cl100k_base for LLM context windows) -->
-        <dependency>
-            <groupId>com.knuddels</groupId>
-            <artifactId>jtokkit</artifactId>
-            <version>${jtokkit.version}</version>
-        </dependency>
+            <!-- JavaParser with Symbol Solver for AST parsing + fully-qualified resolution -->
+            <dependency>
+                <groupId>com.github.javaparser</groupId>
+                <artifactId>javaparser-symbol-solver-core</artifactId>
+                <version>${javaparser.version}</version>
+            </dependency>
 
-        <!-- JSON output -->
-        <dependency>
-            <groupId>com.google.code.gson</groupId>
-            <artifactId>gson</artifactId>
-            <version>${gson.version}</version>
-        </dependency>
+            <!-- Token counting (tiktoken-compatible cl100k_base for LLM context windows) -->
+            <dependency>
+                <groupId>com.knuddels</groupId>
+                <artifactId>jtokkit</artifactId>
+                <version>${jtokkit.version}</version>
+            </dependency>
 
-        <!-- Neo4j Java Driver for graph database persistence -->
-        <dependency>
-            <groupId>org.neo4j.driver</groupId>
-            <artifactId>neo4j-java-driver</artifactId>
-            <version>${neo4j.driver.version}</version>
-        </dependency>
+            <!-- JSON output -->
+            <dependency>
+                <groupId>com.google.code.gson</groupId>
+                <artifactId>gson</artifactId>
+                <version>${gson.version}</version>
+            </dependency>
 
-        <!-- LangChain4j core (AI Services, Tools, Memory) -->
-        <dependency>
-            <groupId>dev.langchain4j</groupId>
-            <artifactId>langchain4j</artifactId>
-            <version>${langchain4j.version}</version>
-        </dependency>
+            <!-- Neo4j Java Driver for graph database persistence -->
+            <dependency>
+                <groupId>org.neo4j.driver</groupId>
+                <artifactId>neo4j-java-driver</artifactId>
+                <version>${neo4j.driver.version}</version>
+            </dependency>
 
-        <!-- LangChain4j OpenAI integration (works with LM-Studio's OpenAI-compatible API) -->
-        <dependency>
-            <groupId>dev.langchain4j</groupId>
-            <artifactId>langchain4j-open-ai</artifactId>
-            <version>${langchain4j.version}</version>
-        </dependency>
+            <!-- LangChain4j core (AI Services, Tools, Memory) -->
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j</artifactId>
+                <version>${langchain4j.version}</version>
+            </dependency>
 
-        <!--
-            JDK HTTP client impl for langchain4j. Pinned explicitly so we can force
-            HTTP/1.1 on LM-Studio — the default HTTP/2 upgrade handshake makes
-            LM-Studio hang on the first request (see langchain4j issue #2758,
-            lmstudio-bug-tracker #1079).
-        -->
-        <dependency>
-            <groupId>dev.langchain4j</groupId>
-            <artifactId>langchain4j-http-client-jdk</artifactId>
-            <version>${langchain4j.version}</version>
-        </dependency>
+            <!-- LangChain4j OpenAI integration (works with LM-Studio's OpenAI-compatible API) -->
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-open-ai</artifactId>
+                <version>${langchain4j.version}</version>
+            </dependency>
 
-        <!-- Apache HttpClient 5 for HTTP communication with LLM endpoints -->
-        <dependency>
-            <groupId>org.apache.httpcomponents.client5</groupId>
-            <artifactId>httpclient5</artifactId>
-            <version>5.4.3</version>
-        </dependency>
-    </dependencies>
+            <!--
+                JDK HTTP client impl for langchain4j. Pinned explicitly so we can force
+                HTTP/1.1 on LM-Studio — the default HTTP/2 upgrade handshake makes
+                LM-Studio hang on the first request (see langchain4j issue #2758,
+                lmstudio-bug-tracker #1079).
+            -->
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-http-client-jdk</artifactId>
+                <version>${langchain4j.version}</version>
+            </dependency>
+
+            <!-- Apache HttpClient 5 for HTTP communication with LLM endpoints -->
+            <dependency>
+                <groupId>org.apache.httpcomponents.client5</groupId>
+                <artifactId>httpclient5</artifactId>
+                <version>${httpclient5.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <build>
-        <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-resources-plugin</artifactId>
-                <version>3.0.2</version>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.13.0</version>
-                <configuration>
-                    <source>17</source>
-                    <target>17</target>
-                </configuration>
-            </plugin>
-            <!-- Build a fat JAR so it can be run standalone -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-shade-plugin</artifactId>
-                <version>3.6.0</version>
-                <executions>
-                    <execution>
-                        <phase>package</phase>
-                        <goals>
-                            <goal>shade</goal>
-                        </goals>
-                        <configuration>
-                            <transformers>
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>com.smolnij.chunker.ChunkerMain</mainClass>
-                                </transformer>
-                            </transformers>
-                            <filters>
-                                <filter>
-                                    <artifact>*:*</artifact>
-                                    <excludes>
-                                        <exclude>META-INF/*.SF</exclude>
-                                        <exclude>META-INF/*.DSA</exclude>
-                                        <exclude>META-INF/*.RSA</exclude>
-                                    </excludes>
-                                </filter>
-                            </filters>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
-        </plugins>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-resources-plugin</artifactId>
+                    <version>3.0.2</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>3.13.0</version>
+                    <configuration>
+                        <source>17</source>
+                        <target>17</target>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-shade-plugin</artifactId>
+                    <version>3.6.0</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
     </build>
 </project>
-
