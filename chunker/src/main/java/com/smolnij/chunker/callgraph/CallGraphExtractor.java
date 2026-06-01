@@ -16,6 +16,7 @@ import com.github.javaparser.resolution.declarations.ResolvedMethodDeclaration;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Extracts call graph edges using JavaParser Symbol Solver.
@@ -44,6 +45,11 @@ public class CallGraphExtractor {
     private final Map<String, Set<String>> importsByClass = new ConcurrentHashMap<>(); // classFqn -> set(importedFqn)
     private final Map<String, Set<String>> testFor = new ConcurrentHashMap<>();       // testMethodFqn -> set(targetMethodFqn)
 
+    // Symbol-resolution telemetry: how many MethodCallExprs resolved to a real
+    // FQN target vs. fell back to an unresolved (non-navigable) representation.
+    private final AtomicInteger resolvedCalls = new AtomicInteger();
+    private final AtomicInteger unresolvedCalls = new AtomicInteger();
+
     /**
      * Clear every edge map. Used by {@link com.smolnij.chunker.JavaCodeChunker}
      * when re-running per-file extraction for a delta re-index — the resulting
@@ -57,6 +63,24 @@ public class CallGraphExtractor {
         throwsType.clear();
         importsByClass.clear();
         testFor.clear();
+        resolvedCalls.set(0);
+        unresolvedCalls.set(0);
+    }
+
+    /** Number of method calls that resolved to a fully-qualified target. */
+    public int getResolvedCallCount() {
+        return resolvedCalls.get();
+    }
+
+    /**
+     * Number of method calls that could not be resolved and fell back to an
+     * unresolved {@code scope.name(...)} representation. These edges can never
+     * match a chunk id, so they are dead-ends for graph traversal — a high
+     * count usually means the type solver is missing source roots or dependency
+     * jars (see {@code chunker.classpath}).
+     */
+    public int getUnresolvedCallCount() {
+        return unresolvedCalls.get();
     }
 
     /**
@@ -211,25 +235,27 @@ public class CallGraphExtractor {
     private String resolveCall(MethodCallExpr call) {
         try {
             ResolvedMethodDeclaration resolved = call.resolve();
+            resolvedCalls.incrementAndGet();
+
             String declaringType = resolved.declaringType().getQualifiedName();
             String methodName = resolved.getName();
             int paramCount = resolved.getNumberOfParams();
 
-            StringBuilder sig = new StringBuilder();
-            sig.append(declaringType).append("#").append(methodName).append("(");
+            // Render parameter types through the SAME canonicalizer the chunk-id
+            // builder uses, so this edge target byte-matches the callee chunk id.
+            List<String> rawParams = new ArrayList<>(paramCount);
             for (int i = 0; i < paramCount; i++) {
-                if (i > 0) sig.append(", ");
                 try {
-                    sig.append(resolved.getParam(i).describeType());
+                    rawParams.add(resolved.getParam(i).describeType());
                 } catch (Exception e) {
-                    sig.append("?");
+                    rawParams.add("?");
                 }
             }
-            sig.append(")");
-            return sig.toString();
+            return MethodId.of(declaringType, methodName, rawParams);
 
         } catch (Exception e) {
             // Symbol resolution failed — fallback to unresolved representation
+            unresolvedCalls.incrementAndGet();
             return buildUnresolvedSignature(call);
         }
     }

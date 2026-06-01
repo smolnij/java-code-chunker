@@ -1,5 +1,6 @@
 package com.smolnij.chunker.retrieval;
 
+import com.smolnij.chunker.callgraph.MethodId;
 import com.smolnij.chunker.model.CodeChunk;
 
 import org.neo4j.driver.*;
@@ -116,12 +117,17 @@ public class Neo4jGraphReader implements AutoCloseable {
         } else {
             identifier = rawIdentifier;
         }
+        // Canonicalize the parameter list so an input in qualified/generic form
+        // (e.g. 'Foo#bar(java.util.List<String>, int)') byte-matches the erased
+        // simple-name form the chunker now stores as chunkId ('Foo#bar(List, int)').
+        // Idempotent for already-canonical ids and a no-op for ids without params.
+        final String canonicalId = MethodId.canonicalize(identifier);
         try (Session session = driver.session()) {
-            // Try exact chunkId match first
+            // Try exact chunkId match first (on the canonicalized id).
             Record rec = session.executeRead(tx -> {
                 Result r = tx.run(
                     "MATCH (m:Method) WHERE m.chunkId = $id RETURN m.chunkId AS id LIMIT 1",
-                    Map.of("id", identifier)
+                    Map.of("id", canonicalId)
                 );
                 return r.hasNext() ? r.next() : null;
             });
@@ -142,20 +148,25 @@ public class Neo4jGraphReader implements AutoCloseable {
                 // Strip params from methodFragment if present, e.g. "main(String[])" -> "main"
                 int paren = methodFragment.indexOf('(');
                 String methodName = paren >= 0 ? methodFragment.substring(0, paren) : methodFragment;
-                Record qualified = session.executeRead(tx -> {
+                // Fetch ALL same-class candidates (not LIMIT 1) so an overloaded method
+                // can be disambiguated by its canonical parameter list when the caller
+                // supplied one. Without this, two overloads collapse to an arbitrary pick.
+                List<String> candidateIds = session.executeRead(tx -> {
                     Result r = tx.run(
                         "MATCH (m:Method) " +
                             "WHERE m.methodName = $name " +
                             "  AND (m.fqClassName = $cls " +
                             "       OR m.className = $cls " +
                             "       OR m.fqClassName ENDS WITH ('.' + $cls)) " +
-                            "RETURN m.chunkId AS id LIMIT 1",
+                            "RETURN m.chunkId AS id",
                         Map.of("name", methodName, "cls", classFragment)
                     );
-                    return r.hasNext() ? r.next() : null;
+                    List<String> ids = new ArrayList<>();
+                    while (r.hasNext()) ids.add(r.next().get("id").asString());
+                    return ids;
                 });
-                if (qualified != null) {
-                    String id = qualified.get("id").asString();
+                if (!candidateIds.isEmpty()) {
+                    String id = pickOverload(candidateIds, canonicalId, paren >= 0);
                     System.out.println("    [resolver] '" + identifier + "' → '" + id + "' (qualified class#method match)");
                     return id;
                 }
@@ -201,6 +212,33 @@ public class Neo4jGraphReader implements AutoCloseable {
             System.out.println("    [resolver] '" + identifier + "' unresolved");
             return null;
         }
+    }
+
+    /**
+     * Pick the best chunkId among same-class candidates of a method name.
+     *
+     * <p>When the caller supplied a parameter list, prefer the candidate whose
+     * canonical id (params normalized via {@link MethodId#canonicalize}, any
+     * {@code #partN} suffix ignored) equals the canonicalized input — this is
+     * how an overloaded method is disambiguated. When the input had no params,
+     * or no overload matches exactly, fall back to the first candidate to
+     * preserve the historical single-result behaviour.
+     *
+     * @param candidateIds  same-class chunkIds sharing the method name (non-empty)
+     * @param canonicalId   the canonicalized input identifier
+     * @param inputHasParams whether the caller's identifier carried a {@code (...)} list
+     * @return the chosen chunkId
+     */
+    private static String pickOverload(List<String> candidateIds, String canonicalId, boolean inputHasParams) {
+        if (inputHasParams && canonicalId != null) {
+            for (String cid : candidateIds) {
+                String base = cid.replaceFirst("#part\\d+$", "");
+                if (MethodId.canonicalize(base).equals(canonicalId)) {
+                    return cid;
+                }
+            }
+        }
+        return candidateIds.get(0);
     }
 
     /**

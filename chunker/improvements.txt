@@ -1,0 +1,158 @@
+ The headline finding: chunk IDs and call-edge targets use different identifier formats,
+  so the graph is silently broken for any method that takes parameters
+
+  This is the single highest-leverage issue, because every downstream consumer (CALLED_BY
+  back-patching, graph BFS in HybridRetriever, context expansion) depends on edge
+  targets matching chunk IDs — and they don't.
+
+  Chunk identity is built from source-form parameter types
+  (JavaCodeChunker.java:429-433):
+  String methodFqn = fqClassName + "#" + methodName + "("
+      + method.getParameters().stream().map(p -> p.getTypeAsString())  // "String",
+  "List<String>"
+      .collect(Collectors.joining(", ")) + ")";
+
+  Call-edge targets are built from fully-resolved parameter types
+  (CallGraphExtractor.java:223):
+  sig.append(resolved.getParam(i).describeType());   // "java.lang.String",
+  "java.util.List<java.lang.String>"
+
+  So a chunk com.x.Foo#bar(String) is referenced by callers as
+  com.x.Foo#bar(java.lang.String). They never equals(). Consequences:
+
+  - Phase 3 (JavaCodeChunker.java:197-202) looks up
+  callGraph.getCallersOf(chunk.getChunkId()) — keyed by source-form ID, but the
+  reverse-edge map is keyed by resolved-form. calledBy is therefore empty for essentially
+  every method that has parameters (only zero-arg methods match by accident). The
+  CALLED_BY edges in graph.json are similarly degraded.
+  - Graph traversal in the retriever can't hop from a chunk's calls list to the actual
+  callee chunk node, because the FQN strings don't match node IDs. The call graph looks
+  populated but is mostly non-navigable.
+
+  This is invisible in the summary counts (edges are emitted), which is why it can
+  persist. Fix: pick one canonical identifier scheme and use it in both places — ideally
+  a single MethodId.canonical(ResolvedMethodDeclaration) /
+  MethodId.canonical(MethodDeclaration) helper that produces identical output from either
+  an AST node or a resolved symbol (erase generics to raw FQN, or keep both
+  consistently). This one change probably does more for retrieval quality than any
+  feature.
+
+  A related, smaller variant: the unresolved fallback (buildUnresolvedSignature,
+  repository.save(...)) produces targets that can never match any chunk ID. Those are
+  pure dead-ends. Worth (a) counting them and reporting a resolution rate, and (b)
+  attempting a cheap import-table lookup before giving up.
+
+  ---
+  Tier 1 — Graph integrity (fixes that make the existing data usable)
+
+  1. Unify the method-identifier format (above). Headline fix.
+  2. Nested/inner-class FQNs collide and mis-resolve. fqClassName is built as packageName
+  + "." + simpleName (:319), ignoring the enclosing class. So com.x.Outer.Helper and a
+  top-level com.x.Helper get the same ID, and the INNER_CLASS_OF edge (:376-379)
+  reconstructs the outer FQN as package + outerSimple, wrong for 2+ levels of nesting.
+  Build the FQN by walking enclosing TypeDeclaration ancestors (Outer.Inner or
+  Outer$Inner) consistently everywhere identity is formed.
+  3. Populate READS_FIELD / WRITES_FIELD. The edge types exist but are never emitted
+  (confirmed). They're the key to the noise-reduction win in Tier 2 (#6) and to
+  field-level impact analysis ("what methods touch this field").
+
+  ---
+  Tier 2 — Per-chunk context enrichment (directly eases LLM reasoning)
+
+  4. Capture Javadoc as a first-class field. Right now there's no javadoc field on
+  CodeChunk. Method Javadoc is the richest statement of intent the codebase has. Even
+  though method.toString() happens to inline the leading comment into code, it's not
+  separable — so it can't be (a) prepended to every part after a split, (b) weighted in
+  the embedding text, or (c) shown in the readable header. Class-level Javadoc is dropped
+  entirely. Add methodJavadoc and classJavadoc fields via method.getJavadoc() /
+  classDecl.getJavadoc().
+  5. Embed callee signatures, not just FQN strings. Today a chunk says Calls:
+  com.x.Repo#save(User). An LLM asked to edit the method doesn't know save's return type
+  or full signature, so it guesses. Once identifiers are canonical (#1), it's cheap to
+  attach a one-line skeleton for each callee/called-by neighbor (User save(User))
+  directly in the chunk or readable output. This "neighborhood skeleton" is the biggest
+  single reducer of hallucination during refactoring, and it's the natural payoff of
+  fixing the graph.
+  6. Stop copying all field declarations into every chunk. fields (full declarations) is
+  duplicated into every method chunk (:471). For a 20-field class this is large,
+  repeated, mostly-irrelevant token spend, and it dilutes the embedding. With
+  READS_FIELD/WRITES_FIELD (#3) populated, include only the fields the method actually
+  references. Same idea for imports (:465) — narrow to imports whose types appear in the
+  method.
+
+  ---
+  Tier 3 — Chunk granularity (the splitting strategy fights the LLM)
+
+  7. Don't split a method's code below method granularity. Splitting at 512 tokens hands
+  the LLM "half a method" — actively harmful for the refactoring use case, where the
+  method is the atomic edit unit. Two cleaner options:
+    - Decouple embedding granularity from retrieval payload: split for the vector
+  representation if you must, but always retrieve/serve the whole method as code.
+    - Or raise the cap and store oversized methods whole with an oversized=true flag.
+  Modern context windows make 512-token method splitting an anachronism; a single
+  coherent method beats two embeddings of its halves.
+
+  If splitting stays, at least ensure the Tier-2 line fallback (TokenCounter) re-prepends
+  the method signature + Javadoc to each part so no part is context-free.
+
+  ---
+  Tier 4 — Coverage gaps
+
+  8. Records, enums, and annotation types are skipped.
+  cu.findAll(ClassOrInterfaceDeclaration.class) (:304) misses RecordDeclaration,
+  EnumDeclaration, and @interface. On a Java-17 codebase, records-with-methods, enum
+  methods, and annotation members are simply invisible to retrieval. Add handlers for
+  TypeDeclaration subtypes.
+  9. A single parse failure drops the whole file silently. processFile (:281-285) warns
+  and returns on any parse problem, losing every method in the file. One stray syntax
+  error → a class-shaped hole in the index. Surface the skipped-file list prominently in
+  the summary (not just System.err), and consider lenient/partial recovery.
+
+  ---
+  Tier 5 — Robustness & observability
+
+  10. Report a symbol-resolution rate. Emit "N% of calls resolved, M unresolved (dead-end
+  edges)" in the summary. Low resolution usually means the type solver is missing a
+  source root or dependency jars — currently invisible, and it silently caps graph
+  quality. Consider adding the project's classpath jars to the CombinedTypeSolver (only
+  ReflectionTypeSolver + source dirs today, so any third-party call is unresolvable).
+  11. A content hash / signature anchor per chunk would make ApplyMain patching resilient
+  to line drift (startLine/endLine go stale the moment a file edits above the method).
+
+  ---
+  Suggested priority order
+
+  ┌─────┬─────────────────────────────────────┬────────┬─────────────────────────────┐
+  │  #  │               Change                │ Effort │           Payoff            │
+  ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
+  │ 1   │ Unify method-ID format (chunk vs    │ M      │ Critical — unbreaks the     │
+  │     │ edge)                               │        │ whole graph                 │
+  ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
+  │ 2   │ Correct nested-class FQNs           │ S      │ Fixes ID collisions         │
+  ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
+  │ 4   │ Javadoc as first-class field        │ S      │ High — intent signal        │
+  ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
+  │ 5   │ Callee signature skeletons in chunk │ M      │ High — anti-hallucination   │
+  ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
+  │ 3+6 │ READS/WRITES_FIELD →                │ M      │ High — less noise, smaller  │
+  │     │ relevant-fields-only                │        │ tokens                      │
+  ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
+  │ 7   │ Stop sub-method code splitting      │ M      │ High for refactoring use    │
+  ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
+  │ 8   │ Records/enums/annotations           │ M      │ Coverage                    │
+  ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
+  │ 9   │ Don't lose whole files on parse     │ S      │ Recall                      │
+  │     │ error                               │        │                             │
+  ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
+  │ 10  │ Resolution-rate reporting +         │ S/M    │ Diagnoses 1 & root cause    │
+  │     │ classpath solver                    │        │                             │
+  └─────┴─────────────────────────────────────┴────────┴─────────────────────────────┘
+
+  The thread running through all of this: #1 is the keystone. Most of the per-chunk
+  enrichment ideas (callee skeletons, navigable CALLED_BY, field-level traversal) only
+  pay off once edge targets actually match chunk IDs. I'd fix that first, add a
+  resolution-rate metric to prove it's fixed, then layer on the context-enrichment.
+
+  Want me to implement any of these? I'd suggest starting with #1 + #10 as one focused
+  change (introduce a shared MethodId canonicalizer and a resolution-rate report), which
+  I can do and verify against your existing eval-fixtures/EvalMain harness.

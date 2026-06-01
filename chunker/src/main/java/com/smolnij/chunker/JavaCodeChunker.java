@@ -1,6 +1,7 @@
 package com.smolnij.chunker;
 
 import com.smolnij.chunker.callgraph.CallGraphExtractor;
+import com.smolnij.chunker.callgraph.MethodId;
 import com.smolnij.chunker.filter.BoilerplateDetector;
 import com.smolnij.chunker.model.CodeChunk;
 import com.smolnij.chunker.model.graph.ClassNode;
@@ -24,6 +25,7 @@ import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
+import com.github.javaparser.symbolsolver.resolution.typesolvers.JarTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.ReflectionTypeSolver;
 
@@ -69,6 +71,20 @@ public class JavaCodeChunker {
      * @param maxTokensPerChunk  max tokens per chunk before splitting (e.g., 512)
      */
     public JavaCodeChunker(Path repoRoot, List<Path> sourceRoots, int maxTokensPerChunk) {
+        this(repoRoot, sourceRoots, maxTokensPerChunk, List.of());
+    }
+
+    /**
+     * @param repoRoot           root of the repository
+     * @param sourceRoots        list of source directories relative to repoRoot
+     *                           (e.g., ["src/main/java", "src/test/java"])
+     * @param maxTokensPerChunk  max tokens per chunk before splitting (e.g., 512)
+     * @param classpath          dependency jars (or directories containing jars)
+     *                           to add to the type solver so calls into external
+     *                           libraries resolve to fully-qualified targets
+     *                           instead of dead-end unresolved edges
+     */
+    public JavaCodeChunker(Path repoRoot, List<Path> sourceRoots, int maxTokensPerChunk, List<Path> classpath) {
         this.repoRoot = repoRoot.toAbsolutePath().normalize();
         this.sourceRoots = sourceRoots;
         this.callGraph = new CallGraphExtractor();
@@ -90,6 +106,12 @@ public class JavaCodeChunker {
             typeSolver.add(new JavaParserTypeSolver(this.repoRoot));
         }
 
+        // ── Dependency jars: lets calls into third-party libraries resolve ──
+        int jarCount = addClasspathSolvers(typeSolver, classpath);
+        if (jarCount > 0) {
+            System.out.println("Type solver: added " + jarCount + " dependency jar(s) from chunker.classpath.");
+        }
+
         JavaSymbolSolver symbolSolver = new JavaSymbolSolver(typeSolver);
         ParserConfiguration config = new ParserConfiguration()
             .setSymbolResolver(symbolSolver)
@@ -99,6 +121,44 @@ public class JavaCodeChunker {
 
         // Now that the project-configured parser is available, create TokenCounter
         this.tokenCounter = new TokenCounter(maxTokensPerChunk, this.parser);
+    }
+
+    /**
+     * Register dependency jars with the type solver. Each entry may be a {@code .jar}
+     * file or a directory; directories are scanned recursively for {@code .jar} files.
+     * Failures to read an individual jar are logged and skipped (best-effort).
+     *
+     * @return the number of jars successfully added
+     */
+    private static int addClasspathSolvers(CombinedTypeSolver typeSolver, List<Path> classpath) {
+        int count = 0;
+        for (Path entry : classpath) {
+            if (entry == null) continue;
+            try {
+                if (Files.isRegularFile(entry) && entry.toString().endsWith(".jar")) {
+                    typeSolver.add(new JarTypeSolver(entry));
+                    count++;
+                } else if (Files.isDirectory(entry)) {
+                    List<Path> jars;
+                    try (var stream = Files.walk(entry)) {
+                        jars = stream.filter(pp -> pp.toString().endsWith(".jar")).collect(Collectors.toList());
+                    }
+                    for (Path jar : jars) {
+                        try {
+                            typeSolver.add(new JarTypeSolver(jar));
+                            count++;
+                        } catch (IOException ex) {
+                            System.err.println("WARN: could not add jar to type solver: " + jar + " — " + ex.getMessage());
+                        }
+                    }
+                } else {
+                    System.err.println("WARN: classpath entry not found or not a jar/dir: " + entry);
+                }
+            } catch (IOException ex) {
+                System.err.println("WARN: could not add classpath entry to type solver: " + entry + " — " + ex.getMessage());
+            }
+        }
+        return count;
     }
 
     /**
@@ -194,10 +254,27 @@ public class JavaCodeChunker {
         }
 
         // ── Phase 3: Back-patch "calledBy" edges from the call graph ──
+        // Callers reference the base method FQN (no "#partN"), so split-method
+        // part chunks must be looked up by their base id too.
         for (CodeChunk chunk : allChunks) {
-            Set<String> callers = callGraph.getCallersOf(chunk.getChunkId());
+            String baseFqn = chunk.getChunkId().split("#part")[0];
+            Set<String> callers = callGraph.getCallersOf(baseFqn);
             if (!callers.isEmpty()) {
                 chunk.setCalledBy(new ArrayList<>(callers));
+            }
+        }
+
+        if (reportSummary) {
+            int resolved = callGraph.getResolvedCallCount();
+            int unresolved = callGraph.getUnresolvedCallCount();
+            int totalCalls = resolved + unresolved;
+            double rate = totalCalls == 0 ? 0.0 : (100.0 * resolved / totalCalls);
+            System.out.printf(
+                "Call resolution: %d/%d resolved (%.1f%%), %d unresolved dead-end edges.%n",
+                resolved, totalCalls, rate, unresolved);
+            if (unresolved > 0) {
+                System.out.println("  (high unresolved counts usually mean dependency jars are missing — "
+                    + "set chunker.classpath to point at them.)");
             }
         }
 
@@ -425,12 +502,12 @@ public class JavaCodeChunker {
             String methodName = method.getNameAsString();
             String methodSig = method.getDeclarationAsString(true, true, true);
 
-            // Build fully qualified method identifier
-            String methodFqn = fqClassName + "#" + methodName + "("
-                + method.getParameters().stream()
-                    .map(p -> p.getTypeAsString())
-                    .collect(Collectors.joining(", "))
-                + ")";
+            // Build fully qualified method identifier (canonical form shared with
+            // the call-graph edge targets — see MethodId).
+            String methodFqn = MethodId.of(fqClassName, methodName,
+                method.getParameters().stream()
+                    .map(p -> p.isVarArgs() ? p.getTypeAsString() + "[]" : p.getTypeAsString())
+                    .collect(Collectors.toList()));
 
             // Method annotations
             List<String> methodAnnotations = method.getAnnotations().stream()
@@ -505,11 +582,10 @@ public class JavaCodeChunker {
             String methodName = "<init>";
             String methodSig = ctor.getDeclarationAsString(true, true, true);
 
-            String methodFqn = fqClassName + "#<init>("
-                + ctor.getParameters().stream()
-                    .map(p -> p.getTypeAsString())
-                    .collect(Collectors.joining(", "))
-                + ")";
+            String methodFqn = MethodId.of(fqClassName, "<init>",
+                ctor.getParameters().stream()
+                    .map(p -> p.isVarArgs() ? p.getTypeAsString() + "[]" : p.getTypeAsString())
+                    .collect(Collectors.toList()));
 
             List<String> methodAnnotations = ctor.getAnnotations().stream()
                 .map(AnnotationExpr::toString)

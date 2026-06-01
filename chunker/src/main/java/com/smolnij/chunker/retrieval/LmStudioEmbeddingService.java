@@ -31,9 +31,8 @@ import java.util.concurrent.TimeUnit;
  * POST /v1/embeddings
  * {
  *
- * TODO CHANGE TO "Nomic Embed Code 7B"
  *
- *   "model": "text-embedding-nomic-embed-text-v1.5",
+ *   "model": "text-embedding-nomic-embed-text-v1.5-embedding",
  *   "input": ["text1", "text2"]
  * }
  *

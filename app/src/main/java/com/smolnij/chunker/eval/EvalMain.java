@@ -408,19 +408,20 @@ public final class EvalMain {
         if (gold == null || gold.isBlank()) return;
         String picked = res.anchorId();
         if (picked == null) return;
-        // Normalize using the same rules the metric scorer applies (drop #partN, then
-        // strip the parameter list for a loose match). Without this the trace contradicts
-        // the metric — e.g. picked=Foo#run(String)#part1 vs gold=Foo#run(String) reports
-        // anchor.mismatch even though retrieval.anchor.hit PASSes.
-        String pickedNorm = RetrievalScorer.stripPartSuffix(picked);
-        String goldNorm = RetrievalScorer.stripPartSuffix(gold);
+        // Normalize using the same rules the metric scorer applies (drop #partN and
+        // canonicalize the parameter list, then strip the parameter list for a loose
+        // match). Without this the trace contradicts the metric — e.g.
+        // picked=Foo#run(String)#part1 vs gold=Foo#run(String) reports anchor.mismatch
+        // even though retrieval.anchor.hit PASSes.
+        String pickedNorm = RetrievalScorer.normalizeId(picked);
+        String goldNorm = RetrievalScorer.normalizeId(gold);
         if (goldNorm.equals(pickedNorm)) return;
         if (RetrievalScorer.stripParamList(goldNorm).equals(RetrievalScorer.stripParamList(pickedNorm))) return;
 
         int pickedRank = -1;
         int goldRank = -1;
         for (RetrievedChunk c : res.retrieved()) {
-            String cid = RetrievalScorer.stripPartSuffix(c.chunkId());
+            String cid = RetrievalScorer.normalizeId(c.chunkId());
             if (pickedRank < 0 && cid.equals(pickedNorm)) pickedRank = c.rank();
             if (goldRank < 0 && cid.equals(goldNorm)) goldRank = c.rank();
         }
@@ -428,7 +429,7 @@ public final class EvalMain {
         if (goldRank < 0) {
             String goldLoose = RetrievalScorer.stripParamList(goldNorm);
             for (RetrievedChunk c : res.retrieved()) {
-                String cid = RetrievalScorer.stripParamList(RetrievalScorer.stripPartSuffix(c.chunkId()));
+                String cid = RetrievalScorer.stripParamList(RetrievalScorer.normalizeId(c.chunkId()));
                 if (cid.equals(goldLoose)) {
                     goldRank = c.rank();
                     break;

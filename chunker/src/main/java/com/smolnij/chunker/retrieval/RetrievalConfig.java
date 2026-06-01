@@ -30,8 +30,10 @@ public class RetrievalConfig {
     private int fanInThreshold = 3;
 
     private String embeddingUrl = "http://localhost:1234/v1/embeddings";
-    private String embeddingModel = "text-embedding-nomic-embed-text-v1.5";
+//    private String embeddingModel = "text-embedding-nomic-embed-text-v1.5";
+    private String embeddingModel = "text-embedding-nomic-embed-text-v1.5-embedding";
     private int embeddingDimensions = 768;
+//    private int embeddingDimensions = 1536;
 
     private String vectorIndexName = "method_embeddings";
     private int vectorSearchK = 20;

@@ -1,5 +1,6 @@
 package com.smolnij.chunker.eval.scorer;
 
+import com.smolnij.chunker.callgraph.MethodId;
 import com.smolnij.chunker.eval.fixture.Fixture;
 import com.smolnij.chunker.eval.result.RetrievedChunk;
 import com.smolnij.chunker.eval.result.RunResult;
@@ -14,17 +15,24 @@ import java.util.Set;
  * Retrieval-quality metrics: precision@K, recall@K, anchor-hit, MRR.
  * K is the actual retrieved list size (bounded by fixture.topK if set).
  *
- * <p>chunkIds are normalized before set comparison to absorb two known sources
+ * <p>chunkIds are normalized before set comparison to absorb three known sources
  * of lexical drift between the chunker and hand-written fixture gold lists:
  * <ul>
  *   <li>{@code #partN} suffixes appended by {@link com.smolnij.chunker.tokenizer.TokenCounter}
  *       when a method exceeds the per-chunk token budget.</li>
- *   <li>Parameter-list drift (e.g. JavaParser surfaces a parameter as
- *       {@code Node} where the gold list says {@code MethodDeclaration}).</li>
+ *   <li>Parameter <em>format</em> drift — qualified/generic-bearing param types
+ *       in gold lists ({@code expandForAnalyzer(List<String>, StagedPlanIndex)})
+ *       vs. the erased simple-name form the current chunker emits
+ *       ({@code expandForAnalyzer(List, StagedPlanIndex)}). Both sides are run
+ *       through {@link MethodId#canonicalize} so strict matching stays meaningful.</li>
+ *   <li>Parameter <em>type</em> drift (e.g. JavaParser surfaces a parameter as
+ *       {@code Node} where the gold list says {@code MethodDeclaration}) — a genuine
+ *       disagreement canonicalization cannot fix.</li>
  * </ul>
  * The {@code @K} metrics use strict (parameter-aware) matching after part-suffix
- * stripping; a parallel pair of {@code _loose} metrics drops the parameter list
- * so that param-type drift does not silently flip every metric to FAIL.
+ * stripping and param canonicalization; a parallel pair of {@code _loose} metrics
+ * drops the parameter list entirely so that residual type drift does not silently
+ * flip every metric to FAIL.
  */
 public final class RetrievalScorer implements Scorer {
 
@@ -60,7 +68,7 @@ public final class RetrievalScorer implements Scorer {
         Set<String> goldStrict = new HashSet<>();
         Set<String> goldLoose = new HashSet<>();
         for (String g : gold) {
-            String n = stripPartSuffix(g);
+            String n = normalizeId(g);
             goldStrict.add(n);
             goldLoose.add(stripParamList(n));
         }
@@ -69,7 +77,7 @@ public final class RetrievalScorer implements Scorer {
         Set<String> retrievedLoose = new HashSet<>();
         List<String> retrievedStrictOrdered = new ArrayList<>();
         for (RetrievedChunk rc : retrieved) {
-            String n = stripPartSuffix(rc.chunkId());
+            String n = normalizeId(rc.chunkId());
             retrievedStrict.add(n);
             retrievedLoose.add(stripParamList(n));
             retrievedStrictOrdered.add(n);
@@ -126,8 +134,8 @@ public final class RetrievalScorer implements Scorer {
         if (expected == null || expected.isBlank()) {
             return Metric.notRun("retrieval.anchor.hit", "no gold.anchor");
         }
-        String expectedNorm = stripPartSuffix(expected);
-        String actualNorm = stripPartSuffix(result.anchorId());
+        String expectedNorm = normalizeId(expected);
+        String actualNorm = normalizeId(result.anchorId());
         boolean strict = expectedNorm.equals(actualNorm);
         boolean loose = !strict
                 && actualNorm != null
@@ -141,6 +149,18 @@ public final class RetrievalScorer implements Scorer {
         }
         return Metric.fail("retrieval.anchor.hit", 0.0,
                 "expected " + expected + ", got " + result.anchorId());
+    }
+
+    /**
+     * Normalize a chunk id for strict comparison: drop the {@code #partN} split
+     * suffix, then re-render the parameter list through {@link MethodId#canonicalize}
+     * so that qualified/generic param forms in fixture gold lists
+     * ({@code expandForAnalyzer(List<String>, StagedPlanIndex)}) match the erased
+     * simple-name form the current chunker emits
+     * ({@code expandForAnalyzer(List, StagedPlanIndex)}).
+     */
+    public static String normalizeId(String chunkId) {
+        return MethodId.canonicalize(stripPartSuffix(chunkId));
     }
 
     /** Drop a trailing {@code #partN} segment added by the token-aware splitter. */

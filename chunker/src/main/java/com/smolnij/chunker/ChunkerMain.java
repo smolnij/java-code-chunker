@@ -56,6 +56,12 @@ public class ChunkerMain {
         List<Path> sourceRoots = new ArrayList<>(sourceRootStrings.size());
         for (String s : sourceRootStrings) sourceRoots.add(Path.of(s));
 
+        // Optional dependency jars (or dirs of jars) for the symbol-solver type
+        // path — improves call-edge resolution into third-party libraries.
+        List<String> classpathStrings = PropertiesLoader.getList(p, "chunker.classpath", List.of());
+        List<Path> classpath = new ArrayList<>(classpathStrings.size());
+        for (String s : classpathStrings) classpath.add(Path.of(s));
+
         System.out.println("╔══════════════════════════════════════════════════════╗");
         System.out.println("║  Java Code Chunker for LM-Studio                    ║");
         System.out.println("║  Graph-Aware Hierarchical Indexing                   ║");
@@ -65,9 +71,12 @@ public class ChunkerMain {
         System.out.println("Output:       " + outputDir.toAbsolutePath());
         System.out.println("Max tokens:   " + maxTokens);
         System.out.println("Source roots: " + sourceRoots);
+        if (!classpath.isEmpty()) {
+            System.out.println("Classpath:    " + classpath);
+        }
         System.out.println();
 
-        JavaCodeChunker chunker = new JavaCodeChunker(repoRoot, sourceRoots, maxTokens);
+        JavaCodeChunker chunker = new JavaCodeChunker(repoRoot, sourceRoots, maxTokens, classpath);
         List<CodeChunk> chunks = chunker.process();
 
         System.out.println();
