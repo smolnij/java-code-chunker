@@ -11,6 +11,7 @@ import com.smolnij.chunker.store.Neo4jGraphStore;
 import com.smolnij.chunker.util.Errors;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonObject;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -143,6 +144,27 @@ public class ChunkerMain {
         System.out.println("Total: " + index.getPackages().size() + " packages, "
             + totalClasses + " classes, "
             + totalMethods + " methods");
+
+        int resolved = chunker.getResolvedCallCount();
+        int unresolved = chunker.getUnresolvedCallCount();
+        int totalCalls = resolved + unresolved;
+        double resolutionRate = totalCalls == 0 ? 0.0 : (100.0 * resolved / totalCalls);
+        System.out.printf("Call resolution: %d/%d resolved (%.1f%%), %d unresolved dead-end edges.%n",
+            resolved, totalCalls, resolutionRate, unresolved);
+
+        // Persist run statistics (counts + symbol-resolution rate) as a machine-readable artifact.
+        Path statsFile = outputDir.resolve("stats.json");
+        JsonObject stats = new JsonObject();
+        stats.addProperty("packages", index.getPackages().size());
+        stats.addProperty("classes", totalClasses);
+        stats.addProperty("methods", totalMethods);
+        stats.addProperty("chunks", chunks.size());
+        stats.addProperty("resolvedCalls", resolved);
+        stats.addProperty("unresolvedCalls", unresolved);
+        stats.addProperty("totalCalls", totalCalls);
+        stats.addProperty("resolutionRate", resolutionRate);
+        Files.writeString(statsFile, gson.toJson(stats));
+        System.out.println("✓ Wrote " + statsFile.toAbsolutePath());
 
         // ═══════════════════════════════════════════════════════════════
         // Neo4j Persistence (optional)

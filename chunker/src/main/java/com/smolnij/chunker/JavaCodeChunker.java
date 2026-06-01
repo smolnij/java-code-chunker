@@ -350,6 +350,16 @@ public class JavaCodeChunker {
         return graphModel;
     }
 
+    /** Method calls resolved to a fully-qualified target during the last {@link #process()} run. */
+    public int getResolvedCallCount() {
+        return callGraph.getResolvedCallCount();
+    }
+
+    /** Method calls that fell back to an unresolved (dead-end) representation. */
+    public int getUnresolvedCallCount() {
+        return callGraph.getUnresolvedCallCount();
+    }
+
     /**
      * Parse a single Java file and extract method-level chunks.
      */
