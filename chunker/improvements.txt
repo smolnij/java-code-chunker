@@ -126,9 +126,9 @@
   │  #  │               Change                │ Effort │           Payoff            │
   ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
   │ 1   │ Unify method-ID format (chunk vs    │ M      │ Critical — unbreaks the     │
-  │     │ edge)                               │        │ whole graph                 │
+  │ done│ edge)                               │        │ whole graph                 │
   ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
-  │ 2   │ Correct nested-class FQNs           │ S      │ Fixes ID collisions         │
+  │ 2don| Correct nested-class FQNs           │ S      │ Fixes ID collisions         │
   ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
   │ 4   │ Javadoc as first-class field        │ S      │ High — intent signal        │
   ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
@@ -145,7 +145,7 @@
   │     │ error                               │        │                             │
   ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
   │ 10  │ Resolution-rate reporting +         │ S/M    │ Diagnoses 1 & root cause    │
-  │     │ classpath solver                    │        │                             │
+  │done │ classpath solver                    │        │                             │
   └─────┴─────────────────────────────────────┴────────┴─────────────────────────────┘
 
   The thread running through all of this: #1 is the keystone. Most of the per-chunk

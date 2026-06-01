@@ -15,11 +15,13 @@ import com.github.javaparser.ParseResult;
 import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.ImportDeclaration;
+import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.PackageDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.ConstructorDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
+import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.body.VariableDeclarator;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
@@ -394,6 +396,31 @@ public class JavaCodeChunker {
     }
 
     /**
+     * Canonical FQN for a type declaration, byte-matching the form
+     * {@link com.smolnij.chunker.callgraph.CallGraphExtractor} emits for call-edge
+     * targets ({@code resolved.declaringType().getQualifiedName()}). Nested types use
+     * dot separators ({@code com.x.Outer.Inner}), so a nested class no longer collides
+     * with a top-level class of the same simple name, and its chunk id matches the
+     * call-edge targets that reference it.
+     */
+    private String classFqn(TypeDeclaration<?> decl, String packageName) {
+        try {
+            // Same API the resolver uses for edge targets — guarantees a byte-match.
+            return decl.resolve().getQualifiedName();
+        } catch (Exception e) {
+            // Fallback: walk enclosing TypeDeclaration ancestors, dot-joined.
+            List<String> parts = new ArrayList<>();
+            Node n = decl;
+            while (n != null) {
+                if (n instanceof TypeDeclaration<?> td) parts.add(0, td.getNameAsString());
+                n = n.getParentNode().orElse(null);
+            }
+            String nested = String.join(".", parts);
+            return packageName.isEmpty() ? nested : packageName + "." + nested;
+        }
+    }
+
+    /**
      * Process a single class declaration: extract ClassNode, FieldNodes, and all methods as individual chunks.
      */
     private void processClass(ClassOrInterfaceDeclaration classDecl,
@@ -403,7 +430,7 @@ public class JavaCodeChunker {
                                CompilationUnit cu) {
 
         String className = classDecl.getNameAsString();
-        String fqClassName = packageName.isEmpty() ? className : packageName + "." + className;
+        String fqClassName = classFqn(classDecl, packageName);
 
         // Check if the entire class is a DTO
         boolean isDto = boilerplateDetector.isDtoClass(classDecl);
@@ -460,10 +487,9 @@ public class JavaCodeChunker {
         }
 
         // ── INNER_CLASS_OF: if this class is nested, emit inner->outer edge
-        classDecl.findAncestor(ClassOrInterfaceDeclaration.class).ifPresent(outer -> {
-            String outerFq = packageName.isEmpty() ? outer.getNameAsString() : packageName + "." + outer.getNameAsString();
-            graphModel.addEdge(new GraphEdge(GraphEdge.EdgeType.INNER_CLASS_OF, fqClassName, outerFq));
-        });
+        classDecl.findAncestor(ClassOrInterfaceDeclaration.class).ifPresent(outer ->
+            graphModel.addEdge(new GraphEdge(
+                GraphEdge.EdgeType.INNER_CLASS_OF, fqClassName, classFqn(outer, packageName))));
 
         // ── CONTAINS edge: package → class ──
         if (!packageName.isEmpty()) {
