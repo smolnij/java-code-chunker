@@ -129,6 +129,10 @@ public class Neo4jGraphStore implements AutoCloseable {
         List<String> chunkIds = new ArrayList<>();
         for (CodeChunk chunk : methods) {
             StringBuilder sb = new StringBuilder();
+            // Weight method Javadoc (intent) into the embedding when present.
+            if (chunk.getMethodJavadoc() != null && !chunk.getMethodJavadoc().isBlank()) {
+                sb.append(chunk.getMethodJavadoc()).append("\n");
+            }
             sb.append(chunk.getClassName()).append(" ");
             sb.append(chunk.getMethodSignature()).append("\n");
             sb.append(chunk.getCode());

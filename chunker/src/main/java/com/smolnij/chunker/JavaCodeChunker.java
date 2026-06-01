@@ -25,6 +25,7 @@ import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.body.VariableDeclarator;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
+import com.github.javaparser.javadoc.Javadoc;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JarTypeSolver;
@@ -449,6 +450,9 @@ public class JavaCodeChunker {
             .map(String::trim)
             .collect(Collectors.toList());
 
+        // Class-level Javadoc (cleaned intent text); shared across all chunks of this class
+        String classJavadoc = classDecl.getJavadoc().map(Javadoc::toText).map(String::trim).orElse(null);
+
         // ═══════════════════════════════════════════════════════════════
         // ── Build ClassNode for the graph model ──
         // ═══════════════════════════════════════════════════════════════
@@ -550,6 +554,9 @@ public class JavaCodeChunker {
                 .map(AnnotationExpr::toString)
                 .collect(Collectors.toList());
 
+            // Method Javadoc (cleaned intent text); same value on every part
+            String methodJavadoc = method.getJavadoc().map(Javadoc::toText).map(String::trim).orElse(null);
+
             // Source code
             String code = method.toString();
             int startLine = method.getBegin().map(p -> p.line).orElse(0);
@@ -582,10 +589,12 @@ public class JavaCodeChunker {
                 chunk.setClassSignature(classSignature);
                 chunk.setClassAnnotations(classAnnotations);
                 chunk.setFieldDeclarations(fields);
+                chunk.setClassJavadoc(classJavadoc);
 
                 chunk.setMethodName(methodName);
                 chunk.setMethodSignature(methodSig);
                 chunk.setMethodAnnotations(methodAnnotations);
+                chunk.setMethodJavadoc(methodJavadoc);
                 chunk.setStartLine(startLine);
                 chunk.setEndLine(endLine);
 
@@ -627,6 +636,8 @@ public class JavaCodeChunker {
                 .map(AnnotationExpr::toString)
                 .collect(Collectors.toList());
 
+            String methodJavadoc = ctor.getJavadoc().map(Javadoc::toText).map(String::trim).orElse(null);
+
             String code = ctor.toString();
             int startLine = ctor.getBegin().map(p -> p.line).orElse(0);
             int endLine = ctor.getEnd().map(p -> p.line).orElse(0);
@@ -655,10 +666,12 @@ public class JavaCodeChunker {
                 chunk.setClassSignature(classSignature);
                 chunk.setClassAnnotations(classAnnotations);
                 chunk.setFieldDeclarations(fields);
+                chunk.setClassJavadoc(classJavadoc);
 
                 chunk.setMethodName(methodName);
                 chunk.setMethodSignature(methodSig);
                 chunk.setMethodAnnotations(methodAnnotations);
+                chunk.setMethodJavadoc(methodJavadoc);
                 chunk.setStartLine(startLine);
                 chunk.setEndLine(endLine);
 

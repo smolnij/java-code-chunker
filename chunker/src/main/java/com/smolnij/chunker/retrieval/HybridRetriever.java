@@ -626,6 +626,10 @@ public class HybridRetriever {
      */
     private String buildEmbeddingText(CodeChunk chunk) {
         StringBuilder sb = new StringBuilder();
+        // Weight method Javadoc (intent) into the embedding when present.
+        if (chunk.getMethodJavadoc() != null && !chunk.getMethodJavadoc().isBlank()) {
+            sb.append(chunk.getMethodJavadoc()).append("\n");
+        }
         sb.append(chunk.getClassName()).append(" ");
         sb.append(chunk.getMethodSignature()).append("\n");
         sb.append(chunk.getCode());

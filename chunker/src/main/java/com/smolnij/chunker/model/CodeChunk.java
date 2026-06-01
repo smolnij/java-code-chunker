@@ -31,11 +31,13 @@ public class CodeChunk {
     private String classSignature;                   // "public class Foo extends Bar implements Baz"
     private List<String> classAnnotations = new ArrayList<>();
     private List<String> fieldDeclarations = new ArrayList<>(); // non-getter/setter fields
+    private String classJavadoc;                     // cleaned class-level Javadoc (intent); null if none
 
     // ── Method context ──
     private String methodName;
     private String methodSignature;                  // "public void process(Record r)"
     private List<String> methodAnnotations = new ArrayList<>();
+    private String methodJavadoc;                    // cleaned method/constructor Javadoc (intent); null if none
     private int startLine;
     private int endLine;
 
@@ -130,6 +132,14 @@ public class CodeChunk {
         this.fieldDeclarations = fieldDeclarations;
     }
 
+    public String getClassJavadoc() {
+        return classJavadoc;
+    }
+
+    public void setClassJavadoc(String classJavadoc) {
+        this.classJavadoc = classJavadoc;
+    }
+
     public String getMethodName() {
         return methodName;
     }
@@ -152,6 +162,14 @@ public class CodeChunk {
 
     public void setMethodAnnotations(List<String> methodAnnotations) {
         this.methodAnnotations = methodAnnotations;
+    }
+
+    public String getMethodJavadoc() {
+        return methodJavadoc;
+    }
+
+    public void setMethodJavadoc(String methodJavadoc) {
+        this.methodJavadoc = methodJavadoc;
     }
 
     public int getStartLine() {
@@ -258,6 +276,17 @@ public class CodeChunk {
      *   &lt;actual code&gt;
      * </pre>
      */
+    /** Indent each line of a (possibly multi-line) Javadoc block by two spaces for readable output. */
+    private static String indentBlock(String text) {
+        StringBuilder out = new StringBuilder();
+        for (String line : text.split("\n", -1)) {
+            out.append("  ").append(line).append("\n");
+        }
+        // trim the trailing newline added by the loop; callers add their own spacing
+        if (out.length() > 0) out.setLength(out.length() - 1);
+        return out.toString();
+    }
+
     public String toPromptFormat() {
         StringBuilder sb = new StringBuilder();
         sb.append("Class: ").append(className).append("\n");
@@ -312,6 +341,9 @@ public class CodeChunk {
         if (!classAnnotations.isEmpty()) {
             sb.append("Class Annotations: ").append(String.join(", ", classAnnotations)).append("\n");
         }
+        if (classJavadoc != null && !classJavadoc.isBlank()) {
+            sb.append("Class Javadoc:\n").append(indentBlock(classJavadoc)).append("\n");
+        }
         if (!fieldDeclarations.isEmpty()) {
             sb.append("Fields:\n");
             fieldDeclarations.forEach(f -> sb.append("  - ").append(f).append("\n"));
@@ -321,6 +353,9 @@ public class CodeChunk {
         sb.append("  - ").append(methodSignature).append("\n");
         if (!methodAnnotations.isEmpty()) {
             sb.append("  Annotations: ").append(String.join(", ", methodAnnotations)).append("\n");
+        }
+        if (methodJavadoc != null && !methodJavadoc.isBlank()) {
+            sb.append("  Javadoc:\n").append(indentBlock(methodJavadoc)).append("\n");
         }
         sb.append("  Lines: ").append(startLine).append("-").append(endLine).append("\n");
         if (totalParts > 1) {
