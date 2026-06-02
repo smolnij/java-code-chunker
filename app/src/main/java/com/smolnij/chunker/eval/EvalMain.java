@@ -70,6 +70,9 @@ public final class EvalMain {
         try {
             Path dir = cfg.fixturesDir != null ? cfg.fixturesDir : Path.of(DEFAULT_FIXTURES_DIR);
             fixtures = FixtureLoader.loadAll(dir);
+//            Fixture fixture = fixtures.get(0);
+//            fixtures.clear();
+//            fixtures.add(fixture);
         } catch (Exception e) {
             System.err.println("ERROR: failed to load fixtures — " + Errors.format(e));
             e.printStackTrace();

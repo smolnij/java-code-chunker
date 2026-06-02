@@ -267,6 +267,28 @@ public class JavaCodeChunker {
             }
         }
 
+        // ── Phase 3b: Attach each neighbor's full signature (improvements.txt #5) ──
+        // So a chunk shows "Calls: com.x.Repo#save(User) ⇒ public User save(User u)" instead
+        // of a bare FQN the LLM must guess the contract for. Built from every known method
+        // (including filtered boilerplate getters) so neighbor coverage is maximal.
+        Map<String, String> sigByBaseFqn = new HashMap<>();
+        for (CodeChunk chunk : allChunks) {
+            String baseFqn = chunk.getChunkId().split("#part")[0];
+            sigByBaseFqn.putIfAbsent(baseFqn, chunk.getMethodSignature());
+        }
+        for (CodeChunk chunk : allChunks) {
+            Map<String, String> neighborSigs = new LinkedHashMap<>();
+            for (String callee : chunk.getCalls()) {
+                String sig = sigByBaseFqn.get(callee);
+                if (sig != null) neighborSigs.put(callee, sig);
+            }
+            for (String caller : chunk.getCalledBy()) {
+                String sig = sigByBaseFqn.get(caller);
+                if (sig != null) neighborSigs.put(caller, sig);
+            }
+            chunk.setNeighborSignatures(neighborSigs);
+        }
+
         if (reportSummary) {
             int resolved = callGraph.getResolvedCallCount();
             int unresolved = callGraph.getUnresolvedCallCount();

@@ -763,6 +763,13 @@ public class Neo4jGraphStore implements AutoCloseable {
             props.put("classAnnotations", chunk.getClassAnnotations());
             props.put("fieldDeclarations", chunk.getFieldDeclarations());
             props.put("imports", chunk.getImports());
+            props.put("calls", chunk.getCalls());
+            props.put("calledBy", chunk.getCalledBy());
+            // Flatten the neighbor-signature map to a string array (Neo4j props can't hold
+            // maps): "<neighborFqn><signature>".  never appears in FQNs/sigs.
+            List<String> neighborSigs = new ArrayList<>();
+            chunk.getNeighborSignatures().forEach((fqn, sig) -> neighborSigs.add(fqn + "" + sig));
+            props.put("neighborSignatures", neighborSigs);
             batch.add(props);
         }
 
@@ -785,7 +792,10 @@ public class Neo4jGraphStore implements AutoCloseable {
             "    m.methodAnnotations = row.methodAnnotations, " +
             "    m.classAnnotations = row.classAnnotations, " +
             "    m.fieldDeclarations = row.fieldDeclarations, " +
-            "    m.imports = row.imports",
+            "    m.imports = row.imports, " +
+            "    m.calls = row.calls, " +
+            "    m.calledBy = row.calledBy, " +
+            "    m.neighborSignatures = row.neighborSignatures",
             batch, "Method"
         );
     }

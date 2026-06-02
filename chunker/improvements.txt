@@ -130,9 +130,9 @@
   ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
   │ 2don| Correct nested-class FQNs           │ S      │ Fixes ID collisions         │
   ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
-  │ 4   │ Javadoc as first-class field        │ S      │ High — intent signal        │
+  │ 4 d │ Javadoc as first-class field        │ S      │ High — intent signal        │
   ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
-  │ 5   │ Callee signature skeletons in chunk │ M      │ High — anti-hallucination   │
+  │ 5 d │ Callee signature skeletons in chunk │ M      │ High — anti-hallucination   │
   ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
   │ 3+6 │ READS/WRITES_FIELD →                │ M      │ High — less noise, smaller  │
   │     │ relevant-fields-only                │        │ tokens                      │

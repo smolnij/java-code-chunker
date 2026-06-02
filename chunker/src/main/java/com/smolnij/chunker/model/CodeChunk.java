@@ -1,7 +1,9 @@
 package com.smolnij.chunker.model;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Represents one indexed code chunk — one method (or sub-method fragment)
@@ -48,6 +50,12 @@ public class CodeChunk {
     // ── Call graph edges (for graph-aware retrieval) ──
     private List<String> calls = new ArrayList<>();      // FQ method calls made FROM this method
     private List<String> calledBy = new ArrayList<>();   // FQ methods that call THIS method
+
+    // Neighbor base-FQN → that neighbor's full method signature, for every callee/caller
+    // that is itself an indexed method. Lets the model see each neighbor's real contract
+    // (return type + params) instead of guessing from a bare FQN. External (library) calls
+    // have no entry. Keyed by base FQN (no "#partN").
+    private Map<String, String> neighborSignatures = new LinkedHashMap<>();
 
     // ── Chunking metadata ──
     private int partIndex = 0;                       // 0 = whole method; 1..N = sub-chunks
@@ -220,6 +228,14 @@ public class CodeChunk {
         this.calledBy = calledBy;
     }
 
+    public Map<String, String> getNeighborSignatures() {
+        return neighborSignatures;
+    }
+
+    public void setNeighborSignatures(Map<String, String> neighborSignatures) {
+        this.neighborSignatures = neighborSignatures;
+    }
+
     public int getPartIndex() {
         return partIndex;
     }
@@ -285,6 +301,16 @@ public class CodeChunk {
         // trim the trailing newline added by the loop; callers add their own spacing
         if (out.length() > 0) out.setLength(out.length() - 1);
         return out.toString();
+    }
+
+    /**
+     * Inline suffix rendering a neighbor's full signature when it is an indexed method,
+     * e.g. {@code "  ⇒  public User save(User u)"}. Empty for external (library) calls.
+     */
+    private String neighborSig(String neighborFqn) {
+        if (neighborSignatures == null) return "";
+        String sig = neighborSignatures.get(neighborFqn);
+        return (sig == null || sig.isBlank()) ? "" : "  ⇒  " + sig;
     }
 
     public String toPromptFormat() {
@@ -365,12 +391,12 @@ public class CodeChunk {
 
         if (!calls.isEmpty()) {
             sb.append("\nCalls:\n");
-            calls.forEach(c -> sb.append("  - ").append(c).append("\n"));
+            calls.forEach(c -> sb.append("  - ").append(c).append(neighborSig(c)).append("\n"));
         }
 
         if (!calledBy.isEmpty()) {
             sb.append("\nCalled By:\n");
-            calledBy.forEach(c -> sb.append("  - ").append(c).append("\n"));
+            calledBy.forEach(c -> sb.append("  - ").append(c).append(neighborSig(c)).append("\n"));
         }
 
         sb.append("\nCode:\n");

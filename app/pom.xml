@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.smolnij</groupId>
+        <artifactId>java-code-chunker</artifactId>
+        <version>1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>app</artifactId>
+    <packaging>jar</packaging>
+
+    <name>Java Code Chunker (refactoring/eval apps)</name>
+    <description>
+        LLM-driven mains built on top of the chunker module: RefactorMain, AgentRefactorMain,
+        RalphMain, SafeLoopMain, DistributedSafeLoopMain, EvalMain, ApplyMain, ReindexInspectMain.
+    </description>
+
+    <dependencies>
+        <!-- Chunking core, model, retrieval, store, config, util (transitively brings
+             javaparser, jtokkit, gson, neo4j-driver, httpclient5, langchain4j-http-client-jdk) -->
+        <dependency>
+            <groupId>com.smolnij</groupId>
+            <artifactId>chunker</artifactId>
+        </dependency>
+
+        <!-- LangChain4j core (AI Services, Tools, Memory) -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j</artifactId>
+        </dependency>
+
+        <!-- LangChain4j OpenAI integration (works with LM-Studio's OpenAI-compatible API) -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-open-ai</artifactId>
+        </dependency>
+
+        <!-- Directly used by refactor/diff, eval, etc. (also transitive via chunker) -->
+        <dependency>
+            <groupId>com.github.javaparser</groupId>
+            <artifactId>javaparser-symbol-solver-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+            <!--
+                Fat JAR bundling the chunker module + all deps so every main is runnable.
+                The manifest main is RefactorMain by default; the other mains are run via
+                `java -cp target/app-1.0-SNAPSHOT.jar com.smolnij.chunker.<pkg>.<Main> <props>`.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.smolnij.chunker.refactor.RefactorMain</mainClass>
+                                </transformer>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

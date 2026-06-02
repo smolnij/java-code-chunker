@@ -1028,6 +1028,16 @@ public class Neo4jGraphReader implements AutoCloseable {
         chunk.setFieldDeclarations(getStrList(node, "fieldDeclarations"));
         chunk.setImports(getStrList(node, "imports"));
 
+        chunk.setCalls(getStrList(node, "calls"));
+        chunk.setCalledBy(getStrList(node, "calledBy"));
+        // Rebuild the neighbor-signature map from its flattened "<fqn><sig>" form.
+        Map<String, String> neighborSigs = new LinkedHashMap<>();
+        for (String entry : getStrList(node, "neighborSignatures")) {
+            int sep = entry.indexOf('');
+            if (sep >= 0) neighborSigs.put(entry.substring(0, sep), entry.substring(sep + 1));
+        }
+        chunk.setNeighborSignatures(neighborSigs);
+
         return chunk;
     }
 
