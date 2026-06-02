@@ -122,6 +122,8 @@
   ---
   Suggested priority order
 
+
+0 MAKE EVERYTHING IN CHUNKER TO RELY ON A SINGLE PROPERTY FILE, RATHER THAN HAVING CONFIG DUPLICATED IN MANY PLACES
   ┌─────┬─────────────────────────────────────┬────────┬─────────────────────────────┐
   │  #  │               Change                │ Effort │           Payoff            │
   ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤

@@ -63,6 +63,9 @@ public class ChunkerMain {
         List<Path> classpath = new ArrayList<>(classpathStrings.size());
         for (String s : classpathStrings) classpath.add(Path.of(s));
 
+        // When true, narrow each chunk's fields/imports to only those the method references.
+        boolean relevantFieldsOnly = PropertiesLoader.getBoolean(p, "chunker.relevantFieldsOnly", false);
+
         System.out.println("╔══════════════════════════════════════════════════════╗");
         System.out.println("║  Java Code Chunker for LM-Studio                    ║");
         System.out.println("║  Graph-Aware Hierarchical Indexing                   ║");
@@ -75,9 +78,13 @@ public class ChunkerMain {
         if (!classpath.isEmpty()) {
             System.out.println("Classpath:    " + classpath);
         }
+        if (relevantFieldsOnly) {
+            System.out.println("Relevant fields only: true (narrowing per-chunk fields + imports)");
+        }
         System.out.println();
 
         JavaCodeChunker chunker = new JavaCodeChunker(repoRoot, sourceRoots, maxTokens, classpath);
+        chunker.setRelevantFieldsOnly(relevantFieldsOnly);
         List<CodeChunk> chunks = chunker.process();
 
         System.out.println();

@@ -36,6 +36,8 @@ import java.io.IOException;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -66,6 +68,11 @@ public class JavaCodeChunker {
 
     // ── Graph model collections (populated during Phase 2) ──
     private final GraphModel graphModel = new GraphModel();
+
+    // When true, narrow each chunk's field declarations + imports to only those the
+    // method actually references (READS_FIELD/WRITES_FIELD + identifier match). Opt-in
+    // via chunker.relevantFieldsOnly; default false keeps the full-context behavior.
+    private boolean relevantFieldsOnly = false;
 
     /**
      * @param repoRoot           root of the repository
@@ -355,6 +362,14 @@ public class JavaCodeChunker {
                 graphModel.addEdge(new GraphEdge(GraphEdge.EdgeType.THROWS, chunkId, t));
             }
 
+            // READS_FIELD / WRITES_FIELD (method -> field)
+            for (String f : callGraph.getReadsFieldFrom(baseMethodFqn)) {
+                graphModel.addEdge(new GraphEdge(GraphEdge.EdgeType.READS_FIELD, chunkId, f));
+            }
+            for (String f : callGraph.getWritesFieldFrom(baseMethodFqn)) {
+                graphModel.addEdge(new GraphEdge(GraphEdge.EdgeType.WRITES_FIELD, chunkId, f));
+            }
+
             // TEST_FOR (test method -> callees)
             for (String t : callGraph.getTestForTargets(baseMethodFqn)) {
                 graphModel.addEdge(new GraphEdge(GraphEdge.EdgeType.TEST_FOR, chunkId, t));
@@ -373,6 +388,16 @@ public class JavaCodeChunker {
      */
     public GraphModel getGraphModel() {
         return graphModel;
+    }
+
+    /**
+     * When enabled, each method chunk carries only the field declarations it
+     * references and only the imports whose simple type name appears in the method
+     * body, instead of the full class field list and file import list. Must be set
+     * before {@link #process()}.
+     */
+    public void setRelevantFieldsOnly(boolean relevantFieldsOnly) {
+        this.relevantFieldsOnly = relevantFieldsOnly;
     }
 
     /** Method calls resolved to a fully-qualified target during the last {@link #process()} run. */
@@ -441,6 +466,70 @@ public class JavaCodeChunker {
             String nested = String.join(".", parts);
             return packageName.isEmpty() ? nested : packageName + "." + nested;
         }
+    }
+
+    /** Matches Java identifiers, used to scan a method body for referenced type names. */
+    private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z_$][A-Za-z0-9_$]*");
+
+    /**
+     * Narrow the full class field-declaration list to only those declarations the
+     * method actually reads or writes (per the READS_FIELD/WRITES_FIELD detection).
+     * A multi-variable declaration is kept when any of its variables is referenced.
+     * Declaration order is preserved.
+     *
+     * @param methodFqn      the method's canonical id
+     * @param fields         full class field declarations (parallel to {@code fieldVarNames})
+     * @param fieldVarNames  the set of variable names declared by each entry in {@code fields}
+     */
+    private List<String> narrowFields(String methodFqn, List<String> fields, List<Set<String>> fieldVarNames) {
+        Set<String> referenced = new HashSet<>();
+        for (String f : callGraph.getReadsFieldFrom(methodFqn)) referenced.add(simpleFieldName(f));
+        for (String f : callGraph.getWritesFieldFrom(methodFqn)) referenced.add(simpleFieldName(f));
+        if (referenced.isEmpty()) return List.of();
+
+        List<String> out = new ArrayList<>();
+        for (int i = 0; i < fields.size() && i < fieldVarNames.size(); i++) {
+            if (fieldVarNames.get(i).stream().anyMatch(referenced::contains)) {
+                out.add(fields.get(i));
+            }
+        }
+        return out;
+    }
+
+    /** Last dot-separated segment of a field FQN ({@code com.x.Foo.bar} → {@code bar}). */
+    private static String simpleFieldName(String fieldFqn) {
+        int dot = fieldFqn.lastIndexOf('.');
+        return dot >= 0 ? fieldFqn.substring(dot + 1) : fieldFqn;
+    }
+
+    /**
+     * Narrow the full file import list to imports whose simple type name appears as an
+     * identifier in the method source. Wildcard imports ({@code a.b.*}) are kept
+     * unconditionally since their members can't be matched by simple name.
+     */
+    private List<String> narrowImports(List<String> imports, String methodSource) {
+        if (imports.isEmpty()) return imports;
+        Set<String> tokens = new HashSet<>();
+        Matcher m = IDENTIFIER.matcher(methodSource);
+        while (m.find()) tokens.add(m.group());
+
+        List<String> out = new ArrayList<>();
+        for (String imp : imports) {
+            String simple = importSimpleName(imp);
+            if (simple == null || simple.equals("*") || tokens.contains(simple)) {
+                out.add(imp);
+            }
+        }
+        return out;
+    }
+
+    /** Simple name an import introduces: {@code import a.b.C;} → {@code C}, {@code a.b.*} → {@code *}. */
+    private static String importSimpleName(String importStmt) {
+        String s = importStmt.replaceFirst("^import\\s+", "").replaceFirst("^static\\s+", "")
+            .replace(";", "").trim();
+        if (s.isEmpty()) return null;
+        int dot = s.lastIndexOf('.');
+        return dot >= 0 ? s.substring(dot + 1) : s;
     }
 
     /**
@@ -535,9 +624,17 @@ public class JavaCodeChunker {
         // ═══════════════════════════════════════════════════════════════
         // ── Build FieldNodes for the graph model ──
         // ═══════════════════════════════════════════════════════════════
+        // Simple names of all fields declared on this class, and the variable-name set
+        // per declaration (parallel to `fields`) — both used for relevant-fields narrowing
+        // and to scope READS_FIELD/WRITES_FIELD detection to this class's own fields.
+        Set<String> classFieldNames = new HashSet<>();
+        List<Set<String>> fieldVarNames = new ArrayList<>();
         for (FieldDeclaration fieldDecl : classDecl.getFields()) {
+            Set<String> declVars = new LinkedHashSet<>();
             for (VariableDeclarator var : fieldDecl.getVariables()) {
                 String fieldName = var.getNameAsString();
+                declVars.add(fieldName);
+                classFieldNames.add(fieldName);
                 String fieldFqn = fqClassName + "." + fieldName;
 
                 FieldNode fieldNode = new FieldNode();
@@ -552,6 +649,7 @@ public class JavaCodeChunker {
                 // HAS_FIELD edge: class → field
                 graphModel.addEdge(new GraphEdge(GraphEdge.EdgeType.HAS_FIELD, fqClassName, fieldFqn));
             }
+            fieldVarNames.add(declVars);
         }
 
         // ═══════════════════════════════════════════════════════════════
@@ -588,7 +686,13 @@ public class JavaCodeChunker {
             callGraph.extractCalls(method, methodFqn);
             // ── Extract type / throws / import / test heuristics (best-effort)
             callGraph.extractTypeInfo(method, methodFqn, cu);
+            // ── Extract field reads/writes (READS_FIELD/WRITES_FIELD edges)
+            callGraph.extractFieldAccess(method, methodFqn, fqClassName, classFieldNames);
             List<String> calls = new ArrayList<>(callGraph.getCallsFrom(methodFqn));
+
+            // Relevant-fields narrowing (opt-in): only the fields/imports this method uses.
+            List<String> chunkFields = relevantFieldsOnly ? narrowFields(methodFqn, fields, fieldVarNames) : fields;
+            List<String> chunkImports = relevantFieldsOnly ? narrowImports(imports, code) : imports;
 
             // ── Token-aware splitting ──
             List<String> codeParts = tokenCounter.splitIfNeeded(code);
@@ -604,13 +708,13 @@ public class JavaCodeChunker {
                 chunk.setChunkId(chunkId);
                 chunk.setFilePath(relativePath);
                 chunk.setPackageName(packageName);
-                chunk.setImports(imports);
+                chunk.setImports(chunkImports);
 
                 chunk.setClassName(className);
                 chunk.setFullyQualifiedClassName(fqClassName);
                 chunk.setClassSignature(classSignature);
                 chunk.setClassAnnotations(classAnnotations);
-                chunk.setFieldDeclarations(fields);
+                chunk.setFieldDeclarations(chunkFields);
                 chunk.setClassJavadoc(classJavadoc);
 
                 chunk.setMethodName(methodName);
@@ -666,7 +770,11 @@ public class JavaCodeChunker {
 
             callGraph.extractCalls(ctor, methodFqn);
             callGraph.extractTypeInfo(ctor, methodFqn, cu);
+            callGraph.extractFieldAccess(ctor, methodFqn, fqClassName, classFieldNames);
             List<String> calls = new ArrayList<>(callGraph.getCallsFrom(methodFqn));
+
+            List<String> chunkFields = relevantFieldsOnly ? narrowFields(methodFqn, fields, fieldVarNames) : fields;
+            List<String> chunkImports = relevantFieldsOnly ? narrowImports(imports, code) : imports;
 
             List<String> codeParts = tokenCounter.splitIfNeeded(code);
 
@@ -681,13 +789,13 @@ public class JavaCodeChunker {
                 chunk.setChunkId(chunkId);
                 chunk.setFilePath(relativePath);
                 chunk.setPackageName(packageName);
-                chunk.setImports(imports);
+                chunk.setImports(chunkImports);
 
                 chunk.setClassName(className);
                 chunk.setFullyQualifiedClassName(fqClassName);
                 chunk.setClassSignature(classSignature);
                 chunk.setClassAnnotations(classAnnotations);
-                chunk.setFieldDeclarations(fields);
+                chunk.setFieldDeclarations(chunkFields);
                 chunk.setClassJavadoc(classJavadoc);
 
                 chunk.setMethodName(methodName);

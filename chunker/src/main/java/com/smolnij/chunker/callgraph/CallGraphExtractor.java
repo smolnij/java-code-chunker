@@ -6,10 +6,15 @@ import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.ConstructorDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
+import com.github.javaparser.ast.body.Parameter;
+import com.github.javaparser.ast.body.VariableDeclarator;
+import com.github.javaparser.ast.expr.AssignExpr;
+import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.NameExpr;
-import com.github.javaparser.ast.expr.AssignExpr;
+import com.github.javaparser.ast.expr.ThisExpr;
+import com.github.javaparser.ast.expr.UnaryExpr;
 import com.github.javaparser.ast.stmt.ThrowStmt;
 import com.github.javaparser.ast.stmt.CatchClause;
 import com.github.javaparser.resolution.declarations.ResolvedMethodDeclaration;
@@ -44,6 +49,8 @@ public class CallGraphExtractor {
     private final Map<String, Set<String>> throwsType = new ConcurrentHashMap<>();    // methodFqn -> set(exceptionFqn)
     private final Map<String, Set<String>> importsByClass = new ConcurrentHashMap<>(); // classFqn -> set(importedFqn)
     private final Map<String, Set<String>> testFor = new ConcurrentHashMap<>();       // testMethodFqn -> set(targetMethodFqn)
+    private final Map<String, Set<String>> readsField = new ConcurrentHashMap<>();    // methodFqn -> set(fieldFqn)
+    private final Map<String, Set<String>> writesField = new ConcurrentHashMap<>();   // methodFqn -> set(fieldFqn)
 
     // Symbol-resolution telemetry: how many MethodCallExprs resolved to a real
     // FQN target vs. fell back to an unresolved (non-navigable) representation.
@@ -63,6 +70,8 @@ public class CallGraphExtractor {
         throwsType.clear();
         importsByClass.clear();
         testFor.clear();
+        readsField.clear();
+        writesField.clear();
         resolvedCalls.set(0);
         unresolvedCalls.set(0);
     }
@@ -103,6 +112,83 @@ public class CallGraphExtractor {
                 .computeIfAbsent(calleeFqn, k -> Collections.synchronizedSet(new LinkedHashSet<>()))
                 .add(callerFqn);
         }
+    }
+
+    /**
+     * Extract field accesses from a method/constructor body and record them as
+     * READS_FIELD / WRITES_FIELD edges against the owning class's declared fields.
+     *
+     * <p>Best-effort and intentionally conservative: only references to fields
+     * declared on {@code classFqn} are recorded, so every emitted target points at
+     * a real {@link com.smolnij.chunker.model.graph.FieldNode}. Local variables and
+     * parameters whose name shadows a field are excluded (a bare {@code NameExpr}
+     * matching such a name is assumed to refer to the local, not the field). An
+     * unqualified {@code this.field} access is never shadowed and is always recorded.
+     *
+     * @param method          the method or constructor AST node
+     * @param callerFqn        fully-qualified method id (same format used elsewhere)
+     * @param classFqn         FQN of the class declaring the fields
+     * @param classFieldNames  simple names of the fields declared on {@code classFqn}
+     */
+    public void extractFieldAccess(Node method, String callerFqn, String classFqn, Set<String> classFieldNames) {
+        if (classFieldNames == null || classFieldNames.isEmpty()) return;
+
+        // Names declared inside the method (params + local vars) that shadow a field.
+        Set<String> shadowed = new HashSet<>();
+        for (Parameter p : method.findAll(Parameter.class)) shadowed.add(p.getNameAsString());
+        for (VariableDeclarator v : method.findAll(VariableDeclarator.class)) shadowed.add(v.getNameAsString());
+
+        // Unqualified `this.field` accesses — never shadowed.
+        for (FieldAccessExpr fa : method.findAll(FieldAccessExpr.class)) {
+            if (fa.getScope() instanceof ThisExpr) {
+                String name = fa.getNameAsString();
+                if (classFieldNames.contains(name)) {
+                    recordFieldAccess(callerFqn, classFqn, name, fa);
+                }
+            }
+        }
+
+        // Bare references — match a field name only when not shadowed by a local.
+        for (NameExpr ne : method.findAll(NameExpr.class)) {
+            String name = ne.getNameAsString();
+            if (classFieldNames.contains(name) && !shadowed.contains(name)) {
+                recordFieldAccess(callerFqn, classFqn, name, ne);
+            }
+        }
+    }
+
+    /**
+     * Classify a matched field reference as a read and/or write based on its
+     * surrounding expression, then record it in the appropriate edge map(s).
+     */
+    private void recordFieldAccess(String callerFqn, String classFqn, String fieldName, Expression ref) {
+        String fieldFqn = classFqn + "." + fieldName;
+        boolean write = false;
+        boolean read = true;
+
+        Node parent = ref.getParentNode().orElse(null);
+        if (parent instanceof AssignExpr assign && assign.getTarget() == ref) {
+            write = true;
+            // Plain `=` is a pure write; compound assignments (+=, |=, …) also read.
+            read = assign.getOperator() != AssignExpr.Operator.ASSIGN;
+        } else if (parent instanceof UnaryExpr unary && isIncDec(unary.getOperator())) {
+            write = true;
+            read = true;
+        }
+
+        if (read) {
+            readsField.computeIfAbsent(callerFqn, k -> Collections.synchronizedSet(new LinkedHashSet<>())).add(fieldFqn);
+        }
+        if (write) {
+            writesField.computeIfAbsent(callerFqn, k -> Collections.synchronizedSet(new LinkedHashSet<>())).add(fieldFqn);
+        }
+    }
+
+    private static boolean isIncDec(UnaryExpr.Operator op) {
+        return op == UnaryExpr.Operator.PREFIX_INCREMENT
+            || op == UnaryExpr.Operator.POSTFIX_INCREMENT
+            || op == UnaryExpr.Operator.PREFIX_DECREMENT
+            || op == UnaryExpr.Operator.POSTFIX_DECREMENT;
     }
 
     /**
@@ -223,6 +309,16 @@ public class CallGraphExtractor {
 
     public Set<String> getTestForTargets(String methodFqn) {
         return testFor.getOrDefault(methodFqn, Collections.emptySet());
+    }
+
+    /** Fields read by the given method FQN (READS_FIELD edge targets). */
+    public Set<String> getReadsFieldFrom(String methodFqn) {
+        return readsField.getOrDefault(methodFqn, Collections.emptySet());
+    }
+
+    /** Fields written by the given method FQN (WRITES_FIELD edge targets). */
+    public Set<String> getWritesFieldFrom(String methodFqn) {
+        return writesField.getOrDefault(methodFqn, Collections.emptySet());
     }
 
     /**

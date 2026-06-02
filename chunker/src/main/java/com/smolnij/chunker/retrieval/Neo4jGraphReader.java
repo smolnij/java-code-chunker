@@ -759,8 +759,11 @@ public class Neo4jGraphReader implements AutoCloseable {
     // ═══════════════════════════════════════════════════════════════
 
     /**
-     * Expand from an anchor Method node, traversing CALLS, CALLED_BY, and BELONGS_TO
-     * edges up to {@code maxDepth} hops. Returns a map of chunkId → hop distance.
+     * Expand from an anchor Method node, traversing CALLS, CALLED_BY, BELONGS_TO, and
+     * field-coupling (READS_FIELD / WRITES_FIELD) edges up to {@code maxDepth} hops.
+     * Returns a map of chunkId → hop distance. Field edges run Method→Field, so a
+     * field-coupled sibling is reached through its Field node and lands at distance ≥2,
+     * naturally ranking below direct callers/callees.
      *
      * <p>The anchor itself is always included at distance 0.
      *
@@ -775,7 +778,7 @@ public class Neo4jGraphReader implements AutoCloseable {
                 // We collect ALL nodes along the path and track the shortest hop distance.
                 Result r = tx.run(
                     "MATCH (anchor:Method {chunkId: $anchorId}) " +
-                    "OPTIONAL MATCH path = (anchor)-[:CALLS|CALLED_BY|BELONGS_TO*1.." + maxDepth + "]-(connected) " +
+                    "OPTIONAL MATCH path = (anchor)-[:CALLS|CALLED_BY|BELONGS_TO|READS_FIELD|WRITES_FIELD*1.." + maxDepth + "]-(connected) " +
                     "WHERE connected:Method " +
                     "WITH anchor, connected, min(length(path)) AS hops " +
                     "RETURN coalesce(connected.chunkId, anchor.chunkId) AS id, coalesce(hops, 0) AS distance " +
