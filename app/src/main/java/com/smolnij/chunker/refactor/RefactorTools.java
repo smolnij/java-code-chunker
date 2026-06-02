@@ -666,9 +666,6 @@ public class RefactorTools {
             } else {
                 for (Neo4jGraphReader.ClassOverview.MethodSummary m : ov.methods) {
                     sb.append("  ").append(m.signature.isEmpty() ? m.methodName : m.signature);
-                    if (m.totalParts > 1) {
-                        sb.append("    [body split into ").append(m.totalParts).append(" parts]");
-                    }
                     sb.append("\n    id: ").append(m.chunkId).append("\n");
                 }
                 sb.append("\nUse retrieveCodeById(\"<id>\", depth=1) to fetch a specific method body.\n");

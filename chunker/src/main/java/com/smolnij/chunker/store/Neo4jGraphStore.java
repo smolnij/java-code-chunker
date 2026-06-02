@@ -27,7 +27,7 @@ import java.util.stream.Collectors;
  *   :Field     { fqName, name, declaration, type, owningClassFqn }
  *   :Method    { chunkId, methodName, methodSignature, className, fqClassName,
  *                filePath, packageName, code, tokenCount, startLine, endLine,
- *                partIndex, totalParts, classSignature, annotations }
+ *                oversized, classSignature, annotations }
  *
  * Relationships:
  *   (:Method)-[:CALLS]->(:Method)
@@ -299,8 +299,7 @@ public class Neo4jGraphStore implements AutoCloseable {
                               String fqClassName,
                               String methodName,
                               String methodSignature,
-                              String filePath,
-                              int partIndex) { }
+                              String filePath) { }
 
     /** Identity tuple for a {@code :Class}/{@code :Interface} node, captured pre-prune. */
     public record ClassIdent(String fqName,
@@ -374,7 +373,7 @@ public class Neo4jGraphStore implements AutoCloseable {
                 Result mres = tx.run(
                     "MATCH (m:Method) WHERE m.filePath IN $files " +
                     "RETURN m.chunkId AS chunkId, m.fqClassName AS fqc, m.methodName AS name, " +
-                    "       m.methodSignature AS sig, m.filePath AS filePath, m.partIndex AS partIndex",
+                    "       m.methodSignature AS sig, m.filePath AS filePath",
                     Map.of("files", files));
                 while (mres.hasNext()) {
                     var rec = mres.next();
@@ -385,8 +384,7 @@ public class Neo4jGraphStore implements AutoCloseable {
                         rec.get("fqc").asString(""),
                         rec.get("name").asString(""),
                         rec.get("sig").asString(""),
-                        rec.get("filePath").asString(""),
-                        rec.get("partIndex").asInt(0)));
+                        rec.get("filePath").asString("")));
                 }
 
                 Result cres = tx.run(
@@ -757,8 +755,7 @@ public class Neo4jGraphStore implements AutoCloseable {
             props.put("tokenCount", chunk.getTokenCount());
             props.put("startLine", chunk.getStartLine());
             props.put("endLine", chunk.getEndLine());
-            props.put("partIndex", chunk.getPartIndex());
-            props.put("totalParts", chunk.getTotalParts());
+            props.put("oversized", chunk.isOversized());
             props.put("methodAnnotations", chunk.getMethodAnnotations());
             props.put("classAnnotations", chunk.getClassAnnotations());
             props.put("fieldDeclarations", chunk.getFieldDeclarations());
@@ -787,8 +784,7 @@ public class Neo4jGraphStore implements AutoCloseable {
             "    m.tokenCount = row.tokenCount, " +
             "    m.startLine = row.startLine, " +
             "    m.endLine = row.endLine, " +
-            "    m.partIndex = row.partIndex, " +
-            "    m.totalParts = row.totalParts, " +
+            "    m.oversized = row.oversized, " +
             "    m.methodAnnotations = row.methodAnnotations, " +
             "    m.classAnnotations = row.classAnnotations, " +
             "    m.fieldDeclarations = row.fieldDeclarations, " +

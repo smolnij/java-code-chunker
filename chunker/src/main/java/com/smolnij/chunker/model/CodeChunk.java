@@ -22,7 +22,7 @@ import java.util.Map;
 public class CodeChunk {
 
     // ── Identity ──
-    private String chunkId;                          // unique: fqClass#methodSignature[#partN]
+    private String chunkId;                          // unique: fqClass#methodSignature
     private String filePath;                         // relative file path from repo root
     private String packageName;
     private List<String> imports = new ArrayList<>(); // only non-java.lang imports
@@ -54,12 +54,13 @@ public class CodeChunk {
     // Neighbor base-FQN → that neighbor's full method signature, for every callee/caller
     // that is itself an indexed method. Lets the model see each neighbor's real contract
     // (return type + params) instead of guessing from a bare FQN. External (library) calls
-    // have no entry. Keyed by base FQN (no "#partN").
+    // have no entry. Keyed by method FQN.
     private Map<String, String> neighborSignatures = new LinkedHashMap<>();
 
     // ── Chunking metadata ──
-    private int partIndex = 0;                       // 0 = whole method; 1..N = sub-chunks
-    private int totalParts = 1;
+    // A method is always one whole chunk. oversized=true flags a method whose
+    // token count exceeds the configured cap (kept whole anyway, never split).
+    private boolean oversized = false;
     private boolean isBoilerplate = false;           // true → skip indexing
 
     // ── Graph edges for retrieval ──
@@ -236,20 +237,12 @@ public class CodeChunk {
         this.neighborSignatures = neighborSignatures;
     }
 
-    public int getPartIndex() {
-        return partIndex;
+    public boolean isOversized() {
+        return oversized;
     }
 
-    public void setPartIndex(int partIndex) {
-        this.partIndex = partIndex;
-    }
-
-    public int getTotalParts() {
-        return totalParts;
-    }
-
-    public void setTotalParts(int totalParts) {
-        this.totalParts = totalParts;
+    public void setOversized(boolean oversized) {
+        this.oversized = oversized;
     }
 
     public boolean isBoilerplate() {
@@ -384,8 +377,8 @@ public class CodeChunk {
             sb.append("  Javadoc:\n").append(indentBlock(methodJavadoc)).append("\n");
         }
         sb.append("  Lines: ").append(startLine).append("-").append(endLine).append("\n");
-        if (totalParts > 1) {
-            sb.append("  (Part ").append(partIndex).append(" of ").append(totalParts).append(")\n");
+        if (oversized) {
+            sb.append("  (oversized — exceeds token cap, kept whole)\n");
         }
         sb.append("  Tokens: ").append(tokenCount).append("\n");
 

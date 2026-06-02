@@ -130,7 +130,7 @@ public class JavaCodeChunker {
         this.parser = new JavaParser(config);
 
         // Now that the project-configured parser is available, create TokenCounter
-        this.tokenCounter = new TokenCounter(maxTokensPerChunk, this.parser);
+        this.tokenCounter = new TokenCounter(maxTokensPerChunk);
     }
 
     /**
@@ -264,11 +264,9 @@ public class JavaCodeChunker {
         }
 
         // ── Phase 3: Back-patch "calledBy" edges from the call graph ──
-        // Callers reference the base method FQN (no "#partN"), so split-method
-        // part chunks must be looked up by their base id too.
+        // Each chunk's id is the method FQN, exactly what callers reference.
         for (CodeChunk chunk : allChunks) {
-            String baseFqn = chunk.getChunkId().split("#part")[0];
-            Set<String> callers = callGraph.getCallersOf(baseFqn);
+            Set<String> callers = callGraph.getCallersOf(chunk.getChunkId());
             if (!callers.isEmpty()) {
                 chunk.setCalledBy(new ArrayList<>(callers));
             }
@@ -280,8 +278,7 @@ public class JavaCodeChunker {
         // (including filtered boilerplate getters) so neighbor coverage is maximal.
         Map<String, String> sigByBaseFqn = new HashMap<>();
         for (CodeChunk chunk : allChunks) {
-            String baseFqn = chunk.getChunkId().split("#part")[0];
-            sigByBaseFqn.putIfAbsent(baseFqn, chunk.getMethodSignature());
+            sigByBaseFqn.putIfAbsent(chunk.getChunkId(), chunk.getMethodSignature());
         }
         for (CodeChunk chunk : allChunks) {
             Map<String, String> neighborSigs = new LinkedHashMap<>();
@@ -344,8 +341,8 @@ public class JavaCodeChunker {
                 chunk.getFullyQualifiedClassName()
             ));
 
-            // Additional P-G1 edges (best-effort). Map chunkId parts back to base method FQN.
-            String baseMethodFqn = chunkId.split("#part")[0];
+            // Additional P-G1 edges (best-effort). chunkId is the method FQN.
+            String baseMethodFqn = chunkId;
 
             // USES_TYPE
             for (String t : callGraph.getUsesTypesFrom(baseMethodFqn)) {
@@ -694,52 +691,44 @@ public class JavaCodeChunker {
             List<String> chunkFields = relevantFieldsOnly ? narrowFields(methodFqn, fields, fieldVarNames) : fields;
             List<String> chunkImports = relevantFieldsOnly ? narrowImports(imports, code) : imports;
 
-            // ── Token-aware splitting ──
-            List<String> codeParts = tokenCounter.splitIfNeeded(code);
+            // ── One whole-method chunk (never split below method granularity) ──
+            int tokenCount = tokenCounter.countTokens(code);
 
-            for (int i = 0; i < codeParts.size(); i++) {
-                CodeChunk chunk = new CodeChunk();
+            CodeChunk chunk = new CodeChunk();
 
-                String chunkId = methodFqn;
-                if (codeParts.size() > 1) {
-                    chunkId += "#part" + (i + 1);
-                }
+            chunk.setChunkId(methodFqn);
+            chunk.setFilePath(relativePath);
+            chunk.setPackageName(packageName);
+            chunk.setImports(chunkImports);
 
-                chunk.setChunkId(chunkId);
-                chunk.setFilePath(relativePath);
-                chunk.setPackageName(packageName);
-                chunk.setImports(chunkImports);
+            chunk.setClassName(className);
+            chunk.setFullyQualifiedClassName(fqClassName);
+            chunk.setClassSignature(classSignature);
+            chunk.setClassAnnotations(classAnnotations);
+            chunk.setFieldDeclarations(chunkFields);
+            chunk.setClassJavadoc(classJavadoc);
 
-                chunk.setClassName(className);
-                chunk.setFullyQualifiedClassName(fqClassName);
-                chunk.setClassSignature(classSignature);
-                chunk.setClassAnnotations(classAnnotations);
-                chunk.setFieldDeclarations(chunkFields);
-                chunk.setClassJavadoc(classJavadoc);
+            chunk.setMethodName(methodName);
+            chunk.setMethodSignature(methodSig);
+            chunk.setMethodAnnotations(methodAnnotations);
+            chunk.setMethodJavadoc(methodJavadoc);
+            chunk.setStartLine(startLine);
+            chunk.setEndLine(endLine);
 
-                chunk.setMethodName(methodName);
-                chunk.setMethodSignature(methodSig);
-                chunk.setMethodAnnotations(methodAnnotations);
-                chunk.setMethodJavadoc(methodJavadoc);
-                chunk.setStartLine(startLine);
-                chunk.setEndLine(endLine);
+            chunk.setCode(code);
+            chunk.setTokenCount(tokenCount);
+            chunk.setOversized(tokenCount > tokenCounter.getMaxTokensPerChunk());
 
-                chunk.setCode(codeParts.get(i));
-                chunk.setTokenCount(tokenCounter.countTokens(codeParts.get(i)));
+            chunk.setCalls(calls);
+            // calledBy will be back-patched in Phase 3
 
-                chunk.setCalls(calls);
-                // calledBy will be back-patched in Phase 3
+            chunk.setBoilerplate(isBoilerplate);
 
-                chunk.setPartIndex(i + 1);
-                chunk.setTotalParts(codeParts.size());
-                chunk.setBoilerplate(isBoilerplate);
+            chunk.setParentClass(fqClassName);
+            chunk.setParentPackage(packageName);
 
-                chunk.setParentClass(fqClassName);
-                chunk.setParentPackage(packageName);
-
-                chunkIndex.put(chunkId, chunk);
-                allChunks.add(chunk);
-            }
+            chunkIndex.put(methodFqn, chunk);
+            allChunks.add(chunk);
         }
 
         // ═══════════════════════════════════════════════════════════════
@@ -776,50 +765,42 @@ public class JavaCodeChunker {
             List<String> chunkFields = relevantFieldsOnly ? narrowFields(methodFqn, fields, fieldVarNames) : fields;
             List<String> chunkImports = relevantFieldsOnly ? narrowImports(imports, code) : imports;
 
-            List<String> codeParts = tokenCounter.splitIfNeeded(code);
+            int tokenCount = tokenCounter.countTokens(code);
 
-            for (int i = 0; i < codeParts.size(); i++) {
-                CodeChunk chunk = new CodeChunk();
+            CodeChunk chunk = new CodeChunk();
 
-                String chunkId = methodFqn;
-                if (codeParts.size() > 1) {
-                    chunkId += "#part" + (i + 1);
-                }
+            chunk.setChunkId(methodFqn);
+            chunk.setFilePath(relativePath);
+            chunk.setPackageName(packageName);
+            chunk.setImports(chunkImports);
 
-                chunk.setChunkId(chunkId);
-                chunk.setFilePath(relativePath);
-                chunk.setPackageName(packageName);
-                chunk.setImports(chunkImports);
+            chunk.setClassName(className);
+            chunk.setFullyQualifiedClassName(fqClassName);
+            chunk.setClassSignature(classSignature);
+            chunk.setClassAnnotations(classAnnotations);
+            chunk.setFieldDeclarations(chunkFields);
+            chunk.setClassJavadoc(classJavadoc);
 
-                chunk.setClassName(className);
-                chunk.setFullyQualifiedClassName(fqClassName);
-                chunk.setClassSignature(classSignature);
-                chunk.setClassAnnotations(classAnnotations);
-                chunk.setFieldDeclarations(chunkFields);
-                chunk.setClassJavadoc(classJavadoc);
+            chunk.setMethodName(methodName);
+            chunk.setMethodSignature(methodSig);
+            chunk.setMethodAnnotations(methodAnnotations);
+            chunk.setMethodJavadoc(methodJavadoc);
+            chunk.setStartLine(startLine);
+            chunk.setEndLine(endLine);
 
-                chunk.setMethodName(methodName);
-                chunk.setMethodSignature(methodSig);
-                chunk.setMethodAnnotations(methodAnnotations);
-                chunk.setMethodJavadoc(methodJavadoc);
-                chunk.setStartLine(startLine);
-                chunk.setEndLine(endLine);
+            chunk.setCode(code);
+            chunk.setTokenCount(tokenCount);
+            chunk.setOversized(tokenCount > tokenCounter.getMaxTokensPerChunk());
 
-                chunk.setCode(codeParts.get(i));
-                chunk.setTokenCount(tokenCounter.countTokens(codeParts.get(i)));
+            chunk.setCalls(calls);
 
-                chunk.setCalls(calls);
+            chunk.setBoilerplate(isDto);
 
-                chunk.setPartIndex(i + 1);
-                chunk.setTotalParts(codeParts.size());
-                chunk.setBoilerplate(isDto);
+            chunk.setParentClass(fqClassName);
+            chunk.setParentPackage(packageName);
 
-                chunk.setParentClass(fqClassName);
-                chunk.setParentPackage(packageName);
-
-                chunkIndex.put(chunkId, chunk);
-                allChunks.add(chunk);
-            }
+            chunkIndex.put(methodFqn, chunk);
+            allChunks.add(chunk);
         }
     }
 

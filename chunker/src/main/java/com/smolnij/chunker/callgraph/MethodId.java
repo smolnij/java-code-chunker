@@ -80,9 +80,8 @@ public final class MethodId {
      * ({@code Foo#bar(java.util.List<String>, int)} → {@code Foo#bar(List, int)}).
      *
      * <p>Only the substring between the first {@code (} and the last {@code )}
-     * is rewritten; the {@code declaringType#name} prefix and any trailing
-     * {@code #partN} suffix are left untouched. Ids with no parameter list are
-     * returned unchanged.
+     * is rewritten; the {@code declaringType#name} prefix is left untouched.
+     * Ids with no parameter list are returned unchanged.
      */
     public static String canonicalize(String id) {
         if (id == null) return null;

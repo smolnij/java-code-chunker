@@ -218,8 +218,8 @@ public class Neo4jGraphReader implements AutoCloseable {
      * Pick the best chunkId among same-class candidates of a method name.
      *
      * <p>When the caller supplied a parameter list, prefer the candidate whose
-     * canonical id (params normalized via {@link MethodId#canonicalize}, any
-     * {@code #partN} suffix ignored) equals the canonicalized input — this is
+     * canonical id (params normalized via {@link MethodId#canonicalize}) equals
+     * the canonicalized input — this is
      * how an overloaded method is disambiguated. When the input had no params,
      * or no overload matches exactly, fall back to the first candidate to
      * preserve the historical single-result behaviour.
@@ -232,8 +232,7 @@ public class Neo4jGraphReader implements AutoCloseable {
     private static String pickOverload(List<String> candidateIds, String canonicalId, boolean inputHasParams) {
         if (inputHasParams && canonicalId != null) {
             for (String cid : candidateIds) {
-                String base = cid.replaceFirst("#part\\d+$", "");
-                if (MethodId.canonicalize(base).equals(canonicalId)) {
+                if (MethodId.canonicalize(cid).equals(canonicalId)) {
                     return cid;
                 }
             }
@@ -601,19 +600,17 @@ public class Neo4jGraphReader implements AutoCloseable {
         public List<String> implementedTypes = new ArrayList<>();
         public List<String> imports = new ArrayList<>();
         public List<String> fieldDeclarations = new ArrayList<>();
-        /** Method/constructor signatures (one entry per indexed method, deduped across parts). */
+        /** Method/constructor signatures (one entry per indexed method). */
         public List<MethodSummary> methods = new ArrayList<>();
 
         public static class MethodSummary {
             public String chunkId;
             public String methodName;
             public String signature;
-            public int totalParts;
-            public MethodSummary(String chunkId, String methodName, String signature, int totalParts) {
+            public MethodSummary(String chunkId, String methodName, String signature) {
                 this.chunkId = chunkId;
                 this.methodName = methodName;
                 this.signature = signature;
-                this.totalParts = totalParts;
             }
         }
     }
@@ -667,34 +664,21 @@ public class Neo4jGraphReader implements AutoCloseable {
                     if (!decl.isEmpty()) overview.fieldDeclarations.add(decl);
                 }
 
-                // Methods via BELONGS_TO. Dedupe across parts (chunkId may end with #partN).
-                // Pick the part-1 (or only) chunk for the canonical signature.
+                // Methods via BELONGS_TO. One :Method node per method (no splitting).
                 Result methodResult = tx.run(
                     "MATCH (m:Method)-[:BELONGS_TO]->(c {fqName: $id}) " +
                         "RETURN m.chunkId AS chunkId, m.methodName AS methodName, " +
-                        "       m.methodSignature AS signature, m.partIndex AS partIndex, " +
-                        "       m.totalParts AS totalParts " +
-                        "ORDER BY m.methodName, m.partIndex",
+                        "       m.methodSignature AS signature " +
+                        "ORDER BY m.methodName",
                     Map.of("id", fqName)
                 );
-                Map<String, ClassOverview.MethodSummary> byBaseId = new LinkedHashMap<>();
                 while (methodResult.hasNext()) {
                     Record mr = methodResult.next();
                     String chunkId = mr.get("chunkId").asString("");
                     String name = mr.get("methodName").asString("");
                     String sig = mr.get("signature").asString("");
-                    int partIndex = mr.get("partIndex").asInt(0);
-                    int totalParts = mr.get("totalParts").asInt(1);
-                    // Strip trailing #partN to get the base method id
-                    String baseId = chunkId.replaceFirst("#part\\d+$", "");
-                    ClassOverview.MethodSummary existing = byBaseId.get(baseId);
-                    if (existing == null || partIndex < existing.totalParts /* prefer earlier part */) {
-                        if (existing == null) {
-                            byBaseId.put(baseId, new ClassOverview.MethodSummary(baseId, name, sig, totalParts));
-                        }
-                    }
+                    overview.methods.add(new ClassOverview.MethodSummary(chunkId, name, sig));
                 }
-                overview.methods.addAll(byBaseId.values());
 
                 // Imports — pulled from any one method node in this class (they're identical per file)
                 Result importsResult = tx.run(
@@ -1023,8 +1007,7 @@ public class Neo4jGraphReader implements AutoCloseable {
         chunk.setTokenCount(getInt(node, "tokenCount"));
         chunk.setStartLine(getInt(node, "startLine"));
         chunk.setEndLine(getInt(node, "endLine"));
-        chunk.setPartIndex(getInt(node, "partIndex"));
-        chunk.setTotalParts(getInt(node, "totalParts"));
+        chunk.setOversized(getBool(node, "oversized"));
 
         chunk.setMethodAnnotations(getStrList(node, "methodAnnotations"));
         chunk.setClassAnnotations(getStrList(node, "classAnnotations"));
@@ -1052,6 +1035,11 @@ public class Neo4jGraphReader implements AutoCloseable {
     private int getInt(Node node, String key) {
         Value v = node.get(key);
         return v.isNull() ? 0 : v.asInt();
+    }
+
+    private boolean getBool(Node node, String key) {
+        Value v = node.get(key);
+        return !v.isNull() && v.asBoolean();
     }
 
     private List<String> getStrList(Node node, String key) {

@@ -184,8 +184,8 @@ final class MappingResolver {
         String oldFqClass = op.fqClassName();
         String newFqClass = classRenames.getOrDefault(oldFqClass, oldFqClass);
 
-        // Find old chunkIds that match the old (class, name) pair, possibly across overloads
-        // and split parts. If paramSignature is provided, narrow on it.
+        // Find old chunkIds that match the old (class, name) pair, possibly across overloads.
+        // If paramSignature is provided, narrow on it.
         for (Map.Entry<String, MethodIdent> entry : before.methodsByChunkId().entrySet()) {
             MethodIdent id = entry.getValue();
             if (!id.fqClassName().equals(oldFqClass)) continue;
@@ -194,8 +194,7 @@ final class MappingResolver {
                 && !signatureMatches(id.methodSignature(), op.paramSignature())) continue;
 
             String paramTypes = paramTypesFromChunkId(id.chunkId());
-            String partSuffix = id.partIndex() > 0 ? "#part" + id.partIndex() : "";
-            String expectedNewChunkId = newFqClass + "#" + op.newMethodName() + paramTypes + partSuffix;
+            String expectedNewChunkId = newFqClass + "#" + op.newMethodName() + paramTypes;
             for (CodeChunk c : after.getMethodNodes()) {
                 if (c.getChunkId().equals(expectedNewChunkId)) {
                     methodRenames.put(id.chunkId(), c.getChunkId());
@@ -284,7 +283,6 @@ final class MappingResolver {
                                                        Set<String> alreadyClaimed) {
         String oldName = oldId.methodName();
         String oldParamTypes = paramTypesFromChunkId(oldId.chunkId());
-        int oldPartIndex = oldId.partIndex();
 
         List<CodeChunk> sameClassSameParams = new ArrayList<>();
         List<CodeChunk> sameClassSameName   = new ArrayList<>();
@@ -292,9 +290,6 @@ final class MappingResolver {
 
         for (CodeChunk c : after.getMethodNodes()) {
             if (alreadyClaimed.contains(c.getChunkId())) continue;
-            // Only consider chunks for the same partIndex to avoid pairing
-            // part 0 of one method with part 1 of another.
-            if (c.getPartIndex() != oldPartIndex) continue;
 
             String cFqClass = c.getFullyQualifiedClassName();
             String cParamTypes = paramTypesFromChunkId(c.getChunkId());

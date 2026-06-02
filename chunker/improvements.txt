@@ -137,7 +137,7 @@
   │ 5 d │ Callee signature skeletons in chunk │ M      │ High — anti-hallucination   │
   ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
   │ 3+6 │ READS/WRITES_FIELD →                │ M      │ High — less noise, smaller  │
-  │     │ relevant-fields-only                │        │ tokens                      │
+  │  d  │ relevant-fields-only                │        │ tokens                      │
   ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
   │ 7   │ Stop sub-method code splitting      │ M      │ High for refactoring use    │
   ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
