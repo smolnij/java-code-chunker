@@ -411,11 +411,11 @@ public final class EvalMain {
         if (gold == null || gold.isBlank()) return;
         String picked = res.anchorId();
         if (picked == null) return;
-        // Normalize using the same rules the metric scorer applies (drop #partN and
-        // canonicalize the parameter list, then strip the parameter list for a loose
-        // match). Without this the trace contradicts the metric — e.g.
-        // picked=Foo#run(String)#part1 vs gold=Foo#run(String) reports anchor.mismatch
-        // even though retrieval.anchor.hit PASSes.
+        // Normalize using the same rules the metric scorer applies (canonicalize
+        // the parameter list, then strip the parameter list for a loose match).
+        // Without this the trace contradicts the metric — e.g.
+        // picked=Foo#run(String) vs gold=Foo#run(java.lang.String) reports
+        // anchor.mismatch even though retrieval.anchor.hit PASSes.
         String pickedNorm = RetrievalScorer.normalizeId(picked);
         String goldNorm = RetrievalScorer.normalizeId(gold);
         if (goldNorm.equals(pickedNorm)) return;

@@ -15,11 +15,9 @@ import java.util.Set;
  * Retrieval-quality metrics: precision@K, recall@K, anchor-hit, MRR.
  * K is the actual retrieved list size (bounded by fixture.topK if set).
  *
- * <p>chunkIds are normalized before set comparison to absorb three known sources
+ * <p>chunkIds are normalized before set comparison to absorb two known sources
  * of lexical drift between the chunker and hand-written fixture gold lists:
  * <ul>
- *   <li>{@code #partN} suffixes appended by {@link com.smolnij.chunker.tokenizer.TokenCounter}
- *       when a method exceeds the per-chunk token budget.</li>
  *   <li>Parameter <em>format</em> drift — qualified/generic-bearing param types
  *       in gold lists ({@code expandForAnalyzer(List<String>, StagedPlanIndex)})
  *       vs. the erased simple-name form the current chunker emits
@@ -29,10 +27,10 @@ import java.util.Set;
  *       {@code Node} where the gold list says {@code MethodDeclaration}) — a genuine
  *       disagreement canonicalization cannot fix.</li>
  * </ul>
- * The {@code @K} metrics use strict (parameter-aware) matching after part-suffix
- * stripping and param canonicalization; a parallel pair of {@code _loose} metrics
- * drops the parameter list entirely so that residual type drift does not silently
- * flip every metric to FAIL.
+ * The {@code @K} metrics use strict (parameter-aware) matching after param
+ * canonicalization; a parallel pair of {@code _loose} metrics drops the parameter
+ * list entirely so that residual type drift does not silently flip every metric
+ * to FAIL.
  */
 public final class RetrievalScorer implements Scorer {
 
@@ -152,28 +150,14 @@ public final class RetrievalScorer implements Scorer {
     }
 
     /**
-     * Normalize a chunk id for strict comparison: drop the {@code #partN} split
-     * suffix, then re-render the parameter list through {@link MethodId#canonicalize}
-     * so that qualified/generic param forms in fixture gold lists
-     * ({@code expandForAnalyzer(List<String>, StagedPlanIndex)}) match the erased
-     * simple-name form the current chunker emits
+     * Normalize a chunk id for strict comparison: re-render the parameter list
+     * through {@link MethodId#canonicalize} so that qualified/generic param forms
+     * in fixture gold lists ({@code expandForAnalyzer(List<String>, StagedPlanIndex)})
+     * match the erased simple-name form the current chunker emits
      * ({@code expandForAnalyzer(List, StagedPlanIndex)}).
      */
     public static String normalizeId(String chunkId) {
-        return MethodId.canonicalize(stripPartSuffix(chunkId));
-    }
-
-    /** Drop a trailing {@code #partN} segment added by the token-aware splitter. */
-    public static String stripPartSuffix(String chunkId) {
-        if (chunkId == null) return null;
-        int hash = chunkId.lastIndexOf('#');
-        if (hash < 0) return chunkId;
-        String tail = chunkId.substring(hash + 1);
-        if (!tail.startsWith("part")) return chunkId;
-        for (int i = 4; i < tail.length(); i++) {
-            if (!Character.isDigit(tail.charAt(i))) return chunkId;
-        }
-        return tail.length() > 4 ? chunkId.substring(0, hash) : chunkId;
+        return MethodId.canonicalize(chunkId);
     }
 
     /** Drop the parameter list so {@code Foo#bar(int, String)} becomes {@code Foo#bar}. */

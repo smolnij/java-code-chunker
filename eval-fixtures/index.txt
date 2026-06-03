@@ -2,8 +2,8 @@ retrieval-safeloop-run.json
 retrieval-hybrid-rerank.json
 retrieval-callgraph-extractor.json
 retrieval-anchor-resolver-fallback.json
-retrieval-tokenCounter-splitter.json
+retrieval-chunker-file-pipeline.json
 safeloop-rename-computeFinalScore.json
-safeloop-extract-tokenCounter-helper.json
+safeloop-extract-chunker-fileCollect.json
 safeloop-staged-expandForAnalyzer.json
 safeloop-rename-public-api-UNSAFE.json

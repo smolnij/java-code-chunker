@@ -124,6 +124,7 @@
 
 
 0 MAKE EVERYTHING IN CHUNKER TO RELY ON A SINGLE PROPERTY FILE, RATHER THAN HAVING CONFIG DUPLICATED IN MANY PLACES
+00 MAKE CHUNKER LOOK FOR SOURCES RECURSIVELY ITSELF (FROM chunker.repoRoot=/home/smola/dev/src/AI_tools/java-code-chunker)
   ┌─────┬─────────────────────────────────────┬────────┬─────────────────────────────┐
   │  #  │               Change                │ Effort │           Payoff            │
   ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
@@ -139,7 +140,7 @@
   │ 3+6 │ READS/WRITES_FIELD →                │ M      │ High — less noise, smaller  │
   │  d  │ relevant-fields-only                │        │ tokens                      │
   ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
-  │ 7   │ Stop sub-method code splitting      │ M      │ High for refactoring use    │
+  │ 7d  │ Stop sub-method code splitting      │ M      │ High for refactoring use    │
   ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤
   │ 8   │ Records/enums/annotations           │ M      │ Coverage                    │
   ├─────┼─────────────────────────────────────┼────────┼─────────────────────────────┤

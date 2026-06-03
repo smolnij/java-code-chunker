@@ -672,12 +672,19 @@ public class Neo4jGraphReader implements AutoCloseable {
                         "ORDER BY m.methodName",
                     Map.of("id", fqName)
                 );
+                // Collapse to one summary per base method id. On a clean (post-refactor)
+                // index every id is already whole, so this is a no-op; on a stale/mixed
+                // index it strips legacy #partN suffixes and drops duplicate part rows
+                // that would otherwise bloat the overview and confuse the analyzer.
+                Set<String> seenBase = new LinkedHashSet<>();
                 while (methodResult.hasNext()) {
                     Record mr = methodResult.next();
                     String chunkId = mr.get("chunkId").asString("");
+                    String baseId = chunkId.replaceFirst("#part\\d+$", "");
+                    if (!seenBase.add(baseId)) continue;   // skip later parts of same method
                     String name = mr.get("methodName").asString("");
                     String sig = mr.get("signature").asString("");
-                    overview.methods.add(new ClassOverview.MethodSummary(chunkId, name, sig));
+                    overview.methods.add(new ClassOverview.MethodSummary(baseId, name, sig));
                 }
 
                 // Imports — pulled from any one method node in this class (they're identical per file)
@@ -809,6 +816,33 @@ public class Neo4jGraphReader implements AutoCloseable {
                 return ids;
             });
         }
+    }
+
+    /**
+     * Return up to {@code n} sibling methods of {@code anchorChunkId}'s class, ranked by
+     * cosine similarity between {@code queryEmbedding} and each sibling's stored embedding
+     * (highest first). The anchor itself is excluded; siblings without a stored embedding
+     * are dropped (they cannot be ranked).
+     *
+     * <p>Used to seed multi-anchor graph expansion: when the resolver's single best anchor
+     * is a near-miss (e.g. it picks a sibling overload by semantic similarity), the true
+     * target is still pulled in at low graph distance because expansion also starts from
+     * the most query-relevant siblings — not only the one winning anchor.
+     */
+    public List<String> topClassMethodsBySemSim(String anchorChunkId, float[] queryEmbedding, int n) {
+        if (anchorChunkId == null || queryEmbedding == null || n <= 0) return List.of();
+        List<String> siblings = getSameClassMethods(anchorChunkId);
+        if (siblings.isEmpty()) return List.of();
+        Map<String, float[]> embeddings = getStoredEmbeddings(siblings);
+        if (embeddings.isEmpty()) return List.of();
+        return siblings.stream()
+            .filter(embeddings::containsKey)
+            .map(id -> Map.entry(id,
+                LmStudioEmbeddingService.cosineSimilarity(queryEmbedding, embeddings.get(id))))
+            .sorted((a, b) -> Double.compare(b.getValue(), a.getValue()))
+            .limit(n)
+            .map(Map.Entry::getKey)
+            .toList();
     }
 
     /**

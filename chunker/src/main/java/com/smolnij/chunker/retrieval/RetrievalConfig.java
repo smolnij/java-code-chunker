@@ -41,6 +41,14 @@ public class RetrievalConfig {
     private int maxPathsReturned = 3;
     private int maxTopologyEdges = 200;
 
+    // Number of seed nodes the BFS graph-expansion starts from. The first seed is the
+    // resolved primary anchor; the rest are the highest query-similarity siblings of the
+    // anchor's class plus top vector hits. Multi-seed expansion keeps the true target
+    // reachable at low graph distance even when the single best-resolved anchor is a
+    // near-miss (e.g. the resolver picks a sibling overload). 1 reproduces the legacy
+    // single-anchor behaviour.
+    private int maxSeeds = 3;
+
     private double anchorPct = 0.15;
     private double callersPct = 0.30;
     private double calleesPct = 0.25;
@@ -76,6 +84,7 @@ public class RetrievalConfig {
 
         cfg.maxPathsReturned = PropertiesLoader.getInt(p, "retrieval.maxPathsReturned", cfg.maxPathsReturned);
         cfg.maxTopologyEdges = PropertiesLoader.getInt(p, "retrieval.maxTopologyEdges", cfg.maxTopologyEdges);
+        cfg.maxSeeds = Math.max(1, PropertiesLoader.getInt(p, "retrieval.maxSeeds", cfg.maxSeeds));
 
         cfg.anchorPct = PropertiesLoader.getDouble(p, "retrieval.anchorPct", cfg.anchorPct);
         cfg.callersPct = PropertiesLoader.getDouble(p, "retrieval.callersPct", cfg.callersPct);
@@ -119,6 +128,8 @@ public class RetrievalConfig {
 
     public int getMaxPathsReturned() { return maxPathsReturned; }
     public int getMaxTopologyEdges() { return maxTopologyEdges; }
+    public int getMaxSeeds() { return maxSeeds; }
+    public RetrievalConfig withMaxSeeds(int v) { this.maxSeeds = Math.max(1, v); return this; }
 
     public boolean isTrace() { return trace; }
     public RetrievalConfig withTrace(boolean v) { this.trace = v; return this; }
@@ -144,10 +155,10 @@ public class RetrievalConfig {
     public String toString() {
         return String.format(
             "RetrievalConfig { depth=%d, topK=%d, weights=[%.2f/%.2f/%.2f], " +
-            "embeddingUrl=%s, model=%s, dims=%d, vectorIndex=%s, maxPaths=%d, maxTopoEdges=%d }",
+            "embeddingUrl=%s, model=%s, dims=%d, vectorIndex=%s, maxPaths=%d, maxTopoEdges=%d, maxSeeds=%d }",
             maxDepth, topK, semanticWeight, graphWeight, structuralWeight,
             embeddingUrl, embeddingModel, embeddingDimensions, vectorIndexName,
-            maxPathsReturned, maxTopologyEdges
+            maxPathsReturned, maxTopologyEdges, maxSeeds
         );
     }
 }

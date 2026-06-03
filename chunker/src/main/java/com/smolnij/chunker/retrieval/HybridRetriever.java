@@ -75,12 +75,18 @@ public class HybridRetriever {
             System.err.println("WARN: Query embedding failed: " + e.getMessage());
         }
 
-        // ── Step 1: Resolve entry point ──
-        String anchorId = resolveEntryPoint(userQuery, queryEmbedding);
-        System.out.println("Step 1 — Anchor: " + (anchorId != null ? anchorId : "(none, using vector-only)"));
+        // ── Step 1: Resolve entry point(s) ──
+        // The primary anchor (seed 0) drives display, anchor-hit, and 0-hop pinning; the
+        // remaining seeds broaden graph expansion so a near-miss primary doesn't strand
+        // the true target far from every seed.
+        List<String> seeds = resolveSeeds(userQuery, queryEmbedding);
+        String anchorId = seeds.isEmpty() ? null : seeds.get(0);
+        System.out.println("Step 1 — Anchor: " + (anchorId != null ? anchorId : "(none, using vector-only)")
+                + (seeds.size() > 1 ? "  (+" + (seeds.size() - 1) + " secondary seed"
+                    + (seeds.size() == 2 ? "" : "s") + ": " + seeds.subList(1, seeds.size()) + ")" : ""));
 
         // ── Step 2: Graph expansion ──
-        Map<String, Integer> subgraph = expandGraph(anchorId);
+        Map<String, Integer> subgraph = expandGraph(seeds);
         System.out.println("Step 2 — Subgraph: " + subgraph.size() + " nodes");
 
         // ── Step 3: Collect candidate chunks ──
@@ -185,6 +191,52 @@ public class HybridRetriever {
     }
 
     /**
+     * Resolve an ordered, de-duplicated list of seed nodes for graph expansion.
+     *
+     * <p>Seed 0 is the primary anchor from {@link #resolveEntryPoint} — it alone drives
+     * the {@code anchorId} display, the {@code anchor.hit} metric, and 0-hop pinning.
+     * Secondary seeds are (a) the anchor's class siblings with the highest similarity to
+     * the query, then (b) top vector hits — both blind to the primary's call graph, so
+     * they pull the true target into the candidate pool at low graph distance even when
+     * the single best-resolved anchor is a near-miss. Capped at {@code config.maxSeeds}
+     * ({@code =1} reproduces the legacy single-anchor behaviour).
+     */
+    private List<String> resolveSeeds(String userQuery, float[] queryEmbedding) {
+        LinkedHashSet<String> seeds = new LinkedHashSet<>();
+
+        String primary = resolveEntryPoint(userQuery, queryEmbedding);
+        if (primary != null) seeds.add(primary);
+
+        int maxSeeds = config.getMaxSeeds();
+        if (maxSeeds <= 1 || queryEmbedding == null) {
+            return new ArrayList<>(seeds);
+        }
+
+        // (a) Most query-relevant siblings of the anchor's class.
+        if (primary != null && seeds.size() < maxSeeds) {
+            for (String sibling : graphReader.topClassMethodsBySemSim(primary, queryEmbedding, maxSeeds)) {
+                if (seeds.size() >= maxSeeds) break;
+                seeds.add(sibling);
+            }
+        }
+
+        // (b) Top vector hits — cross-class coverage when the gold lives outside the
+        // anchor's class and isn't call-connected.
+        if (seeds.size() < maxSeeds) {
+            try {
+                for (String hit : graphReader.vectorSearch(queryEmbedding, maxSeeds)) {
+                    if (seeds.size() >= maxSeeds) break;
+                    seeds.add(hit);
+                }
+            } catch (Exception e) {
+                System.err.println("WARN: seed vector search failed: " + e.getMessage());
+            }
+        }
+
+        return new ArrayList<>(seeds);
+    }
+
+    /**
      * Extract likely method/class identifiers from a natural-language query.
      * Looks for camelCase tokens and dot-separated identifiers.
      */
@@ -246,25 +298,42 @@ public class HybridRetriever {
      * BFS-expand from the anchor node, collecting all connected Method nodes
      * within the configured max depth.
      */
-    private Map<String, Integer> expandGraph(String anchorId) {
-        if (anchorId == null) {
-            return new LinkedHashMap<>();
+    private Map<String, Integer> expandGraph(List<String> seeds) {
+        Map<String, Integer> merged = new LinkedHashMap<>();
+        if (seeds == null || seeds.isEmpty()) {
+            return merged;
+        }
+        String primary = seeds.get(0);
+
+        for (String seed : seeds) {
+            boolean isPrimary = seed.equals(primary);
+
+            Map<String, Integer> subgraph = graphReader.expandSubgraph(seed, config.getMaxDepth());
+            // Adaptive deepen only for the primary anchor — its neighbourhood is what the
+            // graph-distance score is anchored to; secondary seeds just broaden coverage.
+            if (isPrimary) {
+                long neighborCount = subgraph.values().stream().filter(d -> d > 0).count();
+                if (neighborCount < config.getTopK() / 2) {
+                    subgraph = graphReader.expandSubgraph(seed, config.getMaxDepth() + 1);
+                }
+            }
+
+            // Secondary seeds are one hop "further out" than the primary so the primary's
+            // own neighbourhood keeps ranking priority; keep the minimum distance on overlap.
+            int offset = isPrimary ? 0 : 1;
+            for (Map.Entry<String, Integer> e : subgraph.entrySet()) {
+                merged.merge(e.getKey(), e.getValue() + offset, Math::min);
+            }
+
+            // Same-class siblings (even if not directly call-connected).
+            for (String sibling : graphReader.getSameClassMethods(seed)) {
+                merged.merge(sibling, 1 + offset, Math::min);
+            }
         }
 
-        Map<String, Integer> subgraph = graphReader.expandSubgraph(anchorId, config.getMaxDepth());
-
-        long neighborCount = subgraph.values().stream().filter(d -> d > 0).count();
-        if (neighborCount < config.getTopK() / 2) {
-            subgraph = graphReader.expandSubgraph(anchorId, config.getMaxDepth() + 1);
-        }
-
-        // Also include same-class siblings (even if not directly connected via call edges)
-        List<String> siblings = graphReader.getSameClassMethods(anchorId);
-        for (String sibling : siblings) {
-            subgraph.putIfAbsent(sibling, 1); // Treat same-class as distance 1
-        }
-
-        return subgraph;
+        // Pin the primary anchor at 0-hop regardless of how it was reached via other seeds.
+        merged.put(primary, 0);
+        return merged;
     }
 
     // ═══════════════════════════════════════════════════════════════
